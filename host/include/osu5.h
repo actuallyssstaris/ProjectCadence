@@ -113,7 +113,8 @@ typedef struct {
 
 enum { OSU5_STR_TITLE, OSU5_STR_ARTIST, OSU5_STR_VERSION, OSU5_STR_CREATOR, OSU5_STR_AUDIO, OSU5_STR_BACKGROUND, OSU5_STR_ERROR };
 
-int osu5_gc_check(void); /* forces a collection, returns the gen0 count */
+int osu5_gc_check(void);
+float osu5_stars(const char *path, int mods); /* -1 on failure; safe off the main thread */ /* forces a collection, returns the gen0 count */
 int osu5_load(const char *path);
 void osu5_unload(void);
 void osu5_set_mods(int flags); /* applies from the next osu5_load */

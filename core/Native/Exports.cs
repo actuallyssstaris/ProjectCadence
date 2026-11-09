@@ -67,6 +67,25 @@ namespace Osu5.Native
             }
         }
 
+        // Star rating of a map with these mods; -1 if it won't decode or isn't osu!standard.
+        // Touches no shared state, so the host calls it from a worker thread.
+        [UnmanagedCallersOnly(EntryPoint = "osu5_stars", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static float Stars(byte* path, int flags)
+        {
+            try
+            {
+                string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
+                var m = BeatmapDecoder.Decode(p, (Mods)flags);
+                if (m.Mode != 0)
+                    return -1;
+                return (float)Osu5.Stars.StarRating.Calculate(m, (Mods)flags).Stars;
+            }
+            catch
+            {
+                return -1;
+            }
+        }
+
         [UnmanagedCallersOnly(EntryPoint = "osu5_unload", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static void Unload()
         {

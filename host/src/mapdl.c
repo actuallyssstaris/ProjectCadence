@@ -1,4 +1,5 @@
 #include "mapdl.h"
+#include "json.h"
 #include "log.h"
 #include "net.h"
 #include "unzip.h"
@@ -32,134 +33,6 @@ static bool worker_up;
 static int known[KNOWN_MAX];
 static int nknown = -1;
 
-/* ---- JSON, just enough for the search reply ---- */
-
-typedef struct {
-    const char *p;
-} js;
-
-static void ws(js *j)
-{
-    while (*j->p == ' ' || *j->p == '\n' || *j->p == '\r' || *j->p == '\t')
-        j->p++;
-}
-
-/* reads a string; non-ASCII turns into '?', the font has nothing else */
-static bool str(js *j, char *out, size_t n)
-{
-    if (*j->p != '"')
-        return false;
-    j->p++;
-    size_t k = 0;
-    while (*j->p && *j->p != '"') {
-        unsigned char c = (unsigned char)*j->p++;
-        if (c == '\\') {
-            c = (unsigned char)*j->p++;
-            switch (c) {
-            case 'n': case 'r': case 't': case 'b': case 'f': c = ' '; break;
-            case 'u': {
-                unsigned v = 0;
-                for (int i = 0; i < 4 && isxdigit((unsigned char)*j->p); i++, j->p++)
-                    v = v * 16 + (unsigned)(isdigit((unsigned char)*j->p) ? *j->p - '0' : (tolower((unsigned char)*j->p) - 'a' + 10));
-                c = v >= 32 && v < 127 ? (unsigned char)v : '?';
-                break;
-            }
-            case 0: j->p--; c = 0; break;
-            default: break; /* \" \\ \/ */
-            }
-            if (!c)
-                break;
-        } else if (c >= 0x80) {
-            if ((c & 0xC0) != 0xC0)
-                continue; /* rest of a multibyte char */
-            c = '?';
-        }
-        if (out && k + 1 < n)
-            out[k++] = (char)c;
-    }
-    if (*j->p == '"')
-        j->p++;
-    if (out && n)
-        out[k] = 0;
-    return true;
-}
-
-static double num(js *j)
-{
-    char *end;
-    double v = strtod(j->p, &end);
-    if (end == j->p) {
-        /* null / true / false */
-        while (isalpha((unsigned char)*j->p))
-            j->p++;
-        return 0;
-    }
-    j->p = end;
-    return v;
-}
-
-static void skip(js *j)
-{
-    ws(j);
-    if (*j->p == '"') {
-        str(j, NULL, 0);
-        return;
-    }
-    if (*j->p != '{' && *j->p != '[') {
-        num(j);
-        return;
-    }
-    int depth = 0;
-    while (*j->p) {
-        if (*j->p == '"') {
-            str(j, NULL, 0);
-            continue;
-        }
-        if (*j->p == '{' || *j->p == '[')
-            depth++;
-        else if (*j->p == '}' || *j->p == ']') {
-            if (--depth == 0) {
-                j->p++;
-                return;
-            }
-        }
-        j->p++;
-    }
-}
-
-/* walks an object, handing each key to fn with the reader on its value; fn
- * must consume the value or return false to have it skipped */
-typedef bool (*key_fn)(js *j, const char *key, void *ctx);
-
-static bool object(js *j, key_fn fn, void *ctx)
-{
-    ws(j);
-    if (*j->p != '{')
-        return false;
-    j->p++;
-    for (;;) {
-        ws(j);
-        if (*j->p == '}') {
-            j->p++;
-            return true;
-        }
-        char key[40];
-        if (!str(j, key, sizeof(key)))
-            return false;
-        ws(j);
-        if (*j->p != ':')
-            return false;
-        j->p++;
-        ws(j);
-        if (!fn(j, key, ctx))
-            skip(j);
-        ws(j);
-        if (*j->p == ',')
-            j->p++;
-        else if (*j->p != '}')
-            return false;
-    }
-}
 
 typedef struct {
     int mode;
@@ -170,9 +43,9 @@ static bool diff_key(js *j, const char *key, void *ctx)
 {
     diff_info *d = ctx;
     if (!strcmp(key, "mode_int"))
-        d->mode = (int)num(j);
+        d->mode = (int)json_num(j);
     else if (!strcmp(key, "difficulty_rating"))
-        d->stars = (float)num(j);
+        d->stars = (float)json_num(j);
     else
         return false;
     return true;
@@ -182,30 +55,30 @@ static bool set_key(js *j, const char *key, void *ctx)
 {
     mapdl_set *s = ctx;
     if (!strcmp(key, "id"))
-        s->id = (int)num(j);
+        s->id = (int)json_num(j);
     else if (!strcmp(key, "artist"))
-        str(j, s->artist, sizeof(s->artist));
+        json_str(j, s->artist, sizeof(s->artist));
     else if (!strcmp(key, "title"))
-        str(j, s->title, sizeof(s->title));
+        json_str(j, s->title, sizeof(s->title));
     else if (!strcmp(key, "creator"))
-        str(j, s->creator, sizeof(s->creator));
+        json_str(j, s->creator, sizeof(s->creator));
     else if (!strcmp(key, "beatmaps") && *j->p == '[') {
         j->p++;
         for (;;) {
-            ws(j);
+            json_ws(j);
             if (*j->p == ']') {
                 j->p++;
                 break;
             }
             diff_info d = {-1, 0};
-            if (!object(j, diff_key, &d))
+            if (!json_object(j, diff_key, &d))
                 return true; /* garbage; the outer walk will notice */
             if (d.mode == 0) {
                 s->diffs++;
                 if (d.stars > s->stars)
                     s->stars = d.stars;
             }
-            ws(j);
+            json_ws(j);
             if (*j->p == ',')
                 j->p++;
         }
@@ -217,22 +90,22 @@ static bool set_key(js *j, const char *key, void *ctx)
 int mapdl_parse(const char *json, mapdl_set *out, int max)
 {
     js j = {json};
-    ws(&j);
+    json_ws(&j);
     if (*j.p != '[')
         return -1;
     j.p++;
     int n = 0;
     for (;;) {
-        ws(&j);
+        json_ws(&j);
         if (*j.p == ']' || !*j.p)
             break;
         mapdl_set s;
         memset(&s, 0, sizeof(s));
-        if (!object(&j, set_key, &s))
+        if (!json_object(&j, set_key, &s))
             return n > 0 ? n : -1;
         if (s.id > 0 && s.diffs > 0 && n < max)
             out[n++] = s;
-        ws(&j);
+        json_ws(&j);
         if (*j.p == ',')
             j.p++;
     }

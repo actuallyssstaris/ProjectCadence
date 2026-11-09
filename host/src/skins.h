@@ -37,6 +37,21 @@ typedef struct {
 /* downloads catalog entry i on a worker thread; poll job->state */
 bool skins_install(int i, skin_job *job, bool force);
 
+/* o!rdr's skin list (ordr.issou.best): hundreds of community skins with direct
+ * .osk links, most used first */
+typedef struct {
+    char id[96];      /* folder name, o!rdr's skin name */
+    char name[96];
+    char author[64];
+    char url[256];
+    int used;         /* renders made with it, the popularity order */
+} skin_remote;
+
+void skins_remote_load(void);             /* fetch the list once, in the background */
+int skins_remote_state(void);             /* 0 not asked, 1 loading, 2 ready, 3 failed */
+int skins_remote(const skin_remote **out); /* the list, valid once ready */
+bool skins_install_remote(const skin_remote *r, skin_job *job);
+
 /* the default skin from an older version lacks the HUD and spinner art */
 bool skins_default_outdated(void);
 

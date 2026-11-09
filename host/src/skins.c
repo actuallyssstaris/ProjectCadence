@@ -1,4 +1,5 @@
 #include "skins.h"
+#include "json.h"
 #include "log.h"
 #include "net.h"
 #include "unzip.h"
@@ -7,6 +8,7 @@
 #include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -53,7 +55,7 @@ static const char *default_files[] = {
     "ranking-A-small@2x.png", "ranking-B-small@2x.png", "ranking-C-small@2x.png", "ranking-D-small@2x.png",
 };
 
-static char active[64];
+static char active[128];
 
 bool skins_chosen(void)
 {
@@ -120,7 +122,9 @@ int skins_local(char ids[][64], int max)
 }
 
 typedef struct {
-    int index;
+    char id[96];
+    char name[96];
+    char url[256]; /* empty: the default skin's loose files */
     skin_job *job;
 } work;
 
@@ -130,14 +134,13 @@ static void *install_thread(void *arg)
 {
     work *w = arg;
     skin_job *job = w->job;
-    const skin_entry *e = &skin_catalog[w->index];
     char dir[256], path[512];
 
     mkdir(SKINS_DIR, 0777);
-    skins_path(e->id, dir, sizeof(dir));
+    skins_path(w->id, dir, sizeof(dir));
     mkdir(dir, 0777);
 
-    if (!e->url) {
+    if (!w->url[0]) {
         int n = (int)(sizeof(default_files) / sizeof(default_files[0]));
         job->total = n;
         for (int i = 0; i < n; i++) {
@@ -153,7 +156,7 @@ static void *install_thread(void *arg)
                 continue; /* topping up an older download */
             int st = net_fetch(url, path, &job->bytes);
             if (st != 200) {
-                snprintf(job->msg, sizeof(job->msg), "%s: %s 0x%x", e->name, default_files[i], (unsigned)st);
+                snprintf(job->msg, sizeof(job->msg), "%.60s: %.40s 0x%x", w->name, default_files[i], (unsigned)st);
                 LOG("skins: %s", job->msg);
                 job->state = 3;
                 return NULL;
@@ -162,11 +165,11 @@ static void *install_thread(void *arg)
         }
     } else {
         job->total = 1;
-        snprintf(path, sizeof(path), SKINS_DIR "/%s.osk", e->id);
-        int st = net_fetch(e->url, path, &job->bytes);
+        snprintf(path, sizeof(path), SKINS_DIR "/%s.osk", w->id);
+        int st = net_fetch(w->url, path, &job->bytes);
         if (st != 200) {
             snprintf(job->msg, sizeof(job->msg), "download failed (0x%x)", (unsigned)st);
-            LOG("skins: %s %s", e->id, job->msg);
+            LOG("skins: %s %s", w->id, job->msg);
             job->state = 3;
             return NULL;
         }
@@ -175,12 +178,12 @@ static void *install_thread(void *arg)
         remove(path);
         if (files <= 0) {
             snprintf(job->msg, sizeof(job->msg), "couldn't unpack the .osk");
-            LOG("skins: %s %s", e->id, job->msg);
+            LOG("skins: %s %s", w->id, job->msg);
             job->state = 3;
             return NULL;
         }
         job->done = 1;
-        LOG("skins: %s unpacked, %d files", e->id, files);
+        LOG("skins: %s unpacked, %d files", w->id, files);
     }
     snprintf(job->msg, sizeof(job->msg), "done");
     job->state = 2;
@@ -192,9 +195,9 @@ bool skins_default_outdated(void)
     return skins_installed("default") && access(SKINS_DIR "/default/spinner-top@2x.png", F_OK) != 0;
 }
 
-bool skins_install(int i, skin_job *job, bool force)
+static bool start(const char *id, const char *name, const char *url, skin_job *job, bool force)
 {
-    if (i < 0 || i >= skin_catalog_count || job->state == 1)
+    if (job->state == 1)
         return false;
     memset(job, 0, sizeof(*job));
     job->force = force;
@@ -205,7 +208,11 @@ bool skins_install(int i, skin_job *job, bool force)
         job->state = 3;
         return false;
     }
-    pending = (work){i, job};
+    memset(&pending, 0, sizeof(pending));
+    snprintf(pending.id, sizeof(pending.id), "%s", id);
+    snprintf(pending.name, sizeof(pending.name), "%s", name);
+    snprintf(pending.url, sizeof(pending.url), "%s", url ? url : "");
+    pending.job = job;
     pthread_t t;
     if (pthread_create(&t, NULL, install_thread, &pending) != 0) {
         job->state = 3;
@@ -213,4 +220,132 @@ bool skins_install(int i, skin_job *job, bool force)
     }
     pthread_detach(t);
     return true;
+}
+
+bool skins_install(int i, skin_job *job, bool force)
+{
+    if (i < 0 || i >= skin_catalog_count)
+        return false;
+    const skin_entry *e = &skin_catalog[i];
+    return start(e->id, e->name, e->url, job, force);
+}
+
+bool skins_install_remote(const skin_remote *r, skin_job *job)
+{
+    return start(r->id, r->name, r->url, job, false);
+}
+
+/* ---- o!rdr's list ---- */
+
+#define ORDR_LIST "https://apis.issou.best/ordr/skins?pageSize=1000&page=1"
+#define REMOTE_MAX 1000
+
+static skin_remote *remote;
+static int nremote;
+static volatile int remote_state;
+
+static bool remote_key(js *j, const char *key, void *ctx)
+{
+    skin_remote *r = ctx;
+    if (!strcmp(key, "skin"))
+        json_str(j, r->id, sizeof(r->id));
+    else if (!strcmp(key, "presentationName"))
+        json_str(j, r->name, sizeof(r->name));
+    else if (!strcmp(key, "author"))
+        json_str(j, r->author, sizeof(r->author));
+    else if (!strcmp(key, "url"))
+        json_str(j, r->url, sizeof(r->url));
+    else if (!strcmp(key, "timesUsed"))
+        r->used = (int)json_num(j);
+    else
+        return false;
+    return true;
+}
+
+typedef struct {
+    skin_remote *list;
+    int n;
+} remote_parse;
+
+static bool reply_key(js *j, const char *key, void *ctx)
+{
+    remote_parse *p = ctx;
+    if (strcmp(key, "skins") || *j->p != '[')
+        return false;
+    j->p++;
+    for (;;) {
+        json_ws(j);
+        if (*j->p == ']') {
+            j->p++;
+            break;
+        }
+        skin_remote r;
+        memset(&r, 0, sizeof(r));
+        if (!json_object(j, remote_key, &r))
+            break;
+        /* the id becomes a folder name: nothing that could climb out of skins/ */
+        bool safe = r.id[0] && r.id[0] != '.' && !strchr(r.id, '/') && !strchr(r.id, '\\');
+        if (safe && !strncmp(r.url, "https://", 8) && p->n < REMOTE_MAX)
+            p->list[p->n++] = r;
+        json_ws(j);
+        if (*j->p == ',')
+            j->p++;
+    }
+    return true;
+}
+
+static int by_use(const void *a, const void *b)
+{
+    const skin_remote *x = a, *y = b;
+    return y->used - x->used;
+}
+
+static void *remote_thread(void *arg)
+{
+    (void)arg;
+    char *body = NULL;
+    size_t len = 0;
+    int st = net_get(ORDR_LIST, &body, &len);
+    remote_parse p = {calloc(REMOTE_MAX, sizeof(skin_remote)), 0};
+    if (st == 200 && p.list) {
+        js j = {body};
+        json_object(&j, reply_key, &p);
+    }
+    free(body);
+    if (p.n > 0) {
+        qsort(p.list, (size_t)p.n, sizeof(skin_remote), by_use);
+        remote = p.list;
+        nremote = p.n;
+        remote_state = 2;
+    } else {
+        free(p.list);
+        remote_state = 3;
+    }
+    LOG("skins: o!rdr list -> %d, %d skins", st, p.n);
+    return NULL;
+}
+
+void skins_remote_load(void)
+{
+    if (remote_state == 1 || remote_state == 2)
+        return;
+    if (!net_init()) {
+        remote_state = 3;
+        return;
+    }
+    remote_state = 1;
+    pthread_t t;
+    if (pthread_create(&t, NULL, remote_thread, NULL) != 0) {
+        remote_state = 3;
+        return;
+    }
+    pthread_detach(t);
+}
+
+int skins_remote_state(void) { return remote_state; }
+
+int skins_remote(const skin_remote **out)
+{
+    *out = remote;
+    return remote_state == 2 ? nremote : 0;
 }

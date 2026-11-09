@@ -19,6 +19,7 @@
 #include "skin_ui.h"
 #include "skins.h"
 #include "songs.h"
+#include "stars.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -388,6 +389,9 @@ static void rescan(void)
     app.sel_scroll = (float)app.sel;
     app.previewed = -1;
     app.scores_for = -1;
+    /* everything gets rated in the background, what's on screen first */
+    for (int i = 0; i < app.songs.count; i++)
+        stars_want(app.songs.items[i].file, 0, false);
     LOG("%d maps", app.songs.count);
 }
 
@@ -487,6 +491,28 @@ static void select_frame(const pad_state *pad)
     if (pad->pressed & PAD_L1) { app.offset_ms -= 5; settings_save(); }
     if (pad->pressed & PAD_R1) { app.offset_ms += 5; settings_save(); }
 
+    /* the open set and the selection with the current mods get rated first;
+     * once new numbers land, the open set re-sorts by stars */
+    int open = set_start(app.sel), open_end = set_end(app.sel);
+    for (int i = open; i < open_end; i++)
+        stars_want(app.songs.items[i].file, 0, true);
+    if (stars_mods(app.mods))
+        stars_want(app.songs.items[app.sel].file, stars_mods(app.mods), true);
+    static int seen_gen;
+    if (stars_generation() != seen_gen) {
+        seen_gen = stars_generation();
+        char keep[768];
+        snprintf(keep, sizeof(keep), "%s", app.songs.items[app.sel].file);
+        songs_sort_range(&app.songs, open, open_end);
+        int at = songs_find(&app.songs, keep);
+        if (at >= 0 && at != app.sel) {
+            if (app.previewed == app.sel)
+                app.previewed = at; /* same song, the preview carries on */
+            app.sel = at;
+            app.scores_for = -1;
+        }
+    }
+
     const song_entry *e = &app.songs.items[app.sel];
     if (app.sel != prev) {
         app.status[0] = 0;
@@ -578,7 +604,11 @@ static void render_select(void)
             float x = on ? 940 : 990;
             draw_rect(x, y, GFX_W - x, row - 6, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0.15f, 0.25f, 0.45f, 0.75f));
             uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 0.95f);
-            snprintf(buf, sizeof(buf), "%.90s", in->version);
+            float st = stars_get(e->file, 0);
+            if (st >= 0)
+                snprintf(buf, sizeof(buf), "%.2f*  %.80s", st, in->version);
+            else
+                snprintf(buf, sizeof(buf), "%.90s", in->version);
             draw_text(x + 24, y + 8, 26, tc, ALIGN_LEFT, buf);
             snprintf(buf, sizeof(buf), "CS %.1f  AR %.1f  OD %.1f  HP %.1f", in->cs, in->ar, in->od, in->hp);
             draw_text(x + 24, y + 42, 18, tc, ALIGN_LEFT, buf);
@@ -593,7 +623,21 @@ static void render_select(void)
         uint32_t tc = header ? gfx_rgba(0.15f, 0.1f, 0.02f, 1) : gfx_rgba(1, 1, 1, 0.95f);
         snprintf(buf, sizeof(buf), "%.100s", in->title);
         draw_text(x + 20, y + 8, 26, tc, ALIGN_LEFT, buf);
-        snprintf(buf, sizeof(buf), "%.60s  //  %.40s  //  %d %s", in->artist, in->creator, n, n == 1 ? "difficulty" : "difficulties");
+        /* star range of the set, once every difficulty in it is rated */
+        float lo = 1e9f, hi = -1;
+        for (int i = rows[r].index; i < rows[r].index + n; i++) {
+            float st = stars_get(app.songs.items[i].file, 0);
+            if (st < 0) {
+                hi = -1;
+                break;
+            }
+            lo = fminf(lo, st);
+            hi = fmaxf(hi, st);
+        }
+        char range[32] = "";
+        if (hi >= 0)
+            snprintf(range, sizeof(range), n > 1 ? "  //  %.1f-%.1f*" : "  //  %.2f*", lo, hi);
+        snprintf(buf, sizeof(buf), "%.60s  //  %.40s  //  %d %s%s", in->artist, in->creator, n, n == 1 ? "difficulty" : "difficulties", range);
         draw_text(x + 20, y + 42, 18, tc, ALIGN_LEFT, buf);
     }
 
@@ -603,7 +647,14 @@ static void render_select(void)
     draw_text(60, 126, 26, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, in->artist);
     snprintf(buf, sizeof(buf), "[%.90s] mapped by %.60s", in->version, in->creator);
     draw_text(60, 166, 22, gfx_rgba(1, 1, 1, 0.75f), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "CS %.1f  AR %.1f  OD %.1f  HP %.1f", in->cs, in->ar, in->od, in->hp);
+    const char *selfile = app.songs.items[app.sel].file;
+    float st = stars_get(selfile, 0), mst = stars_mods(app.mods) ? stars_get(selfile, stars_mods(app.mods)) : st;
+    char stars_txt[48] = "";
+    if (st >= 0 && mst >= 0 && fabsf(mst - st) > 0.005f)
+        snprintf(stars_txt, sizeof(stars_txt), "%.2f* (%.2f* with mods)  ", st, mst);
+    else if (st >= 0)
+        snprintf(stars_txt, sizeof(stars_txt), "%.2f*  ", st);
+    snprintf(buf, sizeof(buf), "%sCS %.1f  AR %.1f  OD %.1f  HP %.1f", stars_txt, in->cs, in->ar, in->od, in->hp);
     draw_text(60, 214, 26, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, buf);
 
     char tags[64];
@@ -833,6 +884,7 @@ int main(void)
     settings_load();
     audio_music_volume(app.music_vol);
     scores_load();
+    stars_init();
     LOG("settings read");
     skin_apply(skins_active());
     LOG("skin %s", skins_active());

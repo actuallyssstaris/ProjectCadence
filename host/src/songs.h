@@ -22,5 +22,6 @@ void songs_free(song_list *l);
 /* dir/name, matched case-insensitively if the exact name isn't there */
 bool songs_file(const char *dir, const char *name, char *out, size_t n);
 int songs_find(const song_list *l, const char *file); /* index or -1 */
+void songs_sort_range(song_list *l, int from, int to);
 
 #endif

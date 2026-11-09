@@ -1,4 +1,5 @@
 #include "songs.h"
+#include "stars.h"
 
 #include <dirent.h>
 #include <stdio.h>
@@ -23,7 +24,10 @@ static int cmp(const void *a, const void *b)
     /* keeps each set's difficulties together, song select groups on the folder */
     c = strcmp(x->dir, y->dir);
     if (c) return c;
-    /* same set: rough difficulty order */
+    /* same set: by stars once they're known, a rough guess until then */
+    float sx = stars_get(x->file, 0), sy = stars_get(y->file, 0);
+    if (sx >= 0 && sy >= 0)
+        return sx < sy ? -1 : sx > sy;
     float dx = x->info.od + x->info.ar + x->info.cs, dy = y->info.od + y->info.ar + y->info.cs;
     return dx < dy ? -1 : dx > dy;
 }
@@ -111,6 +115,13 @@ bool songs_file(const char *dir, const char *name, char *out, size_t n)
     }
     closedir(d);
     return found;
+}
+
+/* re-sorts items [from, to) after new star ratings came in */
+void songs_sort_range(song_list *l, int from, int to)
+{
+    if (to - from > 1)
+        qsort(l->items + from, (size_t)(to - from), sizeof(song_entry), cmp);
 }
 
 int songs_find(const song_list *l, const char *file)

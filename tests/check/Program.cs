@@ -55,7 +55,8 @@ foreach (string arg in args)
         bool ok = s.Miss == 0 && s.MaxCombo == expectCombo && s.Accuracy >= 0.9999;
         if (!ok) bad++;
 
-        Console.WriteLine($"{(ok ? "ok  " : "FAIL")} {Path.GetFileNameWithoutExtension(f)} [{mods}]");
+        var sr = Osu5.Stars.StarRating.Calculate(BeatmapDecoder.Decode(f, mods), mods);
+        Console.WriteLine($"{(ok ? "ok  " : "FAIL")} {Path.GetFileNameWithoutExtension(f)} [{mods}] {sr.Stars:F3}* (aim {sr.Aim:F3} speed {sr.Speed:F3} reading {sr.Reading:F3})");
         Console.WriteLine($"     v{map.FormatVersion} {circles}c {sliders}s {spinners}sp  combo {s.MaxCombo}/{expectCombo}  acc {s.Accuracy:P2}  score {s.TotalScore}  300 {s.Great} 100 {s.Ok} 50 {s.Meh} x {s.Miss}  sb {s.SliderBreaks}  ur {s.UnstableRate:F1}");
     }
 }

@@ -64,7 +64,7 @@ namespace Osu5.Objects
 
         public virtual void ApplyDefaults(ControlPoints cp, BeatmapDifficulty diff, int formatVersion)
         {
-            TimePreempt = Difficulty.RangeInt(diff.ApproachRate, PreemptRange);
+            TimePreempt = (float)Difficulty.Range(diff.ApproachRate, PreemptRange);
             TimeFadeIn = 400 * Math.Min(1, TimePreempt / PreemptMin);
             Scale = Difficulty.ScaleFromCircleSize(diff.CircleSize);
         }
