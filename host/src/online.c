@@ -301,6 +301,57 @@ bool online_enabled(void)
     return enabled;
 }
 
+static bool version_key(js *j, const char *key, void *ctx)
+{
+    char *out = ctx;
+    if (strcmp(key, "version") || out[0])
+        return false;
+    char v[32];
+    if (!json_str(j, v, sizeof(v)))
+        return false;
+    /* stable's builds look like 20260924 or 20260924.1; lazer's don't */
+    if (strlen(v) >= 8 && v[0] == '2' && v[4] != '.')
+        snprintf(out, 32, "b%s", v);
+    return true;
+}
+
+static bool builds_key(js *j, const char *key, void *ctx)
+{
+    if (strcmp(key, "builds") || *j->p != '[')
+        return false;
+    j->p++;
+    for (;;) {
+        json_ws(j);
+        if (*j->p == ']') {
+            j->p++;
+            return true;
+        }
+        if (!json_object(j, version_key, ctx))
+            return false;
+        json_ws(j);
+        if (*j->p == ',')
+            j->p++;
+    }
+}
+
+/* the newest osu! stable build, which bancho servers want to see at login */
+bool online_stable_version(char *out, size_t n)
+{
+    if (!enabled || !get_token())
+        return false;
+    char *body;
+    if (api_get("https://osu.ppy.sh/api/v2/changelog?stream=stable40", &body) != 200)
+        return false;
+    char v[32] = "";
+    js j = {body};
+    json_object(&j, builds_key, v);
+    free(body);
+    if (!v[0])
+        return false;
+    snprintf(out, n, "%s", v);
+    return true;
+}
+
 int online_board_for(int beatmap_id, const char *osu_path, online_board *out)
 {
     if (!enabled)

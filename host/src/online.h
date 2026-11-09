@@ -26,8 +26,12 @@ typedef struct {
 
 enum { ONLINE_OFF, ONLINE_LOADING, ONLINE_READY, ONLINE_FAILED };
 
+#include <stddef.h>
+
 void online_init(void);
 bool online_enabled(void);
+/* "b20260924" style; false without API keys or a connection */
+bool online_stable_version(char *out, size_t n);
 
 /* fetches in the background if it isn't cached; returns one of the above and
  * fills out once it's READY */

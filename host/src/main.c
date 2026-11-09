@@ -15,6 +15,8 @@
 #include "preview.h"
 #include "replay.h"
 #include "online.h"
+#include "mp.h"
+#include "md5.h"
 #include "storyboard.h"
 #include "sce.h"
 #include "scores.h"
@@ -66,6 +68,7 @@ typedef enum {
     SCREEN_WIZARD,
     SCREEN_MENU,
     SCREEN_HELP,
+    SCREEN_MP,
 } screen;
 
 static struct {
@@ -94,6 +97,21 @@ static struct {
     bool fav_only;
     double delete_armed;  /* wall ms R3 was pressed once; a second press deletes */
     int ruleset, keys;    /* of the map being played: 0 osu, 1 taiko, 3 mania; mania columns */
+
+    /* multiplayer */
+    bool mp_on;           /* connected or connecting */
+    int mp_kind;          /* MP_CADENCE / MP_BANCHO */
+    char mp_rooms_url[160], mp_bancho[96], mp_user[32], mp_pass[64];
+    mp_state mps;         /* this frame's copy */
+    int mp_sel, mp_cfg;   /* list cursor; field on the connect form */
+    kbd mp_kbd;
+    bool mp_typing;
+    bool mp_pick;         /* song select is choosing the room's map */
+    bool mp_playing, mp_reported, mp_ready;
+    int mp_round_seen, mp_saved_mods;
+    double mp_sent;
+    char mp_map_wanted[33]; /* the room map we last asked the downloader for */
+    char ps_name[32];
     double break_flash;   /* wall ms a combo of 20+ broke */
     double volume_shown;
     float acc[ACC_SAMPLES];
@@ -143,6 +161,10 @@ static struct {
 } app = {.previewed = -1, .scores_for = -1, .new_place = -1};
 
 static void help_open(screen back);
+int sceUserServiceGetUserName(int32_t user, char *name, size_t size);
+static void mp_report(bool failed, bool done);
+static void menu_enter(void);
+static void mp_board(float x, float y, float w, bool compact);
 
 static osu5_draw cmds[MAX_CMDS];
 static float points[MAX_POINTS * 2];
@@ -501,6 +523,14 @@ static void back_to_select(void)
     app.sel_changed = 0;
     app.scores_for = -1;
     app.scr = SCREEN_SELECT;
+    if (app.mp_playing) {
+        /* leaving a room's round early counts as giving up on it */
+        if (!app.mp_reported)
+            mp_report(true, true);
+        app.mp_playing = false;
+        app.mods = app.mp_saved_mods;
+        app.scr = SCREEN_MP;
+    }
 }
 
 static double game_time(void) { return audio_music_time() + app.offset_ms + app.map_offset; }
@@ -614,10 +644,20 @@ static void play_frame(const pad_state *pad, float dt)
     if (pad->pressed & PAD_TRIANGLE && app.last_hud.skip_target > 0)
         audio_music_seek(app.last_hud.skip_target - app.offset_ms);
 
+    /* the room sees our score about once a second */
+    if (app.mp_playing && !app.mp_reported && wall_ms() - app.mp_sent > 1000) {
+        app.mp_sent = wall_ms();
+        mp_report(false, false);
+    }
+
     if (app.last_hud.state == OSU5_STATE_FAILED) {
         app.fail_time = wall_ms();
         app.scr = SCREEN_FAILED;
+        if (app.mp_playing && !app.mp_reported)
+            mp_report(true, true);
     } else if (app.last_hud.state == OSU5_STATE_FINISHED) {
+        if (app.mp_playing && !app.mp_reported)
+            mp_report(false, true);
         if (app.finish_seen == 0) {
             app.finish_seen = wall_ms();
         } else if (wall_ms() - app.finish_seen > 1500) {
@@ -705,6 +745,8 @@ static void render_play(void)
                       ALIGN_CENTRE, app.section_pass ? "O" : "X");
         }
     }
+    if (app.mp_playing)
+        mp_board(20, 200, 300, true);
     if (app.watching)
         draw_text(GFX_W / 2, 20, 30, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "replay");
 }
@@ -806,7 +848,8 @@ static int closest_in_set(int start, int from)
 static void select_frame(const pad_state *pad)
 {
     if (!app.searching && pad->pressed & PAD_CIRCLE) {
-        app.scr = SCREEN_MENU;
+        app.scr = app.mp_pick ? SCREEN_MP : SCREEN_MENU;
+        app.mp_pick = false;
         return;
     }
     /* typing a search: the list follows every key */
@@ -959,7 +1002,16 @@ static void select_frame(const pad_state *pad)
     thumb_tick();
     refresh_scores();
 
-    if (pad->pressed & PAD_CROSS)
+    if (pad->pressed & PAD_CROSS && app.mp_pick) {
+        /* choosing for the room: send it over and go back there */
+        char md5[33] = "", title[200];
+        md5_file(e->file, md5);
+        snprintf(title, sizeof(title), "%.60s - %.80s [%.50s]", e->info.artist, e->info.title, e->info.version);
+        mp_set_map(e->info.beatmap_id, e->info.set_id, e->info.mode, md5, title, app.mods);
+        app.mp_pick = false;
+        app.mp_ready = false;
+        app.scr = SCREEN_MP;
+    } else if (pad->pressed & PAD_CROSS)
         start_song(e);
     else if (pad->pressed & PAD_R2 && app.nscores > 0 && replay_exists(app.scores[0].when))
         watch_replay(e, app.scores[0].when);
@@ -1558,6 +1610,9 @@ static void render_results(void)
     }
     snprintf(buf, sizeof(buf), "accuracy, %.0f%% to 100%%", lo * 100);
     draw_text(ax, gy + gh + 10, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
+
+    if (app.mp_playing)
+        mp_board(1680, 140, 230, true);
 }
 
 /* ---- offset finder: tap along to a click, the average miss is the offset ---- */
@@ -1605,6 +1660,394 @@ static void render_wizard(void)
     draw_text(GFX_W / 2, 860, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "CIRCLE cancel");
 }
 
+/* ---- multiplayer ---- */
+
+#define MP_FILE DATA_DIR "/multiplayer.txt"
+#define CADENCE_ROOMS "https://projectcadence-rooms.le-bg-de-genshin123.workers.dev"
+
+static void mp_load_cfg(void)
+{
+    app.mp_kind = MP_CADENCE;
+    snprintf(app.mp_rooms_url, sizeof(app.mp_rooms_url), "%s", CADENCE_ROOMS);
+    app.mp_bancho[0] = app.mp_pass[0] = 0;
+    snprintf(app.mp_user, sizeof(app.mp_user), "%s", app.ps_name[0] ? app.ps_name : "player");
+    FILE *f = fopen(MP_FILE, "r");
+    if (!f)
+        return;
+    char line[200];
+    char *fields[] = {NULL, app.mp_rooms_url, app.mp_bancho, app.mp_user, app.mp_pass};
+    size_t caps[] = {0, sizeof(app.mp_rooms_url), sizeof(app.mp_bancho), sizeof(app.mp_user), sizeof(app.mp_pass)};
+    for (int i = 0; i < 5 && fgets(line, sizeof(line), f); i++) {
+        line[strcspn(line, "\r\n")] = 0;
+        if (i == 0)
+            app.mp_kind = atoi(line) == MP_BANCHO ? MP_BANCHO : MP_CADENCE;
+        else if (line[0] || i == 4)
+            snprintf(fields[i], caps[i], "%s", line);
+    }
+    fclose(f);
+}
+
+static void mp_save_cfg(void)
+{
+    FILE *f = fopen(MP_FILE, "w");
+    if (!f)
+        return;
+    fprintf(f, "%d\n%s\n%s\n%s\n%s\n", app.mp_kind, app.mp_rooms_url, app.mp_bancho, app.mp_user, app.mp_pass);
+    fclose(f);
+}
+
+static void mp_open(void)
+{
+    if (!app.mp_on)
+        mp_load_cfg();
+    app.mp_sel = 0;
+    app.scr = SCREEN_MP;
+}
+
+static void mp_report(bool failed, bool done)
+{
+    const osu5_hud *h = &app.last_hud;
+    mp_score(h->score, h->combo, h->max_combo, h->accuracy, h->great, h->ok, h->meh, h->miss, failed, done);
+    if (done)
+        app.mp_reported = true;
+}
+
+/* the room's map in our library, -1 if we don't have it */
+static int mp_find_map(const mp_state *s)
+{
+    static char cached_for[48];
+    static int cached = -1, cached_count = -1;
+    char key[48];
+    snprintf(key, sizeof(key), "%d:%s", s->map_id, s->map_md5);
+    if (!strcmp(key, cached_for) && cached_count == app.all.count)
+        return cached;
+    snprintf(cached_for, sizeof(cached_for), "%s", key);
+    cached_count = app.all.count;
+    cached = -1;
+    for (int i = 0; i < app.all.count && cached < 0; i++)
+        if (s->map_id > 0 && app.all.items[i].info.beatmap_id == s->map_id)
+            cached = i;
+    /* maps that never got an id: hash the difficulties of the right set */
+    for (int i = 0; i < app.all.count && cached < 0 && s->map_md5[0]; i++) {
+        const song_entry *e = &app.all.items[i];
+        if (s->map_set > 0 && e->info.set_id != s->map_set)
+            continue;
+        if (s->map_set <= 0 && s->map_id > 0)
+            break;
+        char md5[33];
+        if (md5_file(e->file, md5) && !strcmp(md5, s->map_md5))
+            cached = i;
+    }
+    return cached;
+}
+
+static void mp_tick(void)
+{
+    if (!app.mp_on)
+        return;
+    mp_snapshot(&app.mps);
+    const mp_state *s = &app.mps;
+
+    /* maps the room wants that we don't have come in through the downloader */
+    mapdl_status dl;
+    mapdl_progress(&dl);
+    if (dl.installed != app.seen_installs && !dl.current) {
+        app.seen_installs = dl.installed;
+        rescan();
+    }
+    if (s->in_room && (s->map_id > 0 || s->map_md5[0]) && mp_find_map(s) < 0) {
+        char key[33];
+        snprintf(key, sizeof(key), "%d:%.24s", s->map_id, s->map_md5);
+        if (strcmp(key, app.mp_map_wanted)) {
+            snprintf(app.mp_map_wanted, sizeof(app.mp_map_wanted), "%s", key);
+            mapdl_set want;
+            memset(&want, 0, sizeof(want));
+            want.id = s->map_set;
+            want.beatmap = s->map_id;
+            snprintf(want.title, sizeof(want.title), "%.120s", s->map_title);
+            mapdl_queue(&want);
+            app.mp_ready = false;
+            mp_ready(false, false);
+        }
+    }
+
+    /* a round starting */
+    if (s->in_room && s->state == MP_PLAYING && s->round != app.mp_round_seen && s->go_at > 0 && wall_ms() >= s->go_at &&
+        (app.scr == SCREEN_MP || app.scr == SCREEN_SELECT)) {
+        app.mp_round_seen = s->round;
+        app.mp_pick = false;
+        int idx = mp_find_map(s);
+        if (idx >= 0) {
+            app.mp_saved_mods = app.mods;
+            app.mods = s->mods;
+            app.mp_playing = true;
+            app.mp_reported = false;
+            app.mp_sent = 0;
+            if (!start_song(&app.all.items[idx])) {
+                app.mp_playing = false;
+                app.mods = app.mp_saved_mods;
+                mp_score(0, 0, 0, 0, 0, 0, 0, 0, true, true);
+                app.scr = SCREEN_MP;
+            }
+        } else {
+            mp_score(0, 0, 0, 0, 0, 0, 0, 0, true, true); /* sit this one out */
+        }
+    }
+}
+
+static void mp_frame(const pad_state *pad)
+{
+    if (app.mp_typing) {
+        int k = kbd_frame(&app.mp_kbd, pad);
+        if (k != KBD_TYPING) {
+            app.mp_typing = false;
+            mp_save_cfg();
+        }
+        return;
+    }
+    const mp_state *s = &app.mps;
+    bool bancho = app.mp_kind == MP_BANCHO;
+
+    if (!app.mp_on || s->conn == MP_FAILED || s->conn == MP_OFF) {
+        /* the connect form: server, address, name, password, connect */
+        if (app.mp_on && (s->conn == MP_FAILED || s->conn == MP_OFF))
+            app.mp_on = false;
+        int rows = 5;
+        app.mp_cfg = (app.mp_cfg + pad->nav_y + rows) % rows;
+        if (!bancho && app.mp_cfg == 3)
+            app.mp_cfg = pad->nav_y < 0 ? 2 : 4;
+        if (app.mp_cfg == 0 && (pad->nav_x || pad->pressed & PAD_CROSS)) {
+            app.mp_kind = bancho ? MP_CADENCE : MP_BANCHO;
+            mp_save_cfg();
+        } else if (pad->pressed & PAD_CROSS && app.mp_cfg >= 1 && app.mp_cfg <= 3) {
+            char *field = app.mp_cfg == 1 ? (bancho ? app.mp_bancho : app.mp_rooms_url) : app.mp_cfg == 2 ? app.mp_user : app.mp_pass;
+            size_t cap = app.mp_cfg == 1 ? (bancho ? sizeof(app.mp_bancho) : sizeof(app.mp_rooms_url))
+                       : app.mp_cfg == 2 ? sizeof(app.mp_user) : sizeof(app.mp_pass);
+            app.mp_kbd.text = field;
+            app.mp_kbd.cap = cap;
+            app.mp_typing = true;
+        } else if (pad->pressed & PAD_CROSS && app.mp_cfg == 4) {
+            if (bancho && (!app.mp_bancho[0] || !app.mp_pass[0])) {
+                snprintf(app.status, sizeof(app.status), "a bancho server needs its address and your password");
+            } else {
+                app.status[0] = 0;
+                mp_connect(app.mp_kind, bancho ? app.mp_bancho : app.mp_rooms_url, app.mp_user, app.mp_pass);
+                app.mp_on = true;
+                app.mp_sel = 0;
+                app.mp_round_seen = 0;
+                app.mp_map_wanted[0] = 0;
+                mp_snapshot(&app.mps);
+            }
+        }
+        if (pad->pressed & PAD_CIRCLE)
+            menu_enter();
+        return;
+    }
+
+    if (s->conn == MP_CONNECTING) {
+        if (pad->pressed & PAD_CIRCLE) {
+            mp_disconnect();
+            app.mp_on = false;
+        }
+        return;
+    }
+
+    if (!s->in_room) {
+        int rows = 1 + s->nrooms;
+        app.mp_sel = (app.mp_sel + pad->nav_y + rows) % rows;
+        if (pad->pressed & PAD_CROSS) {
+            app.mp_ready = false;
+            if (app.mp_sel == 0) {
+                char name[64];
+                snprintf(name, sizeof(name), "%.24s's room", app.mp_user);
+                mp_create(name);
+            } else {
+                mp_join(s->rooms[app.mp_sel - 1].id);
+            }
+        }
+        if (pad->pressed & PAD_TRIANGLE)
+            mp_refresh();
+        if (pad->pressed & PAD_CIRCLE) {
+            mp_disconnect();
+            app.mp_on = false;
+        }
+        return;
+    }
+
+    /* in a room */
+    bool have = mp_find_map(s) >= 0;
+    if (pad->pressed & PAD_CROSS && s->state != MP_PLAYING) {
+        app.mp_ready = !app.mp_ready && have;
+        mp_ready(app.mp_ready, have);
+    }
+    if (s->i_host && pad->pressed & PAD_SQUARE && s->state != MP_PLAYING) {
+        app.mp_pick = true;
+        app.scr = SCREEN_SELECT;
+    }
+    if (s->i_host && pad->pressed & PAD_TRIANGLE && s->state != MP_PLAYING)
+        mp_start();
+    if (pad->pressed & PAD_CIRCLE) {
+        mp_leave();
+        app.mp_ready = false;
+        app.mp_sel = 0;
+    }
+}
+
+static int by_score(const void *a, const void *b)
+{
+    const mp_member *x = a, *y = b;
+    return y->score > x->score ? 1 : y->score < x->score ? -1 : 0;
+}
+
+/* everyone's score, best first; used in play and on results */
+static void mp_board(float x, float y, float w, bool compact)
+{
+    mp_member m[MP_MAX_MEMBERS];
+    int n = app.mps.nmembers;
+    memcpy(m, app.mps.members, sizeof(m[0]) * (size_t)n);
+    qsort(m, (size_t)n, sizeof(m[0]), by_score);
+    char buf[96];
+    float rh = compact ? 46 : 64;
+    draw_rect(x, y, w, 12 + n * rh, gfx_rgba(0, 0, 0, 0.55f));
+    for (int i = 0; i < n; i++) {
+        float ry = y + 6 + i * rh;
+        if (m[i].me)
+            draw_rect(x, ry, w, rh - 4, gfx_rgba(0.5f, 0.9f, 0.95f, 0.18f));
+        snprintf(buf, sizeof(buf), "%d  %.20s", i + 1, m[i].name);
+        draw_text(x + 12, ry + 6, compact ? 20 : 24, m[i].failed ? gfx_rgba(1, 0.5f, 0.5f, 0.9f) : gfx_rgba(1, 1, 1, 0.95f),
+                  ALIGN_LEFT, buf);
+        if (!compact)
+            snprintf(buf, sizeof(buf), "%d   %.2f%%   %dx", m[i].score, m[i].acc * 100, m[i].max_combo);
+        else
+            snprintf(buf, sizeof(buf), "%d   %dx", m[i].score, m[i].combo);
+        draw_text(x + 12, ry + (compact ? 26 : 34), compact ? 16 : 20, gfx_rgba(1, 0.85f, 0.4f, 0.9f), ALIGN_LEFT, buf);
+    }
+}
+
+static void render_mp(void)
+{
+    draw_background(0.75f);
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.03f, 0.04f, 0.09f, 0.55f));
+    const mp_state *s = &app.mps;
+    bool bancho = app.mp_kind == MP_BANCHO;
+    char buf[300];
+    draw_text(120, 70, 52, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "multiplayer");
+
+    if (!app.mp_on || s->conn == MP_FAILED || s->conn == MP_OFF) {
+        const char *labels[5] = {"server", bancho ? "bancho address" : "room server", "name", "password", "connect"};
+        char vals[5][170];
+        snprintf(vals[0], sizeof(vals[0]), "%s", bancho ? "bancho server (bancho.py)" : "ProjectCadence rooms");
+        snprintf(vals[1], sizeof(vals[1]), "%s", bancho ? (app.mp_bancho[0] ? app.mp_bancho : "e.g. example.com") : app.mp_rooms_url);
+        snprintf(vals[2], sizeof(vals[2]), "%s", app.mp_user);
+        size_t pl = strlen(app.mp_pass);
+        memset(vals[3], '*', pl < 20 ? pl : 20);
+        vals[3][pl < 20 ? pl : 20] = 0;
+        vals[4][0] = 0;
+        for (int i = 0; i < 5; i++) {
+            if (i == 3 && !bancho)
+                continue;
+            float y = 200 + i * 90;
+            bool on = i == app.mp_cfg;
+            draw_rect(120, y, 1680, 76, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
+            uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 1);
+            draw_text(150, y + 22, 30, tc, ALIGN_LEFT, labels[i]);
+            draw_text(1770, y + 22, 30, tc, ALIGN_RIGHT, vals[i]);
+        }
+        const char *err = s->error[0] ? s->error : app.status;
+        if (err[0])
+            draw_text(120, 680, 26, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, err);
+        if (bancho)
+            draw_text(120, 730, 22, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT,
+                      "your account on that server; the password is kept on this console only");
+        if (app.mp_typing)
+            kbd_render(&app.mp_kbd);
+        return;
+    }
+
+    if (s->conn == MP_CONNECTING) {
+        draw_text(GFX_W / 2, 480, 40, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, "connecting...");
+        return;
+    }
+
+    if (s->online > 0)
+        snprintf(buf, sizeof(buf), "%s as %s   -   %d online", bancho ? app.mp_bancho : "ProjectCadence rooms", app.mp_user,
+                 s->online);
+    else
+        snprintf(buf, sizeof(buf), "%s as %s", bancho ? app.mp_bancho : "ProjectCadence rooms", app.mp_user);
+    draw_text(GFX_W - 120, 90, 24, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_RIGHT, buf);
+
+    if (!s->in_room) {
+        int rows = 1 + s->nrooms;
+        for (int i = 0; i < rows && i < 9; i++) {
+            float y = 190 + i * 88;
+            bool on = i == app.mp_sel;
+            draw_rect(120, y, 1680, 76, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0, 0, 0, 0.5f));
+            uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 1);
+            if (i == 0) {
+                draw_text(150, y + 22, 30, tc, ALIGN_LEFT, "+  make a room");
+                continue;
+            }
+            const mp_room_brief *r = &s->rooms[i - 1];
+            draw_text(150, y + 10, 28, tc, ALIGN_LEFT, r->name);
+            snprintf(buf, sizeof(buf), "%d playing here%s   %.80s", r->players, r->playing ? ", mid round" : "", r->map);
+            draw_text(150, y + 46, 18, tc, ALIGN_LEFT, buf);
+        }
+        if (s->nrooms == 0)
+            draw_text(120, 300, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "no rooms open yet");
+        if (s->error[0])
+            draw_text(120, GFX_H - 120, 24, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, s->error);
+        return;
+    }
+
+    /* the room */
+    draw_text(120, 150, 36, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, s->room_name);
+    bool have = mp_find_map(s) >= 0;
+    if (s->map_title[0])
+        snprintf(buf, sizeof(buf), "%.140s%s", s->map_title, have ? "" : "   (downloading...)");
+    else
+        snprintf(buf, sizeof(buf), "%s", s->i_host ? "pick a map with SQUARE" : "the host is picking a map");
+    draw_rect(120, 210, 1100, 70, gfx_rgba(0, 0, 0, 0.5f));
+    draw_text(140, 230, 28, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, buf);
+    char tags[64];
+    mod_tags(s->mods, tags, sizeof(tags));
+    if (tags[0])
+        draw_text(1200, 232, 26, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, tags);
+
+    if (s->state == MP_RESULTS) {
+        draw_text(120, 310, 30, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "last round");
+        mp_board(120, 350, 1100, false);
+    } else {
+        for (int i = 0; i < s->nmembers; i++) {
+            const mp_member *m = &s->members[i];
+            float y = 310 + i * 60;
+            draw_rect(120, y, 1100, 52, m->me ? gfx_rgba(0.5f, 0.9f, 0.95f, 0.2f) : gfx_rgba(0, 0, 0, 0.45f));
+            snprintf(buf, sizeof(buf), "%s%s", m->name, m->host ? "   (host)" : "");
+            draw_text(140, y + 12, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+            const char *tag = s->state == MP_PLAYING ? (m->done ? "done" : "playing") : !m->has_map ? "no map yet" : m->ready ? "ready" : "";
+            draw_text(1200, y + 14, 24, m->ready ? gfx_rgba(0.5f, 1, 0.6f, 1) : gfx_rgba(1, 0.75f, 0.4f, 1), ALIGN_RIGHT, tag);
+        }
+    }
+
+    /* what this player can do here, kept short */
+    float hy = 310;
+    draw_rect(1280, hy, 520, s->i_host ? 230 : 130, gfx_rgba(0, 0, 0, 0.5f));
+    draw_text(1300, hy + 20, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, app.mp_ready ? "CROSS  not ready" : "CROSS  ready");
+    draw_text(1300, hy + 70, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "CIRCLE  leave");
+    if (s->i_host) {
+        draw_text(1300, hy + 120, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "SQUARE  pick the map");
+        draw_text(1300, hy + 170, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "TRIANGLE  start");
+    }
+    if (s->state == MP_PLAYING && s->go_at > 0) {
+        double left = s->go_at - wall_ms();
+        if (left > 0) {
+            snprintf(buf, sizeof(buf), "starting in %.0f", ceil(left / 1000));
+            draw_text(GFX_W / 2, 900, 44, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, buf);
+        }
+    }
+    if (s->error[0])
+        draw_text(120, GFX_H - 100, 24, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, s->error);
+}
+
 /* ---- controls pages: shown once on the first launch, and from settings ---- */
 
 static const struct help_page {
@@ -1643,6 +2086,16 @@ static const struct help_page {
         {"CIRCLE", "back to song select"},
         {"D-PAD left / right", "this map's offset, while paused"},
         {"SQUARE", "watch the replay, on results"},
+    }},
+    {"multiplayer", {
+        {"main menu", "multiplayer, then connect"},
+        {"server", "ProjectCadence rooms, or a bancho.py server"},
+        {"CROSS on a room", "join it, or make your own at the top"},
+        {"CROSS in a room", "ready / not ready"},
+        {"SQUARE, host", "pick the map (and its mods) in song select"},
+        {"TRIANGLE, host", "start once everyone's ready"},
+        {"CIRCLE", "leave the room"},
+        {"missing maps", "download by themselves"},
     }},
     {"taiko and mania", {
         {"taiko: L2  R2  DOWN  CROSS", "don (red)"},
@@ -1701,7 +2154,7 @@ static void render_help(void)
 
 /* ---- main menu ---- */
 
-enum { MENU_PLAY, MENU_MAPS, MENU_SKINS, MENU_SETTINGS, MENU_COUNT };
+enum { MENU_PLAY, MENU_MULTI, MENU_MAPS, MENU_SKINS, MENU_SETTINGS, MENU_COUNT };
 
 static void menu_enter(void)
 {
@@ -1752,6 +2205,7 @@ static void menu_frame(const pad_state *pad)
     case MENU_MAPS: mapdl_ui_open(); app.scr = SCREEN_DOWNLOAD; break;
     case MENU_SKINS: skin_ui_open(false); app.scr = SCREEN_SKINS; break;
     case MENU_SETTINGS: app.set_sel = 0; app.scr = SCREEN_SETTINGS; break;
+    case MENU_MULTI: mp_open(); break;
     }
 }
 
@@ -1772,13 +2226,24 @@ static void render_menu(void)
     }
     draw_text(cx, cy + size / 2 + 50, 48, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "ProjectCadence");
 
-    static const char *items[MENU_COUNT] = {"play", "get maps", "skins", "settings"};
+    static const char *items[MENU_COUNT] = {"play", "multiplayer", "get maps", "skins", "settings"};
     for (int i = 0; i < MENU_COUNT; i++) {
         bool on = i == app.menu_sel;
         float x = on ? 1100 : 1140, y = 330 + i * 110;
         draw_rect(x, y, GFX_W - x, 90, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0, 0, 0, 0.55f));
         draw_rect(x, y, 10, 90, gfx_rgba(0.5f, 0.9f, 0.95f, on ? 1 : 0.5f));
         draw_text(x + 50, y + 26, 40, on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, items[i]);
+        if (i == MENU_MULTI) {
+            /* who's around right now */
+            int n = app.mp_on && app.mps.online > 0 ? app.mps.online
+                  : mp_peek_online(app.mp_kind, app.mp_kind == MP_BANCHO ? app.mp_bancho : app.mp_rooms_url);
+            if (n >= 0) {
+                char cb[32];
+                snprintf(cb, sizeof(cb), "%d online", n);
+                draw_text(GFX_W - 60, y + 32, 26, on ? gfx_rgba(0.1f, 0.45f, 0.5f, 1) : gfx_rgba(0.5f, 0.9f, 0.95f, 1),
+                          ALIGN_RIGHT, cb);
+            }
+        }
     }
 
     if (app.songs.count > 0) {
@@ -1814,6 +2279,8 @@ int main(void)
     sceUserServiceInitialize(&up);
     int32_t user = -1;
     sceUserServiceGetInitialUser(&user);
+    if (sceUserServiceGetUserName(user, app.ps_name, sizeof(app.ps_name)) != 0)
+        app.ps_name[0] = 0;
     LOG("user %d", user);
 
     if (!gfx_init())
@@ -1847,6 +2314,7 @@ int main(void)
     }
     rescan();
     restore_selection();
+    mp_load_cfg();
     if (app.scr == SCREEN_SELECT) {
         menu_enter();
         if (!app.onboarded)
@@ -1864,6 +2332,7 @@ int main(void)
 
         pad_state pad;
         input_poll(&pad);
+        mp_tick();
 
         if (app.topup.state >= 2) {
             if (app.topup.state == 2 && !strcmp(skins_active(), "default") && app.scr != SCREEN_PLAY)
@@ -1891,7 +2360,7 @@ int main(void)
                 app.scr = SCREEN_PLAY;
             } else if (pad.pressed & PAD_CIRCLE) {
                 back_to_select();
-            } else if (pad.pressed & PAD_TRIANGLE) {
+            } else if (pad.pressed & PAD_TRIANGLE && !app.mp_playing) {
                 start_song(app.playing);
             }
             break;
@@ -1900,12 +2369,16 @@ int main(void)
             double k = (wall_ms() - app.fail_time) / 1500.0;
             audio_music_volume(app.music_vol * (float)fmax(0, 1 - k));
             if (k > 1) audio_music_stop();
-            if (pad.pressed & PAD_CROSS) start_song(app.playing);
-            else if (pad.pressed & PAD_CIRCLE) back_to_select();
+            if (pad.pressed & PAD_CROSS && !app.mp_playing) start_song(app.playing);
+            else if (pad.pressed & (PAD_CIRCLE | PAD_CROSS)) back_to_select();
             break;
         }
         case SCREEN_RESULTS:
-            if (pad.pressed & PAD_CROSS) {
+            if (app.mp_playing) {
+                /* a room round: back to the room, no retries */
+                if (pad.pressed & (PAD_CIRCLE | PAD_CROSS))
+                    back_to_select();
+            } else if (pad.pressed & PAD_CROSS) {
                 /* after a replay, retry means playing it yourself */
                 if (app.watching) {
                     app.watching = false;
@@ -1945,6 +2418,9 @@ int main(void)
             break;
         case SCREEN_HELP:
             help_frame(&pad);
+            break;
+        case SCREEN_MP:
+            mp_frame(&pad);
             break;
         }
 
@@ -2000,6 +2476,9 @@ int main(void)
             else
                 draw_background(0.7f);
             render_help();
+            break;
+        case SCREEN_MP:
+            render_mp();
             break;
         }
         gfx_end();

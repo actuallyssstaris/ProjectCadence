@@ -1,0 +1,13 @@
+name = "projectcadence-rooms"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# every room lives in one object; plenty for a small community and keeps it simple
+[[durable_objects.bindings]]
+name = "ROOMS"
+class_name = "Rooms"
+
+# the free plan only has SQLite-backed objects (we don't store anything anyway)
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Rooms"]

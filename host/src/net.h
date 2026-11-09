@@ -16,5 +16,8 @@ int net_get(const char *url, char **out, size_t *len);
 
 /* any method; headers are name, value pairs ending in NULL; body may be NULL */
 int net_request(const char *method, const char *url, const char *const *headers, const char *body, char **out, size_t *len);
+/* binary body; the response's headers land in resp_headers when it's given */
+int net_request_raw(const char *method, const char *url, const char *const *headers, const void *body, size_t blen,
+                    char **out, size_t *len, char *resp_headers, size_t hcap);
 
 #endif

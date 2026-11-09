@@ -279,6 +279,26 @@ static void *download_thread(void *arg)
         pthread_mutex_unlock(&lock);
 
         char zip[128], url[160], dir[512];
+        if (s.id <= 0 && s.beatmap > 0) {
+            /* multiplayer hands us a difficulty; the mirror knows its set */
+            char *body;
+            size_t len;
+            snprintf(url, sizeof(url), "https://catboy.best/api/v2/b/%d", s.beatmap);
+            if (net_get(url, &body, &len) == 200) {
+                const char *k = strstr(body, "\"beatmapset_id\"");
+                if (k && (k = strchr(k, ':')))
+                    s.id = atoi(k + 1);
+                free(body);
+            }
+            LOG("mapdl: difficulty %d is in set %d", s.beatmap, s.id);
+            if (s.id <= 0) {
+                pthread_mutex_lock(&lock);
+                current = 0;
+                snprintf(status_msg, sizeof(status_msg), "couldn't find that map on the mirror");
+                pthread_mutex_unlock(&lock);
+                continue;
+            }
+        }
         snprintf(zip, sizeof(zip), SONGS_DIR "/.dl-%d.osz", s.id);
 
         /* with the video when there is one: they play behind the map now */

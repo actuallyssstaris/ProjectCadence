@@ -18,6 +18,7 @@ int sceHttp2SetTimeOut(int id, uint32_t usec);
 int sceHttp2CreateRequestWithURL(int tmpl, const char *method, const char *url, uint64_t content_length);
 int sceHttp2DeleteRequest(int req);
 int sceHttp2AddRequestHeader(int req, const char *name, const char *value, uint32_t mode);
+int sceHttp2GetAllResponseHeaders(int req, char **headers, size_t *size);
 int sceHttp2SendRequest(int req, const void *data, size_t size);
 int sceHttp2GetStatusCode(int req, int *status);
 int sceHttp2ReadData(int req, void *buf, size_t size);
@@ -49,12 +50,12 @@ bool net_init(void)
 
 /* sends the request; > 0 is a request id with a 200 behind it, otherwise the
  * status or error to hand back */
-static int open_req(const char *method, const char *url, const char *const *headers, const char *body, int *req_out)
+static int open_req(const char *method, const char *url, const char *const *headers, const char *body, size_t blen, int *req_out)
 {
     if (tmpl < 0 && !net_init())
         return -1;
 
-    size_t blen = body ? strlen(body) : 0;
+
     int req = sceHttp2CreateRequestWithURL(tmpl, method, url, blen);
     if (req < 0)
         return req;
@@ -79,7 +80,7 @@ static int open_req(const char *method, const char *url, const char *const *head
 
 static int open_get(const char *url, int *req_out)
 {
-    return open_req("GET", url, NULL, NULL, req_out);
+    return open_req("GET", url, NULL, NULL, 0, req_out);
 }
 
 int net_fetch(const char *url, const char *path, volatile uint64_t *got)
@@ -119,12 +120,20 @@ int net_get(const char *url, char **out, size_t *len)
     return net_request("GET", url, NULL, NULL, out, len);
 }
 
-int net_request(const char *method, const char *url, const char *const *headers, const char *body, char **out, size_t *len)
+int net_request_raw(const char *method, const char *url, const char *const *headers, const void *body, size_t blen,
+                    char **out, size_t *len, char *resp_headers, size_t hcap)
 {
     *out = NULL;
     *len = 0;
     int req;
-    int st = open_req(method, url, headers, body, &req);
+    int st = open_req(method, url, headers, body, blen, &req);
+    if (st == 200 && resp_headers && hcap) {
+        char *h = NULL;
+        size_t hn = 0;
+        resp_headers[0] = 0;
+        if (sceHttp2GetAllResponseHeaders(req, &h, &hn) == 0 && h)
+            snprintf(resp_headers, hcap, "%.*s", (int)hn, h);
+    }
     if (st != 200)
         return st;
 
@@ -154,4 +163,9 @@ int net_request(const char *method, const char *url, const char *const *headers,
     *out = buf;
     *len = n;
     return 200;
+}
+
+int net_request(const char *method, const char *url, const char *const *headers, const char *body, char **out, size_t *len)
+{
+    return net_request_raw(method, url, headers, body, body ? strlen(body) : 0, out, len, NULL, 0);
 }

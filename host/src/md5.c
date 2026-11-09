@@ -66,6 +66,8 @@ static void update(md5_ctx *c, const uint8_t *p, size_t n)
     }
 }
 
+static void finish(md5_ctx *cp, char hex[33]);
+
 bool md5_file(const char *path, char hex[33])
 {
     FILE *f = fopen(path, "rb");
@@ -77,7 +79,20 @@ bool md5_file(const char *path, char hex[33])
     while ((n = fread(buf, 1, sizeof(buf), f)) > 0)
         update(&c, buf, n);
     fclose(f);
+    finish(&c, hex);
+    return true;
+}
 
+void md5_text(const char *s, char hex[33])
+{
+    md5_ctx c = {{0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476}, 0, {0}, 0};
+    update(&c, (const uint8_t *)s, strlen(s));
+    finish(&c, hex);
+}
+
+static void finish(md5_ctx *cp, char hex[33])
+{
+    md5_ctx c = *cp;
     uint64_t bits = c.len * 8;
     uint8_t pad = 0x80, zero = 0;
     update(&c, &pad, 1);
@@ -89,5 +104,4 @@ bool md5_file(const char *path, char hex[33])
     }
     for (int i = 0; i < 16; i++)
         snprintf(hex + i * 2, 3, "%02x", (c.h[i / 4] >> (8 * (i % 4))) & 0xFF);
-    return true;
 }

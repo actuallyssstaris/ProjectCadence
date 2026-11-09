@@ -18,6 +18,7 @@ typedef struct {
     float stars;   /* the hardest of them */
     bool video;
     char status[16]; /* ranked, loved, graveyard... */
+    int beatmap;     /* id 0 and this set: look the set up from one of its difficulties */
 } mapdl_set;
 
 typedef struct {
