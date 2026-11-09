@@ -16,6 +16,9 @@ Copy homebrew/PPSA70727 to /data/homebrew/ on the console and osu5/ to /data/
 "osu!" from the home screen.
 
 Put your own maps in /data/osu5/Songs/<folder>/ (extract the .osz, it's a zip).
+
+First launch asks for a skin and downloads it (the console needs internet for
+that). Your own skins go in /data/osu5/skins/<name>/ (unzip the .osk).
 EOF
 
 cd "$root/build/package"
