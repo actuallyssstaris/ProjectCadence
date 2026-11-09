@@ -1,5 +1,6 @@
-/* Looks at the latest GitHub release once at start, and on request puts its
- * homebrew/PPSA70727 over the installed one. The new build runs next launch. */
+/* Looks at the latest GitHub release once at start. On request it downloads and
+ * unpacks it, and hands the copying to a small helper run by the ELF loader
+ * (tools/updater), which finishes once the game is closed. */
 #include "update.h"
 #include "json.h"
 #include "log.h"
@@ -7,6 +8,7 @@
 #include "unzip.h"
 
 #include <dirent.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -18,6 +20,9 @@
 #define ZIP "/data/cadence/update.zip"
 #define STAGE "/data/cadence/.update"
 #define APP_DIR "/data/homebrew/PPSA70727"
+#define JOB "/data/cadence/update-job.txt"
+#define HELPER "/app0/assets/updater.elf"
+#define LOADER_PORT 9021
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static update_info info;
@@ -100,42 +105,6 @@ void update_check(void)
         pthread_detach(t);
 }
 
-static bool copy_file(const char *from, const char *to)
-{
-    FILE *in = fopen(from, "rb"), *out = in ? fopen(to, "wb") : NULL;
-    bool ok = in && out;
-    char buf[64 * 1024];
-    size_t n;
-    while (ok && (n = fread(buf, 1, sizeof(buf), in)) > 0)
-        ok = fwrite(buf, 1, n, out) == n;
-    if (in) fclose(in);
-    if (out) ok &= fclose(out) == 0;
-    return ok;
-}
-
-static bool copy_tree(const char *from, const char *to)
-{
-    DIR *d = opendir(from);
-    if (!d)
-        return false;
-    mkdir(to, 0777);
-    bool ok = true;
-    struct dirent *e;
-    while ((e = readdir(d))) {
-        if (e->d_name[0] == '.')
-            continue;
-        char a[1024], b[1024];
-        snprintf(a, sizeof(a), "%s/%s", from, e->d_name);
-        snprintf(b, sizeof(b), "%s/%s", to, e->d_name);
-        struct stat st;
-        if (stat(a, &st) != 0)
-            continue;
-        ok &= S_ISDIR(st.st_mode) ? copy_tree(a, b) : copy_file(a, b);
-    }
-    closedir(d);
-    return ok;
-}
-
 static void remove_tree(const char *path)
 {
     DIR *d = opendir(path);
@@ -153,6 +122,52 @@ static void remove_tree(const char *path)
     }
     closedir(d);
     rmdir(path);
+}
+
+int sceNetSocket(const char *name, int family, int type, int protocol);
+int sceNetConnect(int s, const void *addr, uint32_t len);
+int sceNetSend(int s, const void *buf, size_t len, int flags);
+int sceNetSocketClose(int s);
+
+/* the helper goes to the console's ELF loader, which runs it outside our sandbox */
+static bool send_helper(void)
+{
+    FILE *f = fopen(HELPER, "rb");
+    if (!f) {
+        LOG("update: no %s", HELPER);
+        return false;
+    }
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char *elf = n > 0 ? malloc((size_t)n) : NULL;
+    bool read_ok = elf && fread(elf, 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    if (!read_ok) {
+        free(elf);
+        return false;
+    }
+
+    struct {
+        uint8_t len, family;
+        uint16_t port;
+        uint32_t addr;
+        uint8_t zero[8];
+    } sa = {16, 2, (uint16_t)((LOADER_PORT >> 8) | (LOADER_PORT << 8 & 0xFF00)), 0x0100007F, {0}};
+    int s = sceNetSocket("cadence-update", 2, 1, 0);
+    bool ok = s >= 0 && sceNetConnect(s, &sa, sizeof(sa)) >= 0;
+    for (long sent = 0; ok && sent < n;) {
+        int k = sceNetSend(s, elf + sent, (size_t)(n - sent), 0);
+        if (k <= 0)
+            ok = false;
+        else
+            sent += k;
+    }
+    if (s >= 0)
+        sceNetSocketClose(s);
+    free(elf);
+    LOG("update: helper %s", ok ? "sent" : "not sent");
+    return ok;
 }
 
 static void finish(int state, const char *msg)
@@ -188,12 +203,22 @@ static void *install_thread(void *arg)
             snprintf(src, sizeof(src), STAGE "/%s/homebrew/PPSA70727", e->d_name);
     if (d)
         closedir(d);
-    bool ok = src[0] && copy_tree(src, APP_DIR);
-    remove_tree(STAGE);
-    if (ok)
-        finish(UPDATE_DONE, "updated: close ProjectCadence and open it again");
+    if (!src[0]) {
+        remove_tree(STAGE);
+        finish(UPDATE_FAILED, "the update archive had no app folder in it");
+        return NULL;
+    }
+
+    /* our sandbox can't write the app folder: the helper does it once we're closed */
+    FILE *job = fopen(JOB, "w");
+    if (job) {
+        fprintf(job, "%s\n%s\n%d\n%s\n", src, APP_DIR, (int)getpid(), info.latest);
+        fclose(job);
+    }
+    if (job && send_helper())
+        finish(UPDATE_DONE, "ready: close ProjectCadence (PS button) and it finishes by itself");
     else
-        finish(UPDATE_FAILED, "couldn't write the new files; copy the release over FTP instead");
+        finish(UPDATE_FAILED, "the ELF loader (port 9021) isn't running; copy the release over FTP instead");
     return NULL;
 }
 

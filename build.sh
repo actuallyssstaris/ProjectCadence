@@ -141,5 +141,8 @@ mkdir -p "$app/sce_sys" "$app/sce_module"
 cp "$root/sce_sys/param.json" "$root/sce_sys/icon0.png" "$app/sce_sys/"
 mkdir -p "$app/assets"
 cp "$root/host/fonts/Inter-SemiBold.ttf" "$root/host/fonts/Inter-LICENSE.txt" "$app/assets/"
+# the helper that finishes in-game updates from outside the sandbox
+bash "$root/tools/updater/build.sh"
+cp "$root/tools/updater/updater.elf" "$app/assets/"
 cp "$pv/runtime/libc.prx" "$app/sce_module/libc.prx"
 printf 'built %s (eboot %s bytes)\n' "$app" "$(stat -c %s "$app/eboot.bin")"
