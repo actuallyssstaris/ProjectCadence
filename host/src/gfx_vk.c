@@ -106,6 +106,7 @@ typedef struct {
 typedef struct {
     int tex;
     uint32_t first, count;
+    bool add;
 } draw_range;
 
 static struct {
@@ -139,7 +140,8 @@ static struct {
     VkDescriptorPool desc_pool;
     VkSampler sampler;
     VkPipelineLayout layout;
-    VkPipeline pipeline;
+    VkPipeline pipeline, pipeline_add;
+    bool additive;
 
     VkBuffer inst_buf;
     VkDeviceMemory inst_mem;
@@ -538,6 +540,13 @@ static bool create_pipeline(void)
         .layout = g.layout,
     };
     VkResult r = vkCreateGraphicsPipelines(g.dev, VK_NULL_HANDLE, 1, &gp, NULL, &g.pipeline);
+    if (r == VK_SUCCESS) {
+        /* same thing adding light instead of covering (storyboards, hit lighting) */
+        blend.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        ds.depthWriteEnable = VK_FALSE;
+        r = vkCreateGraphicsPipelines(g.dev, VK_NULL_HANDLE, 1, &gp, NULL, &g.pipeline_add);
+    }
     vkDestroyShaderModule(g.dev, vs, NULL);
     vkDestroyShaderModule(g.dev, fs, NULL);
     if (r != VK_SUCCESS) {
@@ -700,6 +709,7 @@ void gfx_begin(float r, float gr, float b)
     g.inst_count = 0;
     g.draw_count = 0;
     g.bound_tex = -1;
+    g.additive = false;
     g.z = 0.9999f;
     g.frame_open = true;
 
@@ -770,7 +780,17 @@ void gfx_bind(int tex)
         return;
     g.bound_tex = tex;
     if (g.draw_count < MAX_DRAWS)
-        g.draws[g.draw_count++] = (draw_range){tex, g.inst_count, 0};
+        g.draws[g.draw_count++] = (draw_range){tex, g.inst_count, 0, g.additive};
+}
+
+void gfx_additive(bool on)
+{
+    if (on == g.additive)
+        return;
+    g.additive = on;
+    int tex = g.bound_tex;
+    g.bound_tex = -1;
+    gfx_bind(tex);
 }
 
 void gfx_push(const gfx_inst *in)
@@ -788,10 +808,15 @@ void gfx_end(void)
         return;
     g.frame_open = false;
 
+    bool add = false;
     for (int i = 0; i < g.draw_count; i++) {
         draw_range *d = &g.draws[i];
         if (d->count == 0)
             continue;
+        if (d->add != add) {
+            add = d->add;
+            vkCmdBindPipeline(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, add ? g.pipeline_add : g.pipeline);
+        }
         vkCmdBindDescriptorSets(g.cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g.layout, 0, 1, &g.tex[d->tex].set, 0, NULL);
         vkCmdDraw(g.cmd, 6, d->count, 0, d->first);
     }

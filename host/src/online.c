@@ -2,10 +2,12 @@
 #include "../include/osu5.h"
 #include "json.h"
 #include "log.h"
+#include "md5.h"
 #include "net.h"
 #include "sce.h"
 
 #include <pthread.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +29,7 @@ typedef struct {
 
 static slot cache[CACHED];
 static int wanted;
+static char wanted_path[768];
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t wake = PTHREAD_COND_INITIALIZER;
 
@@ -165,23 +168,55 @@ static bool board_key(js *j, const char *key, void *ctx)
     }
 }
 
-static int fetch(int id, online_board *b)
+static bool id_key(js *j, const char *key, void *ctx)
+{
+    if (strcmp(key, "id"))
+        return false;
+    *(int *)ctx = (int)json_num(j);
+    return true;
+}
+
+static int api_get(const char *url, char **out)
+{
+    char auth[2100];
+    snprintf(auth, sizeof(auth), "Bearer %s", token);
+    const char *hdr[] = {"Authorization", auth, "Accept", "application/json", "x-api-version", "20240529", NULL};
+    size_t len;
+    int st = net_request("GET", url, hdr, NULL, out, &len);
+    if (st == 401)
+        token[0] = 0;
+    return st;
+}
+
+/* key > 0 is the beatmap id; otherwise the map didn't say, so ask by checksum */
+static int fetch(int key, const char *path, online_board *b)
 {
     if (!get_token())
         return ONLINE_FAILED;
-    char url[160], auth[2100];
-    snprintf(url, sizeof(url), "https://osu.ppy.sh/api/v2/beatmaps/%d/scores?mode=osu&limit=%d", id, ONLINE_MAX);
-    snprintf(auth, sizeof(auth), "Bearer %s", token);
-    const char *hdr[] = {"Authorization", auth, "Accept", "application/json", "x-api-version", "20240529", NULL};
-    char *out;
-    size_t len;
-    int st = net_request("GET", url, hdr, NULL, &out, &len);
-    if (st == 401)
-        token[0] = 0;
-    if (st == 404) {
-        b->count = 0; /* not on the site */
-        return ONLINE_READY;
+    char url[200], *out;
+    int id = key;
+    if (id <= 0) {
+        char md5[33];
+        if (!md5_file(path, md5))
+            return ONLINE_FAILED;
+        snprintf(url, sizeof(url), "https://osu.ppy.sh/api/v2/beatmaps/lookup?checksum=%s", md5);
+        int st = api_get(url, &out);
+        if (st == 404)
+            return ONLINE_READY; /* edited or never uploaded */
+        if (st != 200)
+            return ONLINE_FAILED;
+        js j = {out};
+        id = 0;
+        json_object(&j, id_key, &id);
+        free(out);
+        if (id <= 0)
+            return ONLINE_READY;
+        b->online_id = id;
     }
+    snprintf(url, sizeof(url), "https://osu.ppy.sh/api/v2/beatmaps/%d/scores?mode=osu&limit=%d", id, ONLINE_MAX);
+    int st = api_get(url, &out);
+    if (st == 404)
+        return ONLINE_READY; /* not on the site */
     if (st != 200) {
         LOG("online: map %d: %d", id, st);
         return ONLINE_FAILED;
@@ -189,6 +224,7 @@ static int fetch(int id, online_board *b)
     js j = {out};
     json_object(&j, board_key, b);
     free(out);
+    b->online_id = id;
     return ONLINE_READY;
 }
 
@@ -208,13 +244,15 @@ static void *worker(void *arg)
         while (!wanted)
             pthread_cond_wait(&wake, &lock);
         int id = wanted;
+        char path[768];
+        snprintf(path, sizeof(path), "%s", wanted_path);
         wanted = 0;
         pthread_mutex_unlock(&lock);
 
         static online_board b;
         memset(&b, 0, sizeof(b));
         b.beatmap_id = id;
-        int st = fetch(id, &b);
+        int st = fetch(id, path, &b);
 
         pthread_mutex_lock(&lock);
         slot *s = find(id);
@@ -263,10 +301,18 @@ bool online_enabled(void)
     return enabled;
 }
 
-int online_board_for(int id, online_board *out)
+int online_board_for(int beatmap_id, const char *osu_path, online_board *out)
 {
-    if (!enabled || id <= 0)
+    if (!enabled)
         return ONLINE_OFF;
+    int id = beatmap_id;
+    if (id <= 0) {
+        /* keyed by the path instead, negative so it can't meet a real id */
+        uint32_t h = 2166136261u;
+        for (const char *c = osu_path; *c; c++)
+            h = (h ^ (uint8_t)*c) * 16777619u;
+        id = -(int)(h & 0x7FFFFFFF) - 1;
+    }
     pthread_mutex_lock(&lock);
     slot *s = find(id);
     int st = ONLINE_LOADING;
@@ -278,6 +324,7 @@ int online_board_for(int id, online_board *out)
         st = ONLINE_FAILED;
     } else if (wanted != id) {
         wanted = id;
+        snprintf(wanted_path, sizeof(wanted_path), "%s", osu_path);
         pthread_cond_signal(&wake);
     }
     pthread_mutex_unlock(&lock);

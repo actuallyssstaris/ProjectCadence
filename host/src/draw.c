@@ -465,6 +465,14 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
                                   : d->number == OSU5_RESULT_MEH  ? &skin_img.hit50
                                   : d->number == OSU5_RESULT_OK   ? &skin_img.hit100
                                                                   : &skin_img.hit300;
+            /* hit lighting: the skin's glow, added on in the object's colour */
+            if (skin_img.lighting.tex && d->number != OSU5_RESULT_MISS && d->p0 < 0.6f) {
+                float k = d->p0 / 0.6f;
+                uint32_t c = d->colour ? gfx_argb(d->colour, (1 - k) * 0.8f) : gfx_rgba(1, 1, 1, (1 - k) * 0.8f);
+                gfx_additive(true);
+                sprite(&skin_img.lighting, x, y, r / 64 * (0.8f + 0.4f * k), 0, c);
+                gfx_additive(false);
+            }
             if (skinned(js)) {
                 float pop = 1.0f + 0.15f * (1 - d->p0);
                 float drop = d->number == OSU5_RESULT_MISS ? d->p0 * 30 : 0;

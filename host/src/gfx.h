@@ -38,6 +38,8 @@ void gfx_texture_free(int id);
 
 void gfx_bind(int tex);
 void gfx_push(const gfx_inst *in);
+/* what gets pushed from here on adds to the picture instead of covering it */
+void gfx_additive(bool on);
 
 /* painter order through the depth buffer: every call hands out a nearer z.
  * Things that must not blend over themselves (slider bodies) share one z. */

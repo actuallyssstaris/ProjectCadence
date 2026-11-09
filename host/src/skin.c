@@ -13,7 +13,7 @@ static const char *hit_names[4] = {"hitnormal", "hitwhistle", "hitfinish", "hitc
 
 static sound_buf hits[3][4];
 static sound_buf ticks[3];
-static sound_buf combobreak, spinnerbonus;
+static sound_buf combobreak, spinnerbonus, sectionpass, sectionfail;
 
 static uint32_t rng = 0x1234567;
 static float noise(void)
@@ -91,6 +91,8 @@ void skin_load(const char *dir)
     }
     sound_free(&combobreak);
     sound_free(&spinnerbonus);
+    sound_free(&sectionpass);
+    sound_free(&sectionfail);
 
     const float pitch[3] = {1.0f, 0.8f, 1.3f};
     const synth kinds[4] = {SYN_CLICK, SYN_WHISTLE, SYN_FINISH, SYN_CLAP};
@@ -106,6 +108,13 @@ void skin_load(const char *dir)
     }
     load_or_make(&combobreak, dir, "combobreak", SYN_BREAK, 1);
     load_or_make(&spinnerbonus, dir, "spinnerbonus", SYN_BONUS, 1);
+    load_or_make(&sectionpass, dir, "sectionpass", SYN_BONUS, 1);
+    load_or_make(&sectionfail, dir, "sectionfail", SYN_BREAK, 1);
+}
+
+void skin_section(bool pass, float master)
+{
+    audio_play(pass ? &sectionpass : &sectionfail, master, 0);
 }
 
 static int bank_index(int bank)

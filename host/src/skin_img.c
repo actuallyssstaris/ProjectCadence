@@ -175,6 +175,9 @@ void skin_images_load(const char *dir)
     sprite(&skin_img.hit50, dir, "hit50");
     sprite(&skin_img.hit100, dir, "hit100");
     sprite(&skin_img.hit300, dir, "hit300");
+    sprite(&skin_img.lighting, dir, "lighting");
+    sprite(&skin_img.section_pass, dir, "section-pass");
+    sprite(&skin_img.section_fail, dir, "section-fail");
 
     char name[200];
     font(skin_img.score, dir, f.score_prefix);

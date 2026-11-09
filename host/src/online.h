@@ -18,7 +18,8 @@ typedef struct {
 } online_score;
 
 typedef struct {
-    int beatmap_id;
+    int beatmap_id; /* cache key */
+    int online_id;  /* 0: not on osu.ppy.sh */
     int count;
     online_score s[ONLINE_MAX];
 } online_board;
@@ -30,6 +31,6 @@ bool online_enabled(void);
 
 /* fetches in the background if it isn't cached; returns one of the above and
  * fills out once it's READY */
-int online_board_for(int beatmap_id, online_board *out);
+int online_board_for(int beatmap_id, const char *osu_path, online_board *out);
 
 #endif

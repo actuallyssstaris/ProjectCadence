@@ -24,6 +24,7 @@
 #include "skins.h"
 #include "songs.h"
 #include "stars.h"
+#include "thumbs.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -86,6 +87,9 @@ static struct {
 
     double play_time;
     double fail_time;
+    int prev_state;
+    double section_at;    /* wall time the break's pass/fail icon went up */
+    bool section_pass;
     double finish_seen;
     osu5_hud last_hud;
     play_input cursor;
@@ -347,6 +351,9 @@ static bool start_song(const song_entry *e)
     app.cursor.x = 256;
     app.cursor.y = 192;
     app.finish_seen = 0;
+    app.section_at = 0;
+    app.prev_state = -1;
+    sb_reset(app.sb);
     app.new_place = -1;
     app.last_when = 0;
     app.last_pp = 0;
@@ -420,10 +427,22 @@ static void play_frame(const pad_state *pad, float dt)
     }
 
     osu5_sound ev;
-    while (osu5_poll_sound(&ev))
+    while (osu5_poll_sound(&ev)) {
         skin_play(&ev, app.fx_vol);
+        sb_hitsound(app.sb, &ev, t);
+    }
 
     osu5_get_hud(t, &app.last_hud);
+
+    /* every break judges the section before it, like stable did */
+    int state = app.last_hud.state;
+    if (state == OSU5_STATE_BREAK && app.prev_state == OSU5_STATE_PLAYING) {
+        app.section_pass = app.last_hud.health >= 0.5f;
+        app.section_at = wall_ms();
+        skin_section(app.section_pass, app.fx_vol);
+        sb_set_failing(app.sb, !app.section_pass, t);
+    }
+    app.prev_state = state;
 
     static double next_log;
     if (wall_ms() >= next_log) {
@@ -468,6 +487,21 @@ static void render_play(void)
     if (app.sb)
         sb_draw(app.sb, t, SB_OVER, 0);
     draw_hud(&app.last_hud, t);
+
+    /* the break's verdict blinks a few times */
+    double since = wall_ms() - app.section_at;
+    if (app.section_at > 0 && since < 1600 && ((int)(since / 200) % 2 == 0 || since > 800)) {
+        const skin_sprite *s = app.section_pass ? &skin_img.section_pass : &skin_img.section_fail;
+        float a = since > 1200 ? (float)(1600 - since) / 400 : 1;
+        if (s->tex) {
+            gfx_bind(s->tex);
+            gfx_push(&(gfx_inst){GFX_W / 2, GFX_H / 2, s->w * 1.125f, s->h * 1.125f, 0, gfx_next_z(), gfx_rgba(1, 1, 1, a), GK_TEX, {0, 0, 1, 1}});
+            gfx_bind(0);
+        } else {
+            draw_text(GFX_W / 2, GFX_H / 2 - 60, 120, app.section_pass ? gfx_rgba(0.5f, 1, 0.5f, a) : gfx_rgba(1, 0.4f, 0.4f, a),
+                      ALIGN_CENTRE, app.section_pass ? "O" : "X");
+        }
+    }
     if (app.watching)
         draw_text(GFX_W / 2, 20, 30, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "replay");
 }
@@ -667,6 +701,7 @@ static void select_frame(const pad_state *pad)
             stbi_image_free(px);
     }
     preview_tick();
+    thumb_tick();
     refresh_scores();
 
     if (pad->pressed & PAD_CROSS)
@@ -675,21 +710,120 @@ static void select_frame(const pad_state *pad)
         watch_replay(e, app.scores[0].when);
 }
 
+/* ---- bits the menus share ---- */
+
+/* blue for easy through green, yellow, red, purple, to near black past 8 */
+static uint32_t star_colour(float st, float a)
+{
+    static const float stops[][4] = {
+        {0, 0.31f, 0.75f, 1}, {2, 0.31f, 0.75f, 1}, {2.7f, 0.31f, 1, 0.53f}, {3.5f, 0.96f, 0.94f, 0.36f},
+        {4.5f, 1, 0.5f, 0.4f}, {5.5f, 1, 0.31f, 0.5f}, {6.5f, 0.42f, 0.29f, 0.85f}, {8, 0.12f, 0.09f, 0.3f},
+    };
+    const int n = sizeof(stops) / sizeof(stops[0]);
+    if (st >= stops[n - 1][0])
+        return gfx_rgba(stops[n - 1][1], stops[n - 1][2], stops[n - 1][3], a);
+    int i = 0;
+    while (i < n - 2 && st >= stops[i + 1][0])
+        i++;
+    float k = (st - stops[i][0]) / (stops[i + 1][0] - stops[i][0]);
+    if (k < 0) k = 0;
+    if (k > 1) k = 1;
+    return gfx_rgba(stops[i][1] + (stops[i + 1][1] - stops[i][1]) * k, stops[i][2] + (stops[i + 1][2] - stops[i][2]) * k,
+                    stops[i][3] + (stops[i + 1][3] - stops[i][3]) * k, a);
+}
+
+/* a pill with the rating in it; dark text on the light colours */
+static float star_pill(float x, float y, float h, float st)
+{
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.2f*", st);
+    float size = h * 0.62f, w = draw_text_width(size, buf) + h;
+    gfx_bind(0);
+    float z = gfx_next_z();
+    gfx_push(&(gfx_inst){x + h / 2, y + h / 2, h / 2, h / 2, 0, z, star_colour(st, 1), GK_CAPSULE, {x + w - h / 2, y + h / 2, 0, 0}});
+    uint32_t tc = st < 6.5f ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 0.85f, 0.4f, 1);
+    draw_text(x + h / 2, y + (h - size) / 2, size, tc, ALIGN_LEFT, buf);
+    return w;
+}
+
+/* clockwise from the top, from and to in turns (0..1) */
+static void arc(float cx, float cy, float r, float thick, float from, float to, uint32_t c)
+{
+    if (to <= from)
+        return;
+    int n = (int)((to - from) * r / 6) + 2;
+    gfx_bind(0);
+    float z = gfx_next_z();
+    float px = 0, py = 0;
+    for (int i = 0; i <= n; i++) {
+        float a = (from + (to - from) * i / n) * 6.2831853f - 1.5707963f;
+        float x = cx + cosf(a) * r, y = cy + sinf(a) * r;
+        if (i > 0)
+            gfx_push(&(gfx_inst){px, py, thick / 2, thick / 2, 0, z, c, GK_CAPSULE, {x, y, 0, 0}});
+        px = x;
+        py = y;
+    }
+}
+
+static void stat_bar(float x, float y, float w, const char *label, float v, float max)
+{
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%s %.1f", label, v);
+    draw_text(x, y, 18, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, buf);
+    float k = v / max;
+    if (k > 1) k = 1;
+    if (k < 0) k = 0;
+    draw_rect(x, y + 24, w, 6, gfx_rgba(1, 1, 1, 0.15f));
+    draw_rect(x, y + 24, w * k, 6, gfx_rgba(1, 1, 1, 0.85f));
+}
+
+/* the set's background, small; 0 until it's loaded */
+static int set_thumb(const song_entry *e)
+{
+    if (!e->info.background[0])
+        return 0;
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s", e->dir, e->info.background);
+    return thumb_get(path);
+}
+
+static void thumb_box(int tex, float x, float y, float w, float h, float alpha)
+{
+    if (!tex) {
+        draw_rect(x, y, w, h, gfx_rgba(0.1f, 0.12f, 0.2f, alpha));
+        return;
+    }
+    gfx_bind(tex);
+    gfx_push(&(gfx_inst){x + w / 2, y + h / 2, w / 2, h / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, alpha), GK_TEX, {0, 0, 1, 1}});
+    gfx_bind(0);
+}
+
 /* top of the osu.ppy.sh leaderboard, in the box local scores use */
-static void render_online(int id)
+static void render_online(const song_entry *e)
 {
     static online_board b;
     char buf[160];
-    int st = online_board_for(id, &b);
+    int st = online_board_for(e->info.beatmap_id, e->file, &b);
     const char *head = "online leaderboard";
-    if (id <= 0)
-        head = "this difficulty isn't on osu.ppy.sh";
-    else if (st == ONLINE_LOADING)
+    if (st == ONLINE_LOADING)
         head = "loading leaderboard...";
     else if (st == ONLINE_FAILED)
         head = "couldn't reach osu.ppy.sh";
+    else if (!b.online_id)
+        head = "this difficulty isn't on osu.ppy.sh";
     else if (b.count == 0)
         head = "no online scores";
+    /* where your local best would land */
+    if (st == ONLINE_READY && b.count > 0 && app.nscores > 0) {
+        int place = 1;
+        while (place <= b.count && b.s[place - 1].score >= app.scores[0].score)
+            place++;
+        if (place <= b.count)
+            snprintf(buf, sizeof(buf), "online top %d  -  your best would be #%d", b.count, place);
+        else
+            snprintf(buf, sizeof(buf), "online top %d  -  your best isn't in it yet", b.count);
+        head = buf;
+    }
     draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, head);
     draw_text(820, 356, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, "L2 local");
     if (st != ONLINE_READY)
@@ -720,8 +854,9 @@ static void render_select(void)
         snprintf(buf, sizeof(buf), "search: %s%s   sort: %s", app.filter, app.searching ? "_" : "", songs_sort_name(app.sort));
     else
         snprintf(buf, sizeof(buf), "L1 search   R1 sort: %s", songs_sort_name(app.sort));
-    draw_rect(900, 0, GFX_W - 900, 52, gfx_rgba(0, 0, 0, 0.6f));
+    draw_rect(0, 0, GFX_W, 52, gfx_rgba(0, 0, 0, 0.6f));
     draw_text(GFX_W - 30, 12, 26, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
+    draw_text(40, 12, 28, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_LEFT, "ProjectCadence");
 
     if (app.songs.count == 0 && app.all.count > 0) {
         snprintf(buf, sizeof(buf), "nothing matches \"%s\"", app.filter);
@@ -784,16 +919,18 @@ static void render_select(void)
         if (rows[r].kind == ROW_DIFF) {
             bool on = r == sel_row;
             float x = on ? 940 : 990;
-            draw_rect(x, y, GFX_W - x, row - 6, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0.15f, 0.25f, 0.45f, 0.75f));
-            uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 0.95f);
             float st = stars_get(e->file, 0);
+            draw_rect(x, y, GFX_W - x, row - 6, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0.08f, 0.1f, 0.18f, 0.8f));
+            /* the rating's colour down the left edge */
+            draw_rect(x, y, 8, row - 6, st >= 0 ? star_colour(st, 1) : gfx_rgba(0.5f, 0.5f, 0.5f, 1));
+            uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 0.95f);
+            float tx = x + 28;
             if (st >= 0)
-                snprintf(buf, sizeof(buf), "%.2f*  %.80s", st, in->version);
-            else
-                snprintf(buf, sizeof(buf), "%.90s", in->version);
-            draw_text(x + 24, y + 8, 26, tc, ALIGN_LEFT, buf);
+                tx += star_pill(tx, y + 10, 30, st) + 14;
+            snprintf(buf, sizeof(buf), "%.80s", in->version);
+            draw_text(tx, y + 14, 24, tc, ALIGN_LEFT, buf);
             snprintf(buf, sizeof(buf), "CS %.1f  AR %.1f  OD %.1f  HP %.1f", in->cs, in->ar, in->od, in->hp);
-            draw_text(x + 24, y + 42, 18, tc, ALIGN_LEFT, buf);
+            draw_text(x + 28, y + 46, 16, tc, ALIGN_LEFT, buf);
             continue;
         }
 
@@ -801,9 +938,12 @@ static void render_select(void)
         bool header = rows[r].kind == ROW_HEADER;
         float x = header ? 900 : 960;
         int n = set_end(rows[r].index) - rows[r].index;
-        draw_rect(x, y, GFX_W - x, row - 6, header ? gfx_rgba(1, 0.8f, 0.35f, 0.9f) : gfx_rgba(0, 0, 0, 0.55f));
+        float th = row - 6, tw = th * 16 / 9;
+        draw_rect(x, y, GFX_W - x, th, header ? gfx_rgba(1, 0.8f, 0.35f, 0.92f) : gfx_rgba(0, 0, 0, 0.6f));
+        thumb_box(set_thumb(e), x, y, tw, th, header ? 1 : 0.75f);
+        x += tw;
         uint32_t tc = header ? gfx_rgba(0.15f, 0.1f, 0.02f, 1) : gfx_rgba(1, 1, 1, 0.95f);
-        snprintf(buf, sizeof(buf), "%.100s", in->title);
+        snprintf(buf, sizeof(buf), "%.90s", in->title);
         draw_text(x + 20, y + 8, 26, tc, ALIGN_LEFT, buf);
         /* star range of the set, once every difficulty in it is rated */
         float lo = 1e9f, hi = -1;
@@ -831,13 +971,17 @@ static void render_select(void)
     draw_text(60, 166, 22, gfx_rgba(1, 1, 1, 0.75f), ALIGN_LEFT, buf);
     const char *selfile = app.songs.items[app.sel].file;
     float st = stars_get(selfile, 0), mst = stars_mods(app.mods) ? stars_get(selfile, stars_mods(app.mods)) : st;
-    char stars_txt[48] = "";
-    if (st >= 0 && mst >= 0 && fabsf(mst - st) > 0.005f)
-        snprintf(stars_txt, sizeof(stars_txt), "%.2f* (%.2f* with mods)  ", st, mst);
+    /* rating (with mods when they change it), then the four numbers as bars */
+    float bx = 60;
+    if (mst >= 0)
+        bx += star_pill(60, 204, 38, mst) + 20;
     else if (st >= 0)
-        snprintf(stars_txt, sizeof(stars_txt), "%.2f*  ", st);
-    snprintf(buf, sizeof(buf), "%sCS %.1f  AR %.1f  OD %.1f  HP %.1f", stars_txt, in->cs, in->ar, in->od, in->hp);
-    draw_text(60, 214, 26, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, buf);
+        bx += star_pill(60, 204, 38, st) + 20;
+    float bw = (820 - bx - 3 * 16) / 4;
+    stat_bar(bx, 204, bw, "CS", in->cs, 10);
+    stat_bar(bx + (bw + 16), 204, bw, "AR", in->ar, 10);
+    stat_bar(bx + (bw + 16) * 2, 204, bw, "OD", in->od, 10);
+    stat_bar(bx + (bw + 16) * 3, 204, bw, "HP", in->hp, 10);
 
     char tags[64];
     mod_tags(app.mods, tags, sizeof(tags));
@@ -846,7 +990,7 @@ static void render_select(void)
 
     draw_rect(40, 340, 800, 70 + SHOWN_SCORES * 64, gfx_rgba(0, 0, 0, 0.5f));
     if (app.show_online) {
-        render_online(app.songs.items[app.sel].info.beatmap_id);
+        render_online(&app.songs.items[app.sel]);
         goto scores_done;
     }
 
@@ -1035,7 +1179,23 @@ static void render_results(void)
     osu5_string(OSU5_STR_TITLE, title, sizeof(title));
     draw_text(GFX_W / 2, 170, 40, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, title);
 
-    draw_rank(h->rank, 520, 460, 300, false, 1);
+    /* accuracy ring: hits split by judgement around the rank, accuracy as the inner arc */
+    float cx = 560, cy = 520, R = 230;
+    int total = h->great + h->ok + h->meh + h->miss;
+    arc(cx, cy, R, 26, 0, 1, gfx_rgba(1, 1, 1, 0.08f));
+    if (total > 0) {
+        const int counts[4] = {h->great, h->ok, h->meh, h->miss};
+        const uint32_t cols[4] = {gfx_rgba(0.4f, 0.8f, 1, 1), gfx_rgba(0.5f, 1, 0.5f, 1), gfx_rgba(1, 0.85f, 0.35f, 1),
+                                  gfx_rgba(1, 0.35f, 0.35f, 1)};
+        float at = 0;
+        for (int i = 0; i < 4; i++) {
+            float span = (float)counts[i] / total;
+            arc(cx, cy, R, 26, at, at + span, cols[i]);
+            at += span;
+        }
+    }
+    arc(cx, cy, R - 34, 8, 0, h->accuracy, gfx_rgba(1, 1, 1, 0.9f));
+    draw_rank(h->rank, cx, cy, 240, false, 1);
 
     float x = 900, y = 300;
     snprintf(buf, sizeof(buf), "%08lld", (long long)h->score);

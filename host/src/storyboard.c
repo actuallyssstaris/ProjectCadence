@@ -2,6 +2,7 @@
  * the .osb and the map's [Events], evaluated each frame in storyboard space
  * (640x480, 854 wide for widescreen ones) and drawn as textured quads. */
 #include "storyboard.h"
+#include "../include/osu5.h"
 #include "draw.h"
 #include "gfx.h"
 #include "log.h"
@@ -34,6 +35,19 @@ typedef struct {
     float a[3], b[3];
 } command;
 
+/* a T group: its commands play from the moment a hitsound (or pass/fail
+ * change) matching it happens inside its window */
+enum { TR_HIT, TR_PASSING, TR_FAILING };
+
+typedef struct {
+    int kind, bank, add_bank, sounds, custom; /* 0 = any */
+    double t0, t1, len;
+    double fired;
+    command *cmds;
+    int ncmds, cap;
+    bool has[C_COUNT];
+} trigger;
+
 typedef struct {
     int layer, origin;
     float x, y;
@@ -42,6 +56,8 @@ typedef struct {
     bool loop_once;
     command *cmds;
     int ncmds, cap;
+    trigger *trigs;
+    int ntrig, trig_cap;
     double start, end;
     bool has[C_COUNT];
 } sprite;
@@ -63,6 +79,7 @@ struct storyboard {
     char dir[512];
     char background[256];
     bool replaces_bg;
+    bool failing;
     /* variables from the .osb */
     char (*var_name)[64];
     char (*var_value)[256];
@@ -334,8 +351,57 @@ static void substitute(const storyboard *sb, char *line, size_t cap)
     }
 }
 
+/* "HitSoundSoftWhistle", "HitSoundDrumNormalClap3", "Passing" ... */
+static bool parse_trigger(trigger *tr, const char *name)
+{
+    memset(tr, 0, sizeof(*tr));
+    tr->fired = -1e30;
+    if (!strcmp(name, "Passing")) {
+        tr->kind = TR_PASSING;
+        return true;
+    }
+    if (!strcmp(name, "Failing")) {
+        tr->kind = TR_FAILING;
+        return true;
+    }
+    if (strncmp(name, "HitSound", 8))
+        return false;
+    tr->kind = TR_HIT;
+    static const char *banks[] = {"All", "Normal", "Soft", "Drum"};
+    static const struct { const char *s; int bit; } adds[] = {
+        {"Whistle", OSU5_HS_WHISTLE}, {"Finish", OSU5_HS_FINISH}, {"Clap", OSU5_HS_CLAP}};
+    const char *p = name + 8;
+    int nbanks = 0;
+    while (*p) {
+        bool hit = false;
+        for (int i = 0; i < 4 && !hit; i++)
+            if (!strncmp(p, banks[i], strlen(banks[i]))) {
+                if (nbanks++ == 0)
+                    tr->bank = i;
+                else
+                    tr->add_bank = i;
+                p += strlen(banks[i]);
+                hit = true;
+            }
+        for (int i = 0; i < 3 && !hit; i++)
+            if (!strncmp(p, adds[i].s, strlen(adds[i].s))) {
+                tr->sounds |= adds[i].bit;
+                p += strlen(adds[i].s);
+                hit = true;
+            }
+        if (!hit && isdigit((unsigned char)*p)) {
+            tr->custom = atoi(p);
+            break;
+        }
+        if (!hit)
+            break;
+    }
+    return true;
+}
+
 typedef struct {
     sprite *cur;
+    int trig; /* index into cur->trigs while in_trigger */
     bool in_loop, in_trigger;
     double loop_start;
     int loop_count;
@@ -388,7 +454,7 @@ static void parse_line(storyboard *sb, parse_state *ps, char *raw)
         if (nf < (anim ? 8 : 6))
             return;
         int layer = layer_of(f[1]);
-        if (layer < 0 || layer > L_OVERLAY || layer == L_FAIL)
+        if (layer < 0 || layer > L_OVERLAY)
             return;
         char rel[256];
         norm_path(rel, sizeof(rel), f[3]);
@@ -433,13 +499,32 @@ static void parse_line(storyboard *sb, parse_state *ps, char *raw)
             ps->in_loop = true;
             ps->loop_start = atof(f[1]);
             ps->loop_count = atoi(f[2]);
-        } else if (!strcmp(f[0], "T")) {
-            ps->in_trigger = true; /* their commands only run on hitsounds/fails; skipped */
+        } else if (!strcmp(f[0], "T") && nf >= 2) {
+            sprite *s = ps->cur;
+            trigger tr;
+            if (!parse_trigger(&tr, f[1]))
+                return;
+            tr.t0 = nf > 2 && f[2][0] ? atof(f[2]) : -1e30;
+            tr.t1 = nf > 3 && f[3][0] ? atof(f[3]) : 1e30;
+            if (s->ntrig == s->trig_cap) {
+                int nc = s->trig_cap ? s->trig_cap * 2 : 4;
+                trigger *grown = realloc(s->trigs, sizeof(trigger) * (size_t)nc);
+                if (!grown)
+                    return;
+                s->trigs = grown;
+                s->trig_cap = nc;
+            }
+            s->trigs[s->ntrig] = tr;
+            ps->trig = s->ntrig++;
+            ps->in_trigger = true;
         } else {
             parse_command(f, nf, &ps->cur->cmds, &ps->cur->ncmds, &ps->cur->cap);
         }
     } else if (ps->in_loop) {
         parse_command(f, nf, &ps->loop, &ps->nloop, &ps->loop_cap);
+    } else if (ps->in_trigger) {
+        trigger *tr = &ps->cur->trigs[ps->trig];
+        parse_command(f, nf, &tr->cmds, &tr->ncmds, &tr->cap);
     }
 }
 
@@ -516,8 +601,11 @@ storyboard *sb_load(const char *dir, const char *osu_path, const char *backgroun
         bool any_tex = false;
         for (int k = 0; k < s->nframes; k++)
             any_tex |= sb->frames[s->frame0 + k] >= 0;
-        if (!s->ncmds || !any_tex) {
+        if ((!s->ncmds && !s->ntrig) || !any_tex) {
             free(s->cmds);
+            for (int k = 0; k < s->ntrig; k++)
+                free(s->trigs[k].cmds);
+            free(s->trigs);
             continue;
         }
         qsort(s->cmds, (size_t)s->ncmds, sizeof(command), by_start);
@@ -527,6 +615,17 @@ storyboard *sb_load(const char *dir, const char *osu_path, const char *backgroun
             s->start = fmin(s->start, s->cmds[k].t0);
             s->end = fmax(s->end, s->cmds[k].t1);
             s->has[s->cmds[k].type] = true;
+        }
+        for (int k = 0; k < s->ntrig; k++) {
+            trigger *tr = &s->trigs[k];
+            qsort(tr->cmds, (size_t)tr->ncmds, sizeof(command), by_start);
+            for (int c = 0; c < tr->ncmds; c++) {
+                tr->len = fmax(tr->len, tr->cmds[c].t1);
+                tr->has[tr->cmds[c].type] = true;
+            }
+            /* a window that never closes still can't outlast the map by much */
+            s->start = fmin(s->start, fmax(tr->t0, -10000));
+            s->end = fmax(s->end, fmin(tr->t1, 1e9) + tr->len);
         }
         sb->sprites[kept++] = *s;
     }
@@ -542,13 +641,11 @@ storyboard *sb_load(const char *dir, const char *osu_path, const char *backgroun
 
 /* value of one property at t: the running command, else the last one that
  * finished, else the first one's start value */
-static bool value_at(const sprite *s, int type, double t, float *out, int n)
+static bool value_in(const command *cmds, int ncmds, int type, double t, float *out, int n)
 {
-    if (!s->has[type])
-        return false;
     const command *last = NULL, *first = NULL;
-    for (int i = 0; i < s->ncmds; i++) {
-        const command *c = &s->cmds[i];
+    for (int i = 0; i < ncmds; i++) {
+        const command *c = &cmds[i];
         if (c->type != type)
             continue;
         if (!first)
@@ -557,6 +654,8 @@ static bool value_at(const sprite *s, int type, double t, float *out, int n)
             break;
         last = c;
     }
+    if (!first)
+        return false;
     if (!last) {
         memcpy(out, first->a, sizeof(float) * (size_t)n);
         return true;
@@ -569,6 +668,25 @@ static bool value_at(const sprite *s, int type, double t, float *out, int n)
     for (int v = 0; v < n; v++)
         out[v] = (float)(last->a[v] + (last->b[v] - last->a[v]) * k);
     return true;
+}
+
+/* the trigger group running at t, if any (the latest one wins) */
+static const trigger *running(const sprite *s, double t)
+{
+    const trigger *best = NULL;
+    for (int i = 0; i < s->ntrig; i++) {
+        const trigger *tr = &s->trigs[i];
+        if (t >= tr->fired && t <= tr->fired + tr->len && (!best || tr->fired > best->fired))
+            best = tr;
+    }
+    return best;
+}
+
+static bool value_at(const sprite *s, const trigger *tr, int type, double t, float *out, int n)
+{
+    if (tr && tr->has[type])
+        return value_in(tr->cmds, tr->ncmds, type, t - tr->fired, out, n);
+    return s->has[type] && value_in(s->cmds, s->ncmds, type, t, out, n);
 }
 
 /* P flags: on while a command runs, and for good after an instant one */
@@ -586,21 +704,27 @@ static bool flag_at(const sprite *s, int type, double t)
 
 static void draw_sprite(storyboard *sb, const sprite *s, double t, float dim)
 {
+    const trigger *tr = s->ntrig ? running(s, t) : NULL;
+    if (!s->ncmds && !tr)
+        return; /* only ever shows when triggered */
+    if (!tr && s->ncmds && (t < s->cmds[0].t0 - 1 || t > s->end))
+        return;
+
     float v[3];
-    float alpha = value_at(s, C_F, t, v, 1) ? v[0] : 1;
+    float alpha = value_at(s, tr, C_F, t, v, 1) ? v[0] : 1;
     if (alpha <= 0.002f)
         return;
 
     float x = s->x, y = s->y;
-    if (value_at(s, C_M, t, v, 2)) { x = v[0]; y = v[1]; }
-    if (value_at(s, C_MX, t, v, 1)) x = v[0];
-    if (value_at(s, C_MY, t, v, 1)) y = v[0];
+    if (value_at(s, tr, C_M, t, v, 2)) { x = v[0]; y = v[1]; }
+    if (value_at(s, tr, C_MX, t, v, 1)) x = v[0];
+    if (value_at(s, tr, C_MY, t, v, 1)) y = v[0];
     float sx = 1, sy = 1;
-    if (value_at(s, C_S, t, v, 1)) sx = sy = v[0];
-    if (value_at(s, C_V, t, v, 2)) { sx *= v[0]; sy *= v[1]; }
-    float rot = value_at(s, C_R, t, v, 1) ? v[0] : 0;
+    if (value_at(s, tr, C_S, t, v, 1)) sx = sy = v[0];
+    if (value_at(s, tr, C_V, t, v, 2)) { sx *= v[0]; sy *= v[1]; }
+    float rot = value_at(s, tr, C_R, t, v, 1) ? v[0] : 0;
     float r = 1, g = 1, b = 1;
-    if (value_at(s, C_C, t, v, 3)) { r = v[0]; g = v[1]; b = v[2]; }
+    if (value_at(s, tr, C_C, t, v, 3)) { r = v[0]; g = v[1]; b = v[2]; }
     bool fh = flag_at(s, C_PH, t), fv = flag_at(s, C_PV, t);
     if (sx < 0) { fh = !fh; sx = -sx; }
     if (sy < 0) { fv = !fv; sy = -sy; }
@@ -631,13 +755,14 @@ static void draw_sprite(storyboard *sb, const sprite *s, double t, float dim)
 
     float u0 = fh ? 1 : 0, u1 = fh ? 0 : 1, v0 = fv ? 1 : 0, v1 = fv ? 0 : 1;
     float lit = 1 - dim;
+    gfx_additive(flag_at(s, C_PA, t));
     gfx_bind(tex->tex);
     gfx_push(&(gfx_inst){cx, cy, w / 2, h / 2, rot, gfx_next_z(), gfx_rgba(r * lit, g * lit, b * lit, alpha), GK_TEX, {u0, v0, u1, v1}});
 }
 
 void sb_draw(storyboard *sb, double t, int which, float dim)
 {
-    static const int under[] = {L_BACKGROUND, L_PASS, L_FOREGROUND}, over[] = {L_OVERLAY};
+    int under[] = {L_BACKGROUND, sb->failing ? L_FAIL : L_PASS, L_FOREGROUND}, over[] = {L_OVERLAY};
     const int *layers = which == SB_OVER ? over : under;
     int nl = which == SB_OVER ? 1 : 3;
     for (int l = 0; l < nl; l++)
@@ -646,7 +771,48 @@ void sb_draw(storyboard *sb, double t, int which, float dim)
             if (s->layer == layers[l] && t >= s->start && t <= s->end)
                 draw_sprite(sb, s, t, dim);
         }
+    gfx_additive(false);
     gfx_bind(0);
+}
+
+static void fire(storyboard *sb, int kind, const osu5_sound *ev, double t)
+{
+    for (int i = 0; i < sb->count; i++) {
+        sprite *s = &sb->sprites[i];
+        for (int k = 0; k < s->ntrig; k++) {
+            trigger *tr = &s->trigs[k];
+            if (tr->kind != kind || t < tr->t0 || t > tr->t1)
+                continue;
+            if (ev && ((tr->bank && tr->bank != ev->bank) || (tr->add_bank && tr->add_bank != ev->add_bank) ||
+                       (tr->sounds && !(ev->sounds & tr->sounds)) || (tr->custom && tr->custom != ev->custom)))
+                continue;
+            tr->fired = t;
+        }
+    }
+}
+
+void sb_hitsound(storyboard *sb, const osu5_sound *ev, double t)
+{
+    if (sb && ev->kind == OSU5_SOUND_HIT)
+        fire(sb, TR_HIT, ev, t);
+}
+
+void sb_set_failing(storyboard *sb, bool failing, double t)
+{
+    if (!sb || sb->failing == failing)
+        return;
+    sb->failing = failing;
+    fire(sb, failing ? TR_FAILING : TR_PASSING, NULL, t);
+}
+
+void sb_reset(storyboard *sb)
+{
+    if (!sb)
+        return;
+    sb->failing = false;
+    for (int i = 0; i < sb->count; i++)
+        for (int k = 0; k < sb->sprites[i].ntrig; k++)
+            sb->sprites[i].trigs[k].fired = -1e30;
 }
 
 bool sb_replaces_bg(const storyboard *sb) { return sb && sb->replaces_bg; }
@@ -658,8 +824,12 @@ void sb_free(storyboard *sb)
     for (int i = 0; i < sb->ntex; i++)
         if (sb->tex[i].tex)
             gfx_texture_free(sb->tex[i].tex);
-    for (int i = 0; i < sb->count; i++)
+    for (int i = 0; i < sb->count; i++) {
         free(sb->sprites[i].cmds);
+        for (int k = 0; k < sb->sprites[i].ntrig; k++)
+            free(sb->sprites[i].trigs[k].cmds);
+        free(sb->sprites[i].trigs);
+    }
     free(sb->sprites);
     free(sb->frames);
     free(sb->var_name);

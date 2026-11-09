@@ -15,6 +15,7 @@ typedef struct {
     skin_sprite circle, overlay, approach, digit[10];
     skin_sprite cursor, ball, follow, reverse, tick, point;
     skin_sprite hit0, hit50, hit100, hit300;
+    skin_sprite lighting, section_pass, section_fail;
     float overlap; /* HitCircleOverlap, SD pixels */
 
     /* HUD: score-*, the combo font (ComboPrefix, score by default), health bar */
