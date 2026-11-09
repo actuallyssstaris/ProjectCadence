@@ -12,6 +12,9 @@ typedef struct {
     bool touching;
     float tx, ty;       /* 0..1 over the touchpad */
     bool connected;
+    int nav_x, nav_y;   /* menu steps from the d-pad / left stick, with key repeat */
+    int dpad_x, dpad_y; /* the same from the d-pad alone */
+    int stick_y;        /* and from the left stick alone */
 } pad_state;
 
 typedef struct {

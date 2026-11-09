@@ -43,6 +43,11 @@ enum { OSU5_RANK_D, OSU5_RANK_C, OSU5_RANK_B, OSU5_RANK_A, OSU5_RANK_S, OSU5_RAN
 enum {
     OSU5_MOD_AUTO = 1,
     OSU5_MOD_NOFAIL = 2,
+    OSU5_MOD_HIDDEN = 4,
+    OSU5_MOD_HARDROCK = 8,
+    OSU5_MOD_EASY = 16,
+    OSU5_MOD_DOUBLETIME = 32,
+    OSU5_MOD_HALFTIME = 64,
 };
 
 enum {
@@ -108,9 +113,11 @@ typedef struct {
 
 enum { OSU5_STR_TITLE, OSU5_STR_ARTIST, OSU5_STR_VERSION, OSU5_STR_CREATOR, OSU5_STR_AUDIO, OSU5_STR_BACKGROUND, OSU5_STR_ERROR };
 
+int osu5_gc_check(void); /* forces a collection, returns the gen0 count */
 int osu5_load(const char *path);
 void osu5_unload(void);
-void osu5_set_mods(int flags);
+void osu5_set_mods(int flags); /* applies from the next osu5_load */
+void osu5_set_skin_colours(const uint32_t *argb, int n);
 double osu5_start_time(void);
 void osu5_update(double time, float x, float y, int keys);
 int osu5_frame(double time, osu5_draw *cmds, int max_cmds, float *points, int max_points, int *point_count);

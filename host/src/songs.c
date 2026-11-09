@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <unistd.h>
 
 static int has_ext(const char *name, const char *ext)
 {
@@ -19,7 +20,10 @@ static int cmp(const void *a, const void *b)
     if (c) return c;
     c = strcasecmp(x->info.title, y->info.title);
     if (c) return c;
-    /* same song: rough difficulty order */
+    /* keeps each set's difficulties together, song select groups on the folder */
+    c = strcmp(x->dir, y->dir);
+    if (c) return c;
+    /* same set: rough difficulty order */
     float dx = x->info.od + x->info.ar + x->info.cs, dy = y->info.od + y->info.ar + y->info.cs;
     return dx < dy ? -1 : dx > dy;
 }
@@ -74,6 +78,47 @@ int songs_scan(const char *root, song_list *out)
     if (out->count > 1)
         qsort(out->items, out->count, sizeof(song_entry), cmp);
     return out->count;
+}
+
+/* .osu files name their audio and background the way Windows sees them, so
+ * "Audio.MP3" has to find audio.mp3 here */
+bool songs_file(const char *dir, const char *name, char *out, size_t n)
+{
+    if (!name[0])
+        return false;
+    char rel[256];
+    snprintf(rel, sizeof(rel), "%s", name);
+    for (char *c = rel; *c; c++)
+        if (*c == '\\')
+            *c = '/';
+    snprintf(out, n, "%s/%s", dir, rel);
+    if (access(out, F_OK) == 0)
+        return true;
+    if (strchr(rel, '/'))
+        return false; /* subfolders: not worth a deeper search */
+
+    DIR *d = opendir(dir);
+    if (!d)
+        return false;
+    struct dirent *e;
+    bool found = false;
+    while ((e = readdir(d))) {
+        if (!strcasecmp(e->d_name, rel)) {
+            snprintf(out, n, "%s/%s", dir, e->d_name);
+            found = true;
+            break;
+        }
+    }
+    closedir(d);
+    return found;
+}
+
+int songs_find(const song_list *l, const char *file)
+{
+    for (int i = 0; i < l->count; i++)
+        if (!strcmp(l->items[i].file, file))
+            return i;
+    return -1;
 }
 
 void songs_free(song_list *l)

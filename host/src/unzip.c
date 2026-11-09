@@ -55,7 +55,7 @@ static int inflate_raw(const uint8_t *src, size_t n, uint8_t *dst, size_t out)
     return rc == Z_STREAM_END ? 0 : -1;
 }
 
-int unzip_to(const char *zip_path, const char *dir)
+int unzip_to(const char *zip_path, const char *dir, bool lower)
 {
     size_t len;
     uint8_t *z = slurp(zip_path, &len);
@@ -118,7 +118,7 @@ int unzip_to(const char *zip_path, const char *dir)
         if (rel[0] == '/' || strstr(rel, ".."))
             continue;
         for (char *c = rel; *c; c++)
-            *c = (char)(*c == '\\' ? '/' : tolower((unsigned char)*c));
+            *c = (char)(*c == '\\' ? '/' : lower ? tolower((unsigned char)*c) : *c);
 
         if (local + 30 > len || rd32(z + local) != 0x04034b50)
             continue;

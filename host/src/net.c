@@ -5,6 +5,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 int sceNetInit(void);
 int sceNetPoolCreate(const char *name, int size, int flags);
@@ -34,7 +35,7 @@ bool net_init(void)
     if (pool < 0 || ssl < 0 || http < 0)
         return false;
 
-    tmpl = sceHttp2CreateTemplate(http, "osu-ps5/0.1", 3, 1);
+    tmpl = sceHttp2CreateTemplate(http, "osu-ps5", 3, 1);
     if (tmpl < 0) {
         LOG("net: template 0x%08x", (unsigned)tmpl);
         return false;
@@ -44,7 +45,9 @@ bool net_init(void)
     return true;
 }
 
-int net_fetch(const char *url, const char *path, volatile uint64_t *got)
+/* sends the request; > 0 is a request id with a 200 behind it, otherwise the
+ * status or error to hand back */
+static int open_get(const char *url, int *req_out)
 {
     if (tmpl < 0 && !net_init())
         return -1;
@@ -65,20 +68,75 @@ int net_fetch(const char *url, const char *path, volatile uint64_t *got)
         sceHttp2DeleteRequest(req);
         return status;
     }
+    *req_out = req;
+    return 200;
+}
+
+int net_fetch(const char *url, const char *path, volatile uint64_t *got)
+{
+    int req;
+    int st = open_get(url, &req);
+    if (st != 200)
+        return st;
 
     FILE *f = fopen(path, "wb");
-    if (!f) {
+    char *buf = malloc(64 * 1024);
+    if (!f || !buf) {
+        if (f) fclose(f);
+        free(buf);
         sceHttp2DeleteRequest(req);
         return -2;
     }
-    static char buf[64 * 1024];
     int n;
-    while ((n = sceHttp2ReadData(req, buf, sizeof(buf))) > 0) {
-        fwrite(buf, 1, (size_t)n, f);
+    while ((n = sceHttp2ReadData(req, buf, 64 * 1024)) > 0) {
+        if (fwrite(buf, 1, (size_t)n, f) != (size_t)n) {
+            n = -3; /* disk full, most likely */
+            break;
+        }
         if (got)
             *got += (uint64_t)n;
     }
     fclose(f);
+    free(buf);
     sceHttp2DeleteRequest(req);
+    if (n < 0)
+        remove(path);
     return n < 0 ? n : 200;
+}
+
+int net_get(const char *url, char **out, size_t *len)
+{
+    *out = NULL;
+    *len = 0;
+    int req;
+    int st = open_get(url, &req);
+    if (st != 200)
+        return st;
+
+    size_t cap = 256 * 1024, n = 0;
+    char *buf = malloc(cap + 1);
+    int got = 0;
+    while (buf && (got = sceHttp2ReadData(req, buf + n, cap - n)) > 0) {
+        n += (size_t)got;
+        if (n == cap) {
+            if (cap >= 16 * 1024 * 1024)
+                break; /* nothing we ask for is this big */
+            char *grown = realloc(buf, cap * 2 + 1);
+            if (!grown)
+                break;
+            buf = grown;
+            cap *= 2;
+        }
+    }
+    sceHttp2DeleteRequest(req);
+    if (!buf)
+        return -2;
+    if (got < 0) {
+        free(buf);
+        return got;
+    }
+    buf[n] = 0;
+    *out = buf;
+    *len = n;
+    return 200;
 }

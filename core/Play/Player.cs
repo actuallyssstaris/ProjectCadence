@@ -57,6 +57,11 @@ namespace Osu5.Play
 
         public bool NoFail;
         public bool Autoplay;
+        public readonly bool Hidden;
+
+        // lazer's Hidden: objects fade in over 40% of the approach and are gone 30% later
+        const double hd_fade_in = 0.4;
+        const double hd_fade_out = 0.3;
 
         readonly List<OsuObject> objs;
         readonly ObjState[] states;
@@ -76,14 +81,29 @@ namespace Osu5.Play
         public double FailTime { get; private set; } = double.NaN;
         public double EndTime { get; }
 
-        public Player(Beatmap map)
+        // skinColours: the skin's combo colours, used when the map has none
+        public Player(Beatmap map, Mods mods = Mods.None, uint[]? skinColours = null)
         {
             Map = map;
             objs = map.HitObjects;
             states = new ObjState[objs.Count];
             Windows = new HitWindows(map.Difficulty.OverallDifficulty);
 
-            colours = map.ComboColours.Count > 0 ? map.ComboColours.ToArray() : default_colours;
+            Autoplay = (mods & Mods.Auto) != 0;
+            NoFail = (mods & Mods.NoFail) != 0;
+            Hidden = (mods & Mods.Hidden) != 0;
+            Score.Multiplier = ModRules.ScoreMultiplier(mods);
+            Score.Hidden = Hidden;
+
+            if (Hidden)
+            {
+                foreach (var h in objs)
+                    h.TimeFadeIn = h.TimePreempt * hd_fade_in;
+            }
+
+            colours = map.ComboColours.Count > 0 ? map.ComboColours.ToArray()
+                    : skinColours is { Length: > 0 } ? skinColours
+                    : default_colours;
             drawPaths = new List<Vector2>[objs.Count];
             drawLengths = new List<double>[objs.Count];
 
@@ -598,6 +618,9 @@ namespace Osu5.Play
                 var h = objs[i];
                 if (h is Spinner || states[i].Result != HitResult.None || time >= h.StartTime)
                     continue;
+                // Hidden keeps only the first approach circle, to find the timing
+                if (Hidden && i > 0)
+                    continue;
 
                 double appear = h.StartTime - h.TimePreempt;
                 float t = (float)Math.Clamp((time - appear) / h.TimePreempt, 0, 1);
@@ -642,9 +665,27 @@ namespace Osu5.Play
         float fadeIn(OsuObject h, double time)
             => (float)Math.Clamp((time - (h.StartTime - h.TimePreempt)) / h.TimeFadeIn, 0, 1);
 
+        double hiddenFrom(OsuObject h) => h.StartTime - h.TimePreempt + h.TimeFadeIn;
+
+        // circles and slider heads
+        float hiddenCircle(OsuObject h, double time)
+        {
+            if (!Hidden) return 1;
+            return 1 - (float)Math.Clamp((time - hiddenFrom(h)) / (h.TimePreempt * hd_fade_out), 0, 1);
+        }
+
+        // slider bodies fade out over their whole length, easing out
+        float hiddenBody(Slider s, double time)
+        {
+            if (!Hidden) return 1;
+            double from = hiddenFrom(s);
+            double k = Math.Clamp((time - from) / Math.Max(1, s.EndTime - from), 0, 1);
+            return (float)((1 - k) * (1 - k));
+        }
+
         void circleCmd(DrawList dl, OsuObject h, Vector2 pos, double time, ObjState st, int number, double hitTime)
         {
-            float alpha = fadeIn(h, time);
+            float alpha = fadeIn(h, time) * hiddenCircle(h, time);
             float scale = 1;
             int flags = 0;
 
@@ -693,7 +734,7 @@ namespace Osu5.Play
         {
             var st = states[i];
             double appear = s.StartTime - s.TimePreempt;
-            float alpha = fadeIn(s, time);
+            float alpha = fadeIn(s, time) * hiddenBody(s, time);
 
             if (time > s.EndTime)
             {

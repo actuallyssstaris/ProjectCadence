@@ -11,6 +11,8 @@ using Osu5.Play;
 
 int bad = 0;
 
+// every map goes through twice: as is, then with the mods that move objects around
+foreach (var mods in new[] { Mods.None, Mods.HardRock | Mods.Hidden | Mods.Easy })
 foreach (string arg in args)
 {
     var files = Directory.Exists(arg) ? Directory.GetFiles(arg, "*.osu") : new[] { arg };
@@ -20,7 +22,7 @@ foreach (string arg in args)
         Beatmap map;
         try
         {
-            map = BeatmapDecoder.Decode(f);
+            map = BeatmapDecoder.Decode(f, mods);
         }
         catch (Exception e)
         {
@@ -39,7 +41,7 @@ foreach (string arg in args)
         // every head, tick, repeat and tail adds combo, plus circles and spinners
         int expectCombo = circles + spinners + map.HitObjects.OfType<Slider>().Sum(s => s.Nested.Count);
 
-        var p = new Player(map) { Autoplay = true };
+        var p = new Player(map, mods | Mods.Auto);
         var dl = new DrawList();
 
         double end = map.LastObjectEndTime + 2000;
@@ -53,7 +55,7 @@ foreach (string arg in args)
         bool ok = s.Miss == 0 && s.MaxCombo == expectCombo && s.Accuracy >= 0.9999;
         if (!ok) bad++;
 
-        Console.WriteLine($"{(ok ? "ok  " : "FAIL")} {Path.GetFileNameWithoutExtension(f)}");
+        Console.WriteLine($"{(ok ? "ok  " : "FAIL")} {Path.GetFileNameWithoutExtension(f)} [{mods}]");
         Console.WriteLine($"     v{map.FormatVersion} {circles}c {sliders}s {spinners}sp  combo {s.MaxCombo}/{expectCombo}  acc {s.Accuracy:P2}  score {s.TotalScore}  300 {s.Great} 100 {s.Ok} 50 {s.Meh} x {s.Miss}  sb {s.SliderBreaks}  ur {s.UnstableRate:F1}");
     }
 }

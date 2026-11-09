@@ -24,6 +24,8 @@ void audio_music_pause(bool paused);
 void audio_music_seek(double ms);
 void audio_music_stop(void);
 void audio_music_volume(float v);
+void audio_music_rate(double rate); /* 1.5 for DT, 0.75 for HT */
+uint32_t audio_music_frames(void);
 double audio_music_time(void); /* ms, can be negative during lead-in */
 bool audio_music_ended(void);
 

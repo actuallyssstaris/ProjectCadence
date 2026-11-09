@@ -88,6 +88,9 @@ PROVIDE(__eh_frame_hdr_start = ADDR(.eh_frame_hdr));
 PROVIDE(__eh_frame_hdr_end = ADDR(.eh_frame_hdr) + SIZEOF(.eh_frame_hdr));
 
 PROVIDE(__executable_start = ADDR(.text));
-PROVIDE(_etext = ADDR(.text) + SIZEOF(.text));
+/* End of all code, not just .text: NativeAOT's __managedcode and __unbox land
+ * after it, and the runtime's unwinder only looks for frame info below _etext.
+ * Ending it at .text made the first GC fault walking a managed frame. */
+PROVIDE(_etext = ADDR(.eh_frame_hdr));
 PROVIDE(__GNU_EH_FRAME_HDR = ADDR(.eh_frame_hdr));
 PROVIDE(__GNU_EH_FRAME_HDR_END = ADDR(.eh_frame_hdr) + SIZEOF(.eh_frame_hdr));

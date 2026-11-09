@@ -1,4 +1,5 @@
 #include "skin_ui.h"
+#include "../include/osu5.h"
 #include "draw.h"
 #include "gfx.h"
 #include "log.h"
@@ -34,11 +35,12 @@ void skin_apply(const char *id)
     if (!strcmp(id, "builtin")) {
         skin_images_load(NULL);
         skin_load("/data/osu5/skin"); /* hitsounds dropped in by hand, if any */
-        return;
+    } else {
+        skins_path(id, dir, sizeof(dir));
+        skin_images_load(dir);
+        skin_load(dir);
     }
-    skins_path(id, dir, sizeof(dir));
-    skin_images_load(dir);
-    skin_load(dir);
+    osu5_set_skin_colours(skin_img.combo_colours, skin_img.ncombo);
 }
 
 static void build_rows(void)
@@ -119,7 +121,7 @@ bool skin_ui_frame(const pad_state *pad)
             use(r);
             if (ui.first_run)
                 return true;
-        } else if (skins_install(r->catalog, &ui.job)) {
+        } else if (skins_install(r->catalog, &ui.job, false)) {
             ui.job_row = ui.sel;
         } else {
             snprintf(ui.note, sizeof(ui.note), "%s", ui.job.msg[0] ? ui.job.msg : "couldn't start the download");
@@ -127,7 +129,7 @@ bool skin_ui_frame(const pad_state *pad)
     }
 
     /* re-pull a catalog skin that's already there */
-    if ((pad->pressed & PAD_TRIANGLE) && ui.rows[ui.sel].catalog >= 0 && skins_install(ui.rows[ui.sel].catalog, &ui.job))
+    if ((pad->pressed & PAD_TRIANGLE) && ui.rows[ui.sel].catalog >= 0 && skins_install(ui.rows[ui.sel].catalog, &ui.job, true))
         ui.job_row = ui.sel;
     return false;
 }

@@ -30,10 +30,14 @@ typedef struct {
     volatile int state;       /* 0 idle, 1 working, 2 done, 3 failed */
     volatile uint64_t bytes;
     volatile int done, total; /* files, for the default skin */
+    bool force;               /* default skin: fetch files that are already there too */
     char msg[128];
 } skin_job;
 
 /* downloads catalog entry i on a worker thread; poll job->state */
-bool skins_install(int i, skin_job *job);
+bool skins_install(int i, skin_job *job, bool force);
+
+/* the default skin from an older version lacks the HUD and spinner art */
+bool skins_default_outdated(void);
 
 #endif

@@ -26,7 +26,8 @@ static atomic_bool running;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 static sound_buf music;
-static int64_t music_pos;  /* in frames, negative = silence before the track */
+static double music_pos;   /* track frames, fractional when the rate isn't 1; negative = lead-in */
+static double music_rate = 1;
 static bool music_playing;
 static bool music_paused;
 static float music_vol = 0.8f;
@@ -34,7 +35,7 @@ static float music_vol = 0.8f;
 static voice voices[VOICES];
 
 /* clock: music_pos at the last mix plus wall time since, so the game sees a smooth time */
-static int64_t clock_frames;
+static double clock_frames;
 static double clock_wall;
 static bool clock_valid;
 
@@ -68,14 +69,19 @@ static void mix(int16_t *out)
     pthread_mutex_lock(&lock);
 
     if (music_playing && !music_paused) {
+        /* speed mods just resample, so the pitch moves with the tempo */
+        const int16_t *d = music.data;
+        int64_t last = (int64_t)music.frames - 1;
         for (int i = 0; i < GRAIN; i++) {
-            int64_t p = music_pos + i;
-            if (p >= 0 && p < (int64_t)music.frames) {
-                acc[i * 2] += music.data[p * 2] * music_vol;
-                acc[i * 2 + 1] += music.data[p * 2 + 1] * music_vol;
-            }
+            double p = music_pos + i * music_rate;
+            int64_t k = (int64_t)floor(p);
+            if (k < 0 || k >= last)
+                continue;
+            float f = (float)(p - k);
+            acc[i * 2] += (d[k * 2] + (d[k * 2 + 2] - d[k * 2]) * f) * music_vol;
+            acc[i * 2 + 1] += (d[k * 2 + 1] + (d[k * 2 + 3] - d[k * 2 + 1]) * f) * music_vol;
         }
-        music_pos += GRAIN;
+        music_pos += GRAIN * music_rate;
     }
 
     for (int v = 0; v < VOICES; v++) {
@@ -166,7 +172,7 @@ void audio_music_set(sound_buf *m)
 static void anchor(void)
 {
     if (!mixing() && clock_valid)
-        music_pos = clock_frames + (int64_t)((now_ms() - clock_wall) * AUDIO_RATE / 1000.0);
+        music_pos = clock_frames + (now_ms() - clock_wall) * AUDIO_RATE / 1000.0 * music_rate;
     clock_frames = music_pos;
     clock_wall = now_ms();
     clock_valid = music_playing && !music_paused;
@@ -175,7 +181,7 @@ static void anchor(void)
 void audio_music_play(double from_ms)
 {
     pthread_mutex_lock(&lock);
-    music_pos = (int64_t)(from_ms * AUDIO_RATE / 1000.0);
+    music_pos = from_ms * AUDIO_RATE / 1000.0;
     music_playing = true;
     music_paused = false;
     clock_valid = false;
@@ -195,7 +201,7 @@ void audio_music_pause(bool paused)
 void audio_music_seek(double ms)
 {
     pthread_mutex_lock(&lock);
-    music_pos = (int64_t)(ms * AUDIO_RATE / 1000.0);
+    music_pos = ms * AUDIO_RATE / 1000.0;
     clock_valid = false;
     anchor();
     pthread_mutex_unlock(&lock);
@@ -217,26 +223,43 @@ void audio_music_volume(float v)
     pthread_mutex_unlock(&lock);
 }
 
+void audio_music_rate(double rate)
+{
+    pthread_mutex_lock(&lock);
+    anchor();
+    music_rate = rate > 0.1 ? rate : 1;
+    pthread_mutex_unlock(&lock);
+}
+
+/* track time; with a rate it runs that much faster than the wall clock */
 double audio_music_time(void)
 {
     pthread_mutex_lock(&lock);
     bool live = mixing();
-    double t = clock_frames * 1000.0 / AUDIO_RATE - (live ? OUTPUT_LATENCY_MS : 0);
+    double t = clock_frames * 1000.0 / AUDIO_RATE - (live ? OUTPUT_LATENCY_MS * music_rate : 0);
     if (clock_valid) {
         double since = now_ms() - clock_wall;
         /* never run more than two grains ahead of the mixer */
         double cap = 2.0 * GRAIN * 1000.0 / AUDIO_RATE;
-        t += !live || since < cap ? since : cap;
+        t += (!live || since < cap ? since : cap) * music_rate;
     }
     pthread_mutex_unlock(&lock);
     return t;
+}
+
+uint32_t audio_music_frames(void)
+{
+    pthread_mutex_lock(&lock);
+    uint32_t n = music.frames;
+    pthread_mutex_unlock(&lock);
+    return n;
 }
 
 bool audio_music_ended(void)
 {
     pthread_mutex_lock(&lock);
     anchor();
-    bool e = music.frames == 0 || music_pos >= (int64_t)music.frames;
+    bool e = music.frames == 0 || music_pos >= (double)music.frames;
     pthread_mutex_unlock(&lock);
     return e;
 }

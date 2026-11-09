@@ -79,11 +79,21 @@ nm -u "$work/compat.raw.o" | awk '$2 ~ /^__sp_device_/ {n = $2; sub(/^__sp_devic
 cat "$work/core/spc.map" "$work/core/device.map" > "$work/core/compat.map"
 $objcopy --redefine-syms="$work/core/compat.map" "$work/compat.raw.o" "$work/core/compat.o"
 
+# The runtime walks managed stacks with its own copy of libunwind's C++ templates,
+# and the SDK's libunwind.a (in for RADV's C++) has the same ones, built another
+# way. They're weak, so the linker keeps one, the SDK's, and the runtime then reads
+# an UnwindInfoSections laid out differently: the first GC faulted. Renaming the
+# runtime's libunwind:: names keeps the two apart; the C API (_Unwind_*, __unw_*)
+# stays shared, C++ exceptions have to go through one unwinder.
+nm --defined-only "$aot"/runtime-support/libRuntime*.a 2>/dev/null |
+    awk '$3 ~ /^_ZN9libunwind/ {print $3, "__dotnet" $3}' | sort -u > "$work/core/unw.map"
+cat "$work/core/spc.map" "$work/core/unw.map" > "$work/core/core.map"
+
 # .NET's own zlib is left out, RADV already carries one
 core_inputs=()
 for f in "$aot/native/osu5core.o" "$aot/runtime-support/libbootstrapperdll.o" "$aot"/runtime-support/*.a; do
     [[ $(basename "$f") == libz.a ]] && continue
-    $objcopy --redefine-syms="$work/core/spc.map" "$f" "$work/core/$(basename "$f")"
+    $objcopy --redefine-syms="$work/core/core.map" "$f" "$work/core/$(basename "$f")"
     core_inputs+=("$work/core/$(basename "$f")")
 done
 core_inputs=("${core_inputs[@]:0:2}" "$work/core/compat.o" --start-group "${core_inputs[@]:2}" --end-group)

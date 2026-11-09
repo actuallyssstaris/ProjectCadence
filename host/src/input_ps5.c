@@ -3,6 +3,7 @@
 
 #include <math.h>
 #include <string.h>
+#include <time.h>
 
 static int pad_handle = -1;
 static uint32_t prev_buttons;
@@ -35,6 +36,55 @@ static void deadzone(float *x, float *y, float dz)
     *y *= k;
 }
 
+static double now_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
+typedef struct {
+    int x, y;
+    double since, next;
+} repeater;
+
+/* one step on press, then repeating after a pause, faster the longer it's held;
+ * fast = the stick is pushed all the way */
+static void step(repeater *r, int x, int y, bool fast, int *out_x, int *out_y)
+{
+    double t = now_ms();
+    *out_x = *out_y = 0;
+    if (x != r->x || y != r->y) {
+        r->x = x;
+        r->y = y;
+        r->since = t;
+        r->next = t + 350;
+        *out_x = x;
+        *out_y = y;
+        return;
+    }
+    if ((x || y) && t >= r->next) {
+        r->next = t + (fast || t - r->since > 1500 ? 30 : 70);
+        *out_x = x;
+        *out_y = y;
+    }
+}
+
+static void nav_repeat(pad_state *p)
+{
+    static repeater any, dpad, stick;
+
+    int dx = !!(p->held & PAD_RIGHT) - !!(p->held & PAD_LEFT);
+    int dy = !!(p->held & PAD_DOWN) - !!(p->held & PAD_UP);
+    int sx = (p->lx > 0.5f) - (p->lx < -0.5f);
+    int sy = (p->ly > 0.5f) - (p->ly < -0.5f);
+
+    step(&any, dx ? dx : sx, dy ? dy : sy, false, &p->nav_x, &p->nav_y);
+    int unused;
+    step(&dpad, dx, dy, false, &p->dpad_x, &p->dpad_y);
+    step(&stick, 0, sy, fabsf(p->ly) > 0.95f, &unused, &p->stick_y);
+}
+
 void input_poll(pad_state *out)
 {
     memset(out, 0, sizeof(*out));
@@ -63,6 +113,8 @@ void input_poll(pad_state *out)
         out->tx = d.touch[0].x / 1919.0f;
         out->ty = d.touch[0].y / 1079.0f;
     }
+
+    nav_repeat(out);
 }
 
 /*

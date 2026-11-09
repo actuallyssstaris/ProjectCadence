@@ -24,6 +24,8 @@ namespace Osu5.Scoring
         public double Accuracy { get; private set; } = 1;
         public long TotalScore { get; private set; }
         public bool Failed;
+        public double Multiplier = 1;
+        public bool Hidden;     // turns S / SS into the silver ranks
 
         public int Great, Ok, Meh, Miss, SliderBreaks;
 
@@ -105,9 +107,9 @@ namespace Osu5.Scoring
             double comboProgress = maxComboPortion > 0 ? comboPortion / maxComboPortion : 1;
             double accProgress = maxAccuracyJudgements > 0 ? (double)accuracyJudged / maxAccuracyJudgements : 1;
 
-            TotalScore = (long)Math.Round(500000 * Accuracy * comboProgress
-                                          + 500000 * Math.Pow(Accuracy, 5) * accProgress
-                                          + bonusPortion);
+            TotalScore = (long)Math.Round((500000 * Accuracy * comboProgress
+                                           + 500000 * Math.Pow(Accuracy, 5) * accProgress
+                                           + bonusPortion) * Multiplier);
         }
 
         public Rank Rank
@@ -126,6 +128,8 @@ namespace Osu5.Scoring
 
                 // osu! ruleset: any miss caps you at A
                 if (r >= Rank.S && Miss > 0) r = Rank.A;
+                if (Hidden && r == Rank.S) r = Rank.SH;
+                if (Hidden && r == Rank.X) r = Rank.XH;
                 return r;
             }
         }

@@ -16,10 +16,8 @@ namespace Osu5.Native
         static Player? player;
         static readonly DrawList drawList = new DrawList();
         static string lastError = "";
-        static int mods;
-
-        const int mod_auto = 1;
-        const int mod_nofail = 2;
+        static Mods mods;
+        static uint[]? skinColours;
 
         [UnmanagedCallersOnly(EntryPoint = "osu5_load", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static int Load(byte* path)
@@ -27,7 +25,7 @@ namespace Osu5.Native
             try
             {
                 string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
-                map = BeatmapDecoder.Decode(p);
+                map = BeatmapDecoder.Decode(p, mods);
 
                 if (map.Mode != 0)
                 {
@@ -37,11 +35,7 @@ namespace Osu5.Native
                     return -2;
                 }
 
-                player = new Player(map)
-                {
-                    Autoplay = (mods & mod_auto) != 0,
-                    NoFail = (mods & mod_nofail) != 0,
-                };
+                player = new Player(map, mods, skinColours);
                 return 0;
             }
             catch (Exception e)
@@ -49,6 +43,26 @@ namespace Osu5.Native
                 lastError = e.Message;
                 map = null;
                 player = null;
+                return -1;
+            }
+        }
+
+        // Runs one full collection with this native frame on the stack. A broken
+        // unwinder setup takes the game down here at startup, not mid-map.
+        [UnmanagedCallersOnly(EntryPoint = "osu5_gc_check", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static int GcCheck()
+        {
+            try
+            {
+                var junk = new object[4096];
+                for (int i = 0; i < junk.Length; i++) junk[i] = new byte[64];
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                return GC.CollectionCount(0);
+            }
+            catch (Exception e)
+            {
+                lastError = e.Message;
                 return -1;
             }
         }
@@ -64,12 +78,22 @@ namespace Osu5.Native
         [UnmanagedCallersOnly(EntryPoint = "osu5_set_mods", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static void SetMods(int flags)
         {
-            mods = flags;
-            if (player != null)
+            // takes effect on the next load, most mods change the map itself
+            mods = (Mods)flags;
+        }
+
+        // 0xAARRGGBB, n = 0 clears; used for maps that bring no colours of their own
+        [UnmanagedCallersOnly(EntryPoint = "osu5_set_skin_colours", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static void SetSkinColours(uint* cols, int n)
+        {
+            if (n <= 0)
             {
-                player.Autoplay = (flags & mod_auto) != 0;
-                player.NoFail = (flags & mod_nofail) != 0;
+                skinColours = null;
+                return;
             }
+            skinColours = new uint[Math.Min(n, 8)];
+            for (int i = 0; i < skinColours.Length; i++)
+                skinColours[i] = cols[i];
         }
 
         [UnmanagedCallersOnly(EntryPoint = "osu5_start_time", CallConvs = new[] { typeof(CallConvCdecl) })]

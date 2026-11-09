@@ -3,6 +3,7 @@
 #include "net.h"
 #include "unzip.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <pthread.h>
 #include <stdio.h>
@@ -40,6 +41,16 @@ static const char *default_files[] = {
     "normal-slidertick.wav", "soft-hitnormal.wav", "soft-hitwhistle.wav", "soft-hitfinish.wav",
     "soft-hitclap.wav", "soft-slidertick.wav", "drum-hitnormal.wav", "drum-hitwhistle.wav",
     "drum-hitfinish.wav", "drum-hitclap.wav", "drum-slidertick.wav", "combobreak.mp3", "spinnerbonus.wav",
+    "score-0@2x.png", "score-1@2x.png", "score-2@2x.png", "score-3@2x.png", "score-4@2x.png",
+    "score-5@2x.png", "score-6@2x.png", "score-7@2x.png", "score-8@2x.png", "score-9@2x.png",
+    "score-comma@2x.png", "score-dot@2x.png", "score-percent@2x.png", "score-x@2x.png",
+    "scorebar-bg@2x.png", "scorebar-colour@2x.png",
+    "spinner-approachcircle@2x.png", "spinner-bottom@2x.png", "spinner-clear@2x.png", "spinner-glow@2x.png",
+    "spinner-middle@2x.png", "spinner-middle2@2x.png", "spinner-top@2x.png",
+    "ranking-XH@2x.png", "ranking-X@2x.png", "ranking-SH@2x.png", "ranking-S@2x.png", "ranking-A@2x.png",
+    "ranking-B@2x.png", "ranking-C@2x.png", "ranking-D@2x.png",
+    "ranking-XH-small@2x.png", "ranking-X-small@2x.png", "ranking-SH-small@2x.png", "ranking-S-small@2x.png",
+    "ranking-A-small@2x.png", "ranking-B-small@2x.png", "ranking-C-small@2x.png", "ranking-D-small@2x.png",
 };
 
 static char active[64];
@@ -130,9 +141,16 @@ static void *install_thread(void *arg)
         int n = (int)(sizeof(default_files) / sizeof(default_files[0]));
         job->total = n;
         for (int i = 0; i < n; i++) {
-            char url[256];
+            char url[256], name[64];
             snprintf(url, sizeof(url), DEFAULT_BASE "%s", default_files[i]);
-            snprintf(path, sizeof(path), "%s/%s", dir, default_files[i]);
+            /* stored lowercase like an unpacked .osk, that's how they're looked up */
+            snprintf(name, sizeof(name), "%s", default_files[i]);
+            for (char *c = name; *c; c++)
+                *c = (char)tolower((unsigned char)*c);
+            snprintf(path, sizeof(path), "%s/%s", dir, name);
+            job->done = i;
+            if (!job->force && access(path, F_OK) == 0)
+                continue; /* topping up an older download */
             int st = net_fetch(url, path, &job->bytes);
             if (st != 200) {
                 snprintf(job->msg, sizeof(job->msg), "%s: %s 0x%x", e->name, default_files[i], (unsigned)st);
@@ -153,7 +171,7 @@ static void *install_thread(void *arg)
             return NULL;
         }
         snprintf(job->msg, sizeof(job->msg), "unpacking");
-        int files = unzip_to(path, dir);
+        int files = unzip_to(path, dir, true);
         remove(path);
         if (files <= 0) {
             snprintf(job->msg, sizeof(job->msg), "couldn't unpack the .osk");
@@ -169,11 +187,17 @@ static void *install_thread(void *arg)
     return NULL;
 }
 
-bool skins_install(int i, skin_job *job)
+bool skins_default_outdated(void)
+{
+    return skins_installed("default") && access(SKINS_DIR "/default/spinner-top@2x.png", F_OK) != 0;
+}
+
+bool skins_install(int i, skin_job *job, bool force)
 {
     if (i < 0 || i >= skin_catalog_count || job->state == 1)
         return false;
     memset(job, 0, sizeof(*job));
+    job->force = force;
     job->state = 1;
     snprintf(job->msg, sizeof(job->msg), "downloading");
     if (!net_init()) {

@@ -14,6 +14,9 @@
 
 static int font_tex;
 static float pf_scale = 2.25f, pf_x = 384, pf_y = 108;
+static float cursor_scale = 1;
+
+void draw_set_cursor_scale(float s) { cursor_scale = s; }
 
 void draw_init(void)
 {
@@ -117,6 +120,87 @@ static bool skinned(const skin_sprite *s)
     return skin_img.on && s->tex;
 }
 
+/* left part of a sprite only, for bars that fill up; x, y = top left */
+static void sprite_cropped(const skin_sprite *s, float x, float y, float scale, float fill, uint32_t col)
+{
+    if (fill <= 0)
+        return;
+    if (fill > 1)
+        fill = 1;
+    float w = s->w * scale * fill, h = s->h * scale;
+    gfx_bind(s->tex);
+    gfx_push(&(gfx_inst){x + w / 2, y + h / 2, w / 2, h / 2, 0, gfx_next_z(), col, GK_TEX, {0, 0, fill, 1}});
+}
+
+/* ---- skin fonts: score-*, combo digits ---- */
+
+static const skin_sprite *glyph(bool combo, char c)
+{
+    if (c >= '0' && c <= '9')
+        return combo ? &skin_img.combo[c - '0'] : &skin_img.score[c - '0'];
+    switch (c) {
+    case ',': return &skin_img.score_comma;
+    case '.': return &skin_img.score_dot;
+    case '%': return &skin_img.score_percent;
+    case 'x': return combo ? &skin_img.combo_x : &skin_img.score_x;
+    default: return NULL;
+    }
+}
+
+bool draw_skin_font(bool combo)
+{
+    return (combo ? skin_img.combo[0].tex : skin_img.score[0].tex) != 0;
+}
+
+/* scale is per SD pixel; y is the top of the line */
+float draw_skin_text(float x, float y, float scale, bool combo, int align, const char *s, float alpha)
+{
+    float overlap = (combo ? skin_img.combo_overlap : skin_img.score_overlap) * scale;
+    float w = 0;
+    int n = 0;
+    for (const char *c = s; *c; c++) {
+        const skin_sprite *g = glyph(combo, *c);
+        if (g && g->tex) {
+            w += g->w * scale;
+            n++;
+        }
+    }
+    if (n > 1)
+        w -= overlap * (n - 1);
+    if (align == ALIGN_CENTRE) x -= w / 2;
+    else if (align == ALIGN_RIGHT) x -= w;
+
+    for (const char *c = s; *c; c++) {
+        const skin_sprite *g = glyph(combo, *c);
+        if (!g || !g->tex)
+            continue;
+        float gw = g->w * scale, gh = g->h * scale;
+        gfx_bind(g->tex);
+        gfx_push(&(gfx_inst){x + gw / 2, y + gh / 2, gw / 2, gh / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, alpha), GK_TEX, {0, 0, 1, 1}});
+        x += gw - overlap;
+    }
+    return w;
+}
+
+void draw_rank(int rank, float cx, float cy, float height, bool small, float alpha)
+{
+    static const char *names[] = {"D", "C", "B", "A", "S", "S", "SS", "SS", "F"};
+    static const float tint[][3] = {
+        {0.85f, 0.35f, 0.35f}, {0.75f, 0.45f, 0.85f}, {0.35f, 0.6f, 1.0f}, {0.4f, 0.9f, 0.4f},
+        {1.0f, 0.8f, 0.3f}, {0.8f, 0.85f, 0.9f}, {1.0f, 0.85f, 0.35f}, {0.85f, 0.9f, 0.95f}, {0.9f, 0.3f, 0.3f},
+    };
+    if (rank < 0 || rank > 8)
+        return;
+    const skin_sprite *s = rank < 8 ? (small ? &skin_img.rank_small[rank] : &skin_img.rank[rank]) : NULL;
+    if (s && s->tex) {
+        float k = height / s->h;
+        gfx_bind(s->tex);
+        gfx_push(&(gfx_inst){cx, cy, s->w * k / 2, s->h * k / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, alpha), GK_TEX, {0, 0, 1, 1}});
+        return;
+    }
+    draw_text(cx, cy - height / 2, height, gfx_rgba(tint[rank][0], tint[rank][1], tint[rank][2], alpha), ALIGN_CENTRE, names[rank]);
+}
+
 static void skin_number(float x, float y, float r, int n, float alpha)
 {
     char buf[12];
@@ -163,8 +247,10 @@ static void slider_body(const osu5_draw *d, const float *pts, int npoints)
     float zborder = gfx_next_z();
     float zbody = gfx_next_z();
 
-    uint32_t body = gfx_argb((d->colour & 0xFF000000) | ((d->colour >> 1) & 0x7F7F7F), d->alpha * 0.85f);
-    uint32_t edge = gfx_rgba(1, 1, 1, d->alpha);
+    /* skin.ini SliderTrackOverride / SliderBorder, else a darker combo colour and white */
+    uint32_t body = skin_img.has_track ? gfx_argb(skin_img.track, d->alpha * 0.85f)
+                                       : gfx_argb((d->colour & 0xFF000000) | ((d->colour >> 1) & 0x7F7F7F), d->alpha * 0.85f);
+    uint32_t edge = skin_img.has_border ? gfx_argb(skin_img.border, d->alpha) : gfx_rgba(1, 1, 1, d->alpha);
 
     for (int pass = 0; pass < 2; pass++) {
         float rad = pass == 0 ? r - border : r;
@@ -185,6 +271,63 @@ static void slider_body(const osu5_draw *d, const float *pts, int npoints)
             y0 = y1;
         }
     }
+}
+
+/* p0 rotation, p1 progress to clear, radius = time left (1..0), number rpm,
+ * flags bonus spins. Sizes are SD pixels times pf_scale, as stable lays them out. */
+static bool skinned_spinner(const osu5_draw *d, float cx, float cy)
+{
+    bool fresh = skin_img.sp_top.tex != 0, old = skin_img.sp_circle.tex != 0;
+    if (!skin_img.on || (!fresh && !old))
+        return false;
+
+    float a = d->alpha, rot = d->p0, p = d->p1;
+    uint32_t white = gfx_rgba(1, 1, 1, a);
+
+    if (fresh) {
+        float s = pf_scale * 0.8f;
+        if (skin_img.sp_glow.tex)
+            sprite(&skin_img.sp_glow, cx, cy, s, 0, gfx_rgba(0.01f, 0.6f, 1, a * p));
+        if (skin_img.sp_bottom.tex)
+            sprite(&skin_img.sp_bottom, cx, cy, s, rot / 3, white);
+        sprite(&skin_img.sp_top, cx, cy, s, rot, white);
+        if (skin_img.sp_middle2.tex)
+            sprite(&skin_img.sp_middle2, cx, cy, s, 0, white);
+        /* middle goes red as the spin completes */
+        if (skin_img.sp_middle.tex)
+            sprite(&skin_img.sp_middle, cx, cy, s, 0, gfx_rgba(1, 1 - p, 1 - p, a));
+    } else {
+        if (skin_img.sp_background.tex) {
+            float s = GFX_H / skin_img.sp_background.h;
+            sprite(&skin_img.sp_background, cx, GFX_H / 2.0f, s, 0, white);
+        }
+        if (skin_img.sp_metre.tex) {
+            /* fills from the bottom up; the crop goes the other way, so flip the uv */
+            const skin_sprite *m = &skin_img.sp_metre;
+            float s = GFX_H / skin_img.sp_metre.h, w = m->w * s, h = m->h * s * p;
+            gfx_bind(m->tex);
+            gfx_push(&(gfx_inst){cx, GFX_H - h / 2, w / 2, h / 2, 0, gfx_next_z(), white, GK_TEX, {0, 1 - p, 1, 1}});
+        }
+        sprite(&skin_img.sp_circle, cx, cy, pf_scale * 0.6f, rot, white);
+    }
+
+    if (skin_img.sp_approach.tex && d->radius > 0)
+        sprite(&skin_img.sp_approach, cx, cy, pf_scale * 1.2f * d->radius, 0, white);
+    if (p >= 1 && skin_img.sp_clear.tex)
+        sprite(&skin_img.sp_clear, cx, cy - 170 * pf_scale / 2.25f, pf_scale * 0.7f, 0, white);
+
+    char buf[32];
+    if (d->flags > 0) {
+        snprintf(buf, sizeof(buf), "%d", d->flags * 1000);
+        if (draw_skin_font(false))
+            draw_skin_text(cx, cy + 90, 1.3f, false, ALIGN_CENTRE, buf, a);
+        else
+            draw_text(cx, cy + 90, 70, gfx_rgba(1, 1, 1, a), ALIGN_CENTRE, buf);
+    }
+    snprintf(buf, sizeof(buf), "%d RPM", d->number);
+    draw_text(cx, GFX_H - 70, 28, gfx_rgba(1, 1, 1, a), ALIGN_CENTRE, buf);
+    gfx_bind(0);
+    return true;
 }
 
 static const char *result_text(int r)
@@ -291,6 +434,8 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
         case OSU5_DRAW_SPINNER: {
             float cx, cy;
             draw_to_screen(256, 192, &cx, &cy);
+            if (skinned_spinner(d, cx, cy))
+                break;
             float big = 384 * pf_scale * 0.5f;
             float z = gfx_next_z();
             disc(cx, cy, big, gfx_rgba(0, 0, 0, d->alpha * 0.45f), z);
@@ -356,14 +501,15 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
         }
 
         case OSU5_DRAW_CURSOR: {
+            float k = cursor_scale;
             if (skinned(&skin_img.cursor)) {
-                sprite(&skin_img.cursor, x, y, pf_scale, 0, gfx_rgba(1, 1, 1, 1));
+                sprite(&skin_img.cursor, x, y, pf_scale * k, 0, gfx_rgba(1, 1, 1, 1));
                 break;
             }
             float z = gfx_next_z();
-            disc(x, y, 22, gfx_rgba(1, 0.85f, 0.4f, 0.25f), z);
-            disc(x, y, 12, gfx_rgba(1, 0.9f, 0.5f, 0.95f), gfx_next_z());
-            ring(x, y, 13, 3, gfx_rgba(1, 1, 1, 1), gfx_next_z());
+            disc(x, y, 22 * k, gfx_rgba(1, 0.85f, 0.4f, 0.25f), z);
+            disc(x, y, 12 * k, gfx_rgba(1, 0.9f, 0.5f, 0.95f), gfx_next_z());
+            ring(x, y, 13 * k, 3, gfx_rgba(1, 1, 1, 1), gfx_next_z());
             break;
         }
         }
@@ -375,17 +521,32 @@ void draw_hud(const osu5_hud *hud, double time)
     (void)time;
     char buf[64];
 
-    /* health */
-    draw_rect(40, 30, 600, 16, gfx_rgba(0, 0, 0, 0.5f));
-    draw_rect(40, 30, 600 * hud->health, 16, gfx_rgba(1, 1, 1, 0.9f));
+    /* health; the skin's bar, colour part cropped to what's left */
+    if (skin_img.bar_bg.tex && skin_img.bar_colour.tex) {
+        const float s = 1.6f;
+        sprite_cropped(&skin_img.bar_bg, 0, 0, s, 1, gfx_rgba(1, 1, 1, 1));
+        sprite_cropped(&skin_img.bar_colour, 5 * s, 16 * s, s, hud->health, gfx_rgba(1, 1, 1, 1));
+    } else {
+        draw_rect(40, 30, 600, 16, gfx_rgba(0, 0, 0, 0.5f));
+        draw_rect(40, 30, 600 * hud->health, 16, gfx_rgba(1, 1, 1, 0.9f));
+    }
 
     snprintf(buf, sizeof(buf), "%08lld", (long long)hud->score);
-    draw_text(GFX_W - 40, 24, 56, gfx_rgba(1, 1, 1, 1), ALIGN_RIGHT, buf);
-    snprintf(buf, sizeof(buf), "%.2f%%", hud->accuracy * 100);
-    draw_text(GFX_W - 40, 90, 32, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
+    if (draw_skin_font(false)) {
+        draw_skin_text(GFX_W - 30, 16, 1.4f, false, ALIGN_RIGHT, buf, 1);
+        snprintf(buf, sizeof(buf), "%.2f%%", hud->accuracy * 100);
+        draw_skin_text(GFX_W - 30, 100, 0.8f, false, ALIGN_RIGHT, buf, 1);
+    } else {
+        draw_text(GFX_W - 40, 24, 56, gfx_rgba(1, 1, 1, 1), ALIGN_RIGHT, buf);
+        snprintf(buf, sizeof(buf), "%.2f%%", hud->accuracy * 100);
+        draw_text(GFX_W - 40, 90, 32, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
+    }
 
     snprintf(buf, sizeof(buf), "%dx", hud->combo);
-    draw_text(40, GFX_H - 100, 64, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+    if (draw_skin_font(true))
+        draw_skin_text(24, GFX_H - 120, 1.6f, true, ALIGN_LEFT, buf, 1);
+    else
+        draw_text(40, GFX_H - 100, 64, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
 
     /* song progress */
     draw_rect(0, GFX_H - 6, GFX_W, 6, gfx_rgba(0, 0, 0, 0.4f));

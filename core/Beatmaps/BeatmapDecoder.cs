@@ -10,6 +10,7 @@ using System.Linq;
 using System.Numerics;
 using Osu5.Objects;
 using Osu5.Paths;
+using Osu5.Play;
 using Osu5.Util;
 
 namespace Osu5.Beatmaps
@@ -38,11 +39,17 @@ namespace Osu5.Beatmaps
         EffectPoint? pendingEffect;
         SamplePoint? pendingSample;
 
-        public static Beatmap Decode(string path)
+        public static Beatmap Decode(string path, Mods mods = Mods.None)
         {
             using var reader = new StreamReader(path);
-            return new BeatmapDecoder().decode(reader);
+            return new BeatmapDecoder { mods = mods, flipY = (mods & Mods.HardRock) != 0 }.decode(reader);
         }
+
+        Mods mods;
+
+        // Hard Rock mirrors the map top to bottom. Doing it while parsing gives the same
+        // result as lazer flipping after stacking, since stacking only looks at distances.
+        bool flipY;
 
         public static Beatmap Decode(TextReader reader) => new BeatmapDecoder().decode(reader);
 
@@ -109,6 +116,8 @@ namespace Osu5.Beatmaps
 
             if (headerOnly)
                 return map;
+
+            ModRules.ApplyToDifficulty(map.Difficulty, mods);
 
             map.HitObjects = map.HitObjects.OrderBy(h => h.StartTime).ToList();
             postProcessBreaks();
@@ -360,6 +369,8 @@ namespace Osu5.Beatmaps
             // pre-lazer maps store whole pixels
             if (version < first_lazer_version)
                 pos = new Vector2((int)x, (int)y);
+            if (flipY)
+                pos.Y = 384 - pos.Y;
 
             double startTime = parseDouble(s[2]) + offset;
             int type = parseInt(s[3]);
@@ -490,6 +501,8 @@ namespace Osu5.Beatmaps
                     string[] xy = p.Split(':');
                     float px = parseFloat(xy[0]), py = parseFloat(xy[1]);
                     var v = version >= first_lazer_version ? new Vector2(px, py) : new Vector2((int)px, (int)py);
+                    if (flipY)
+                        v.Y = 384 - v.Y;
                     points.Add(v - start);
                 }
             }
