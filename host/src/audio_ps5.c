@@ -241,6 +241,13 @@ bool audio_music_ended(void)
     return e;
 }
 
+void audio_stop_voices(void)
+{
+    pthread_mutex_lock(&lock);
+    memset(voices, 0, sizeof(voices));
+    pthread_mutex_unlock(&lock);
+}
+
 void audio_play(const sound_buf *s, float volume, float pan)
 {
     if (!s || !s->data || s->frames == 0)

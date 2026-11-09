@@ -42,7 +42,8 @@ done
 rm -f "$work"/obj/*.o
 for f in "$root"/host/src/*.c; do
     cc -std=gnu11 -O2 -Wall -Wextra -Wno-unused-parameter -ffunction-sections -fdata-sections \
-        -I "$work/gen" -I "$radv_include" -c "$f" -o "$work/obj/$(basename "${f%.c}").o"
+        -I "$work/gen" -I "$radv_include" -I "$pv/.deps/native/zlib/root/usr/include" \
+        -c "$f" -o "$work/obj/$(basename "${f%.c}").o"
 done
 for f in app_crt app_cpp_runtime; do
     cc -std=c++20 -O2 -fno-exceptions -fno-rtti -ffunction-sections -fdata-sections \

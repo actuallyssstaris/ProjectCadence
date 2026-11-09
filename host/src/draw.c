@@ -1,5 +1,6 @@
 #include "draw.h"
 #include "gfx.h"
+#include "skin_img.h"
 
 #include "../third_party/font8x8_basic.h"
 
@@ -93,16 +94,53 @@ void draw_to_screen(float px, float py, float *sx, float *sy)
 
 static void disc(float x, float y, float r, uint32_t c, float z)
 {
+    gfx_bind(0);
     gfx_push(&(gfx_inst){x, y, r, r, 0, z, c, GK_DISC, {0}});
 }
 
 static void ring(float x, float y, float r, float thick, uint32_t c, float z)
 {
+    gfx_bind(0);
     gfx_push(&(gfx_inst){x, y, r, r, 0, z, c, GK_RING, {thick, 0, 0, 0}});
+}
+
+/* skin images are authored for 640x480 at circle radius 64, so scale = r / 64
+ * for anything that follows circle size and pf_scale for anything that doesn't */
+static void sprite(const skin_sprite *s, float x, float y, float scale, float rot, uint32_t col)
+{
+    gfx_bind(s->tex);
+    gfx_push(&(gfx_inst){x, y, s->w * scale / 2, s->h * scale / 2, rot, gfx_next_z(), col, GK_TEX, {0, 0, 1, 1}});
+}
+
+static bool skinned(const skin_sprite *s)
+{
+    return skin_img.on && s->tex;
+}
+
+static void skin_number(float x, float y, float r, int n, float alpha)
+{
+    char buf[12];
+    int len = snprintf(buf, sizeof(buf), "%d", n);
+    float s = r / 64 * 0.8f;
+    float w = 0;
+    for (int i = 0; i < len; i++)
+        w += skin_img.digit[buf[i] - '0'].w * s;
+    w -= skin_img.overlap * s * (len - 1);
+
+    float cx = x - w / 2;
+    for (int i = 0; i < len; i++) {
+        const skin_sprite *d = &skin_img.digit[buf[i] - '0'];
+        sprite(d, cx + d->w * s / 2, y, s, 0, gfx_rgba(1, 1, 1, alpha));
+        cx += d->w * s - skin_img.overlap * s;
+    }
 }
 
 static void number(float x, float y, float r, int n, float alpha)
 {
+    if (skinned(&skin_img.digit[0])) {
+        skin_number(x, y, r, n, alpha);
+        return;
+    }
     char buf[12];
     snprintf(buf, sizeof(buf), "%d", n);
     float size = r * 0.7f;
@@ -185,10 +223,20 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
 
         switch (d->kind) {
         case OSU5_DRAW_SLIDER_BODY:
+            gfx_bind(0);
             slider_body(d, points, npoints);
             break;
 
         case OSU5_DRAW_CIRCLE: {
+            if (skinned(&skin_img.circle)) {
+                sprite(&skin_img.circle, x, y, r / 64, 0, gfx_argb(d->colour, d->alpha));
+                if (skin_img.overlay.tex)
+                    sprite(&skin_img.overlay, x, y, r / 64, 0, gfx_rgba(1, 1, 1, d->alpha));
+                if (d->number > 0 && !(d->flags & 1))
+                    number(x, y, r, d->number, d->alpha);
+                break;
+            }
+            gfx_bind(0);
             float z = gfx_next_z();
             disc(x, y, r * 1.04f, gfx_rgba(0, 0, 0, d->alpha * 0.35f), z); /* soft shadow */
             gfx_push(&(gfx_inst){x, y, r, r, 0, gfx_next_z(), gfx_argb(d->colour, d->alpha), GK_HITCIRCLE, {0}});
@@ -198,10 +246,17 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
         }
 
         case OSU5_DRAW_APPROACH:
-            ring(x, y, r, fmaxf(3.0f, r * 0.06f), gfx_argb(d->colour, d->alpha), gfx_next_z());
+            if (skinned(&skin_img.approach))
+                sprite(&skin_img.approach, x, y, r / 64, 0, gfx_argb(d->colour, d->alpha));
+            else
+                ring(x, y, r, fmaxf(3.0f, r * 0.06f), gfx_argb(d->colour, d->alpha), gfx_next_z());
             break;
 
         case OSU5_DRAW_SLIDER_BALL: {
+            if (skinned(&skin_img.ball)) {
+                sprite(&skin_img.ball, x, y, r / 64, 0, gfx_rgba(1, 1, 1, d->alpha));
+                break;
+            }
             float z = gfx_next_z();
             disc(x, y, r * 0.86f, gfx_argb(d->colour, d->alpha), z);
             ring(x, y, r * 0.86f, r * 0.1f, gfx_rgba(1, 1, 1, d->alpha), gfx_next_z());
@@ -209,14 +264,27 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
         }
 
         case OSU5_DRAW_FOLLOW_CIRCLE:
-            ring(x, y, r, r * 0.06f, gfx_rgba(1, 1, 1, d->alpha * 0.9f), gfx_next_z());
+            /* r grows to 2.4x the circle; the art is drawn for the circle's own scale */
+            if (skinned(&skin_img.follow))
+                sprite(&skin_img.follow, x, y, r / 2.4f / 64, 0, gfx_rgba(1, 1, 1, d->alpha));
+            else
+                ring(x, y, r, r * 0.06f, gfx_rgba(1, 1, 1, d->alpha * 0.9f), gfx_next_z());
             break;
 
         case OSU5_DRAW_TICK:
-            disc(x, y, fmaxf(r, 5), gfx_rgba(1, 1, 1, d->alpha), gfx_next_z());
+            /* ticks come in at 0.15 of the circle radius */
+            if (skinned(&skin_img.tick))
+                sprite(&skin_img.tick, x, y, r / 0.15f / 64, 0, gfx_rgba(1, 1, 1, d->alpha));
+            else
+                disc(x, y, fmaxf(r, 5), gfx_rgba(1, 1, 1, d->alpha), gfx_next_z());
             break;
 
         case OSU5_DRAW_REVERSE:
+            if (skinned(&skin_img.reverse)) {
+                sprite(&skin_img.reverse, x, y, r / 64, d->p0, gfx_rgba(1, 1, 1, d->alpha));
+                break;
+            }
+            gfx_bind(0);
             gfx_push(&(gfx_inst){x, y, r * 0.55f, r * 0.55f, d->p0, gfx_next_z(), gfx_rgba(1, 1, 1, d->alpha), GK_ARROW, {0}});
             break;
 
@@ -248,6 +316,16 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
         }
 
         case OSU5_DRAW_JUDGEMENT: {
+            const skin_sprite *js = d->number == OSU5_RESULT_MISS ? &skin_img.hit0
+                                  : d->number == OSU5_RESULT_MEH  ? &skin_img.hit50
+                                  : d->number == OSU5_RESULT_OK   ? &skin_img.hit100
+                                                                  : &skin_img.hit300;
+            if (skinned(js)) {
+                float pop = 1.0f + 0.15f * (1 - d->p0);
+                float drop = d->number == OSU5_RESULT_MISS ? d->p0 * 30 : 0;
+                sprite(js, x, y + drop, r / 64 * pop, 0, gfx_rgba(1, 1, 1, d->alpha));
+                break;
+            }
             const char *t = result_text(d->number);
             float size = r * 0.8f * (1.0f + 0.15f * (1 - d->p0));
             float yy = y - size / 2 + (d->number == OSU5_RESULT_MISS ? d->p0 * 30 : 0);
@@ -266,12 +344,22 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
             float z = gfx_next_z();
             /* dots every 32 playfield px, skipping the bits under the circles */
             float step = 32 * pf_scale;
+            if (skinned(&skin_img.point)) {
+                float rot = atan2f(dy, dx);
+                for (float t = r * 1.2f; t < len - r * 1.2f; t += step)
+                    sprite(&skin_img.point, x + dx / len * t, y + dy / len * t, pf_scale, rot, gfx_rgba(1, 1, 1, d->alpha));
+                break;
+            }
             for (float t = r * 1.2f; t < len - r * 1.2f; t += step)
                 disc(x + dx / len * t, y + dy / len * t, 4, gfx_rgba(1, 1, 1, d->alpha * 0.6f), z);
             break;
         }
 
         case OSU5_DRAW_CURSOR: {
+            if (skinned(&skin_img.cursor)) {
+                sprite(&skin_img.cursor, x, y, pf_scale, 0, gfx_rgba(1, 1, 1, 1));
+                break;
+            }
             float z = gfx_next_z();
             disc(x, y, 22, gfx_rgba(1, 0.85f, 0.4f, 0.25f), z);
             disc(x, y, 12, gfx_rgba(1, 0.9f, 0.5f, 0.95f), gfx_next_z());

@@ -4,8 +4,8 @@ osu!standard on a jailbroken PS5, running natively. Gameplay is a port of lazer'
 osu! ruleset, so timing windows, slider ticks, stacking, scoring and health drain
 match lazer.
 
-Early days: it plays maps with sound, stick and touchpad input, and that's about it.
-No mods besides Auto and No Fail, no skins beyond hitsounds, no storyboards.
+Early days: it plays maps with sound, stick and touchpad input, and takes osu! skins.
+No mods besides Auto and No Fail, no storyboards.
 
 ## What's where
 
@@ -23,13 +23,22 @@ No mods besides Auto and No Fail, no skins beyond hitsounds, no storyboards.
 Left stick aims like a tablet area (full tilt reaches the playfield edge), right
 stick nudges. Touch the touchpad to aim with it, press it down to click.
 R1 / R2 / Cross = K1, L1 / L2 / Square = K2. Options pauses, Triangle skips intros
-and breaks. In song select: Triangle toggles Auto, Square No Fail, L1/R1 offset.
+and breaks. In song select: Triangle toggles Auto, Square No Fail, L1/R1 offset,
+touchpad opens the skin picker.
 
 ## Maps
 
 Extract .osz files (they're zips) into `/data/osu5/Songs/<folder>/` over FTP.
-Hitsounds from a skin can go in `/data/osu5/skin/` (`normal-hitnormal.wav` and
-friends); without them the game makes its own.
+
+## Skins
+
+First launch asks for a skin. The picker can download osu!'s classic default
+(straight from ppy/osu-resources, CC BY-NC 4.0) or a few skins their authors
+publish on GitHub; nothing skin-related ships with this repo. Any other osu! skin
+works too: unzip the .osk into `/data/osu5/skins/<name>/` and pick it from song
+select with the touchpad. Hit circles, approach circles, numbers, cursor, slider
+ball, follow circle, reverse arrows, ticks, follow points, hit popups and
+hitsounds come from the skin; slider bodies and the spinner are still drawn.
 
 ## Building
 

@@ -29,5 +29,7 @@ bool audio_music_ended(void);
 
 /* fire and forget, volume 0..1, pan -1..1 */
 void audio_play(const sound_buf *s, float volume, float pan);
+/* drop every playing effect, so their buffers can be freed */
+void audio_stop_voices(void);
 
 #endif

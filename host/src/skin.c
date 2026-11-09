@@ -1,5 +1,5 @@
-/* Hitsounds. Loads a user skin from /data/osu5/skin if there is one, otherwise
- * makes some passable clicks so the game isn't silent out of the box. */
+/* Hitsounds. Whatever the active skin has, and some passable made-up clicks for
+ * what it doesn't, so the game is never silent out of the box. */
 #include "audio.h"
 #include "skin.h"
 
@@ -82,6 +82,16 @@ static void load_or_make(sound_buf *out, const char *dir, const char *name, synt
 
 void skin_load(const char *dir)
 {
+    /* nothing may still be playing out of the buffers about to go */
+    audio_stop_voices();
+    for (int b = 0; b < 3; b++) {
+        for (int h = 0; h < 4; h++)
+            sound_free(&hits[b][h]);
+        sound_free(&ticks[b]);
+    }
+    sound_free(&combobreak);
+    sound_free(&spinnerbonus);
+
     const float pitch[3] = {1.0f, 0.8f, 1.3f};
     const synth kinds[4] = {SYN_CLICK, SYN_WHISTLE, SYN_FINISH, SYN_CLAP};
     char name[64];

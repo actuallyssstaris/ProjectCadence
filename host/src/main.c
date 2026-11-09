@@ -11,6 +11,8 @@
 #include "log.h"
 #include "sce.h"
 #include "skin.h"
+#include "skin_ui.h"
+#include "skins.h"
 #include "songs.h"
 
 #define STB_IMAGE_IMPLEMENTATION
@@ -33,7 +35,7 @@
 #define MAX_CMDS 4096
 #define MAX_POINTS 32768
 
-typedef enum { SCREEN_SELECT, SCREEN_PLAY, SCREEN_PAUSE, SCREEN_FAILED, SCREEN_RESULTS } screen;
+typedef enum { SCREEN_SELECT, SCREEN_PLAY, SCREEN_PAUSE, SCREEN_FAILED, SCREEN_RESULTS, SCREEN_SKINS } screen;
 
 static struct {
     screen scr;
@@ -296,7 +298,7 @@ static void render_select(void)
     draw_text(60, 262, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, buf);
 
     draw_text(40, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
-              "CROSS play   TRIANGLE auto   SQUARE no fail   L1/R1 offset");
+              "CROSS play   TRIANGLE auto   SQUARE no fail   L1/R1 offset   TOUCHPAD skins");
 
     if (app.status[0])
         draw_text(GFX_W / 2, 360, 26, gfx_rgba(1, 0.5f, 0.5f, 1), ALIGN_CENTRE, app.status);
@@ -304,6 +306,12 @@ static void render_select(void)
 
 static void select_frame(const pad_state *pad)
 {
+    if (pad->pressed & PAD_TOUCHPAD) {
+        skin_ui_open(false);
+        app.scr = SCREEN_SKINS;
+        return;
+    }
+
     if (app.songs.count == 0) {
         if (pad->pressed & PAD_CROSS)
             songs_scan(SONGS_DIR, &app.songs);
@@ -412,8 +420,12 @@ int main(void)
 
     settings_load();
     LOG("settings read");
-    skin_load(SKIN_DIR);
-    LOG("skin loaded");
+    skin_apply(skins_active());
+    LOG("skin %s", skins_active());
+    if (!skins_chosen()) {
+        skin_ui_open(true);
+        app.scr = SCREEN_SKINS;
+    }
     songs_scan(SONGS_DIR, &app.songs);
     LOG("%d maps", app.songs.count);
     if (app.songs.count > 0) {
@@ -464,6 +476,10 @@ int main(void)
             if (pad.pressed & PAD_CROSS) start_song(&app.songs.items[app.sel]);
             else if (pad.pressed & PAD_CIRCLE) back_to_select();
             break;
+        case SCREEN_SKINS:
+            if (skin_ui_frame(&pad))
+                app.scr = SCREEN_SELECT;
+            break;
         }
 
         gfx_begin(0.06f, 0.06f, 0.09f);
@@ -484,6 +500,10 @@ int main(void)
             break;
         case SCREEN_RESULTS:
             render_results();
+            break;
+        case SCREEN_SKINS:
+            draw_background(0.7f);
+            skin_ui_render();
             break;
         }
         gfx_end();
