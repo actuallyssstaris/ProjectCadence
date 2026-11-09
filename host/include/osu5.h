@@ -20,7 +20,14 @@ enum {
     OSU5_DRAW_JUDGEMENT,
     OSU5_DRAW_FOLLOW_POINT,
     OSU5_DRAW_CURSOR,
+    /* screen space, taiko and mania */
+    OSU5_DRAW_RECT,             /* x, y top left; radius = width, p0 = height */
+    OSU5_DRAW_DISC,             /* flags 1 = white rim */
+    OSU5_DRAW_SCREEN_JUDGEMENT, /* number < 0: a swell's remaining hits */
 };
+
+/* 0 osu, 1 taiko, 3 mania; keys = mania columns */
+int osu5_ruleset(int *keys);
 
 /* HitResult values, only the ones the host shows */
 enum {
@@ -28,6 +35,8 @@ enum {
     OSU5_RESULT_MEH = 2,
     OSU5_RESULT_OK = 3,
     OSU5_RESULT_GREAT = 4,
+    OSU5_RESULT_PERFECT = 12, /* mania */
+    OSU5_RESULT_GOOD = 13,
 };
 
 enum {
@@ -48,7 +57,18 @@ enum {
     OSU5_MOD_EASY = 16,
     OSU5_MOD_DOUBLETIME = 32,
     OSU5_MOD_HALFTIME = 64,
+    OSU5_MOD_SUDDENDEATH = 128,
+    OSU5_MOD_PERFECT = 256,
+    OSU5_MOD_FLASHLIGHT = 512,
+    OSU5_MOD_NIGHTCORE = 1024,
+    OSU5_MOD_DAYCORE = 2048,
+    OSU5_MOD_RELAX = 4096,
+    OSU5_MOD_AUTOPILOT = 8192,
+    OSU5_MOD_SPUNOUT = 16384,
+    OSU5_MOD_MIRROR = 32768,
 };
+
+int osu5_hit_errors(float *out, int max);
 
 enum {
     OSU5_SOUND_HIT = 1,

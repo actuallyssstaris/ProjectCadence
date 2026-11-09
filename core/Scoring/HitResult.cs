@@ -19,6 +19,8 @@ namespace Osu5.Scoring
         IgnoreHit,
         SmallBonus,
         LargeBonus,
+        Perfect,   // mania only
+        Good,      // mania only
     }
 
     public static class HitResults
@@ -32,21 +34,23 @@ namespace Osu5.Scoring
             HitResult.Great => 300,
             HitResult.SmallBonus => 10,
             HitResult.LargeBonus => 50,
+            HitResult.Perfect => 305,
+            HitResult.Good => 200,
             _ => 0,
         };
 
         public static bool IsHit(HitResult r) => r is not (HitResult.None or HitResult.Miss or HitResult.LargeTickMiss or HitResult.IgnoreMiss);
 
-        public static bool IsBasic(HitResult r) => r is HitResult.Miss or HitResult.Meh or HitResult.Ok or HitResult.Great;
+        public static bool IsBasic(HitResult r) => r is HitResult.Miss or HitResult.Meh or HitResult.Ok or HitResult.Great or HitResult.Perfect or HitResult.Good;
 
         public static bool IsBonus(HitResult r) => r is HitResult.SmallBonus or HitResult.LargeBonus;
 
-        public static bool AffectsCombo(HitResult r) => r is HitResult.Miss or HitResult.Meh or HitResult.Ok or HitResult.Great
+        public static bool AffectsCombo(HitResult r) => r is HitResult.Miss or HitResult.Meh or HitResult.Ok or HitResult.Great or HitResult.Perfect or HitResult.Good
             or HitResult.LargeTickHit or HitResult.LargeTickMiss or HitResult.SliderTailHit;
 
         public static bool BreaksCombo(HitResult r) => r is HitResult.Miss or HitResult.LargeTickMiss;
 
-        public static bool AffectsAccuracy(HitResult r) => r is HitResult.Miss or HitResult.Meh or HitResult.Ok or HitResult.Great
+        public static bool AffectsAccuracy(HitResult r) => r is HitResult.Miss or HitResult.Meh or HitResult.Ok or HitResult.Great or HitResult.Perfect or HitResult.Good
             or HitResult.LargeTickHit or HitResult.LargeTickMiss or HitResult.SliderTailHit;
 
         // from lazer's Judgement.HealthIncreaseFor, max increase is 0.05
@@ -57,6 +61,8 @@ namespace Osu5.Scoring
             HitResult.Meh => 0.0025,
             HitResult.Ok => 0.025,
             HitResult.Great => 0.05,
+            HitResult.Perfect => 0.05,
+            HitResult.Good => 0.04,
             HitResult.LargeTickHit => 0.05,
             HitResult.SliderTailHit => 0.02,
             HitResult.SmallBonus => 0.005,

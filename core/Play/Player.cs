@@ -7,7 +7,7 @@ using Osu5.Scoring;
 
 namespace Osu5.Play
 {
-    public sealed class Player
+    public sealed class Player : IGame
     {
         sealed class ObjState
         {
@@ -52,11 +52,12 @@ namespace Osu5.Play
 
         public readonly Beatmap Map;
         public readonly HitWindows Windows;
-        public readonly ScoreProcessor Score = new ScoreProcessor();
+        public ScoreProcessor Score { get; } = new ScoreProcessor();
         public readonly HealthProcessor Health;
 
         public bool NoFail;
         public bool Autoplay;
+        readonly bool suddenDeath, perfect, relax, autopilot, spunOut;
         public readonly bool Hidden;
 
         // lazer's Hidden: objects fade in over 40% of the approach and are gone 30% later
@@ -70,7 +71,7 @@ namespace Osu5.Play
         readonly List<double>[] drawLengths;
         readonly List<Popup> popups = new List<Popup>();
 
-        public readonly Queue<SoundEvent> Sounds = new Queue<SoundEvent>();
+        public Queue<SoundEvent> Sounds { get; } = new Queue<SoundEvent>();
 
         int firstActive;
         int prevKeys;
@@ -91,6 +92,11 @@ namespace Osu5.Play
 
             Autoplay = (mods & Mods.Auto) != 0;
             NoFail = (mods & Mods.NoFail) != 0;
+            suddenDeath = (mods & Mods.SuddenDeath) != 0;
+            perfect = (mods & Mods.Perfect) != 0;
+            relax = (mods & Mods.Relax) != 0;
+            autopilot = (mods & Mods.Autopilot) != 0;
+            spunOut = (mods & Mods.SpunOut) != 0;
             Hidden = (mods & Mods.Hidden) != 0;
             Score.Multiplier = ModRules.ScoreMultiplier(mods);
             Score.Hidden = Hidden;
@@ -198,6 +204,18 @@ namespace Osu5.Play
 
             if (Autoplay)
                 autoplay(time, ref keys);
+            else if (relax || autopilot)
+            {
+                // the bot plays half: Relax clicks for you, Autopilot aims for you
+                var own = cursor;
+                int botKeys = keys;
+                autoplay(time, ref botKeys);
+                if (relax)
+                {
+                    keys = botKeys;
+                    cursor = own;
+                }
+            }
 
             Health.Update(time);
 
@@ -220,7 +238,8 @@ namespace Osu5.Play
             while (firstActive < objs.Count && states[firstActive].Done && time > states[firstActive].DoneTime + 1000)
                 firstActive++;
 
-            if (Health.Failed && !NoFail && !Autoplay)
+            bool modFail = (suddenDeath && (Score.Miss > 0 || Score.LargeTickMisses > 0)) || (perfect && Score.Accuracy < 1);
+            if ((Health.Failed && !NoFail || modFail) && !Autoplay)
             {
                 State = PlayState.Failed;
                 FailTime = time;
@@ -488,7 +507,14 @@ namespace Osu5.Play
                 var d = cursor - centre;
                 float angle = MathF.Atan2(d.Y, d.X);
 
-                if (st.HasAngle && keys != 0)
+                if (spunOut)
+                {
+                    // spins itself at a steady ~480 rpm
+                    double dt = st.HasAngle ? Math.Max(0, time - st.LastSpinTime) : 0;
+                    st.Rotation += dt * 0.05;
+                    st.Rpm = 480;
+                }
+                else if (st.HasAngle && keys != 0)
                 {
                     double delta = angle - st.LastAngle;
                     if (delta > Math.PI) delta -= 2 * Math.PI;

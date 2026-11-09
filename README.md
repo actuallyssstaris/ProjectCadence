@@ -7,7 +7,7 @@ osu!standard beatmaps, and the gameplay is a port of lazer's osu! ruleset, so ti
 windows, slider ticks, stacking, scoring, health drain, star rating and pp match
 lazer.
 
-Maps and skins download on the console. There are local scores with pp, replays,
+Plays osu!, taiko and mania maps. Maps and skins download on the console. There are local scores with pp, replays,
 storyboards, search and sort in song select, and the main mods (EZ, NF, HT, HR, HD,
 DT, Auto; DT and HT keep the music's pitch).
 

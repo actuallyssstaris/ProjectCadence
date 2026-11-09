@@ -42,14 +42,14 @@ namespace Osu5.Beatmaps
         public static Beatmap Decode(string path, Mods mods = Mods.None)
         {
             using var reader = new StreamReader(path);
-            return new BeatmapDecoder { mods = mods, flipY = (mods & Mods.HardRock) != 0 }.decode(reader);
+            return new BeatmapDecoder { mods = mods, flipY = (mods & Mods.HardRock) != 0, flipX = (mods & Mods.Mirror) != 0 }.decode(reader);
         }
 
         Mods mods;
 
         // Hard Rock mirrors the map top to bottom. Doing it while parsing gives the same
         // result as lazer flipping after stacking, since stacking only looks at distances.
-        bool flipY;
+        bool flipY, flipX;
 
         public static Beatmap Decode(TextReader reader) => new BeatmapDecoder().decode(reader);
 
@@ -126,7 +126,8 @@ namespace Osu5.Beatmaps
                 h.ApplyDefaults(map.ControlPoints, map.Difficulty, version);
 
             Combo.Assign(map.HitObjects);
-            Stacking.Apply(map);
+            if (map.Mode == 0)
+                Stacking.Apply(map);
 
             return map;
         }
@@ -371,6 +372,8 @@ namespace Osu5.Beatmaps
                 pos = new Vector2((int)x, (int)y);
             if (flipY)
                 pos.Y = 384 - pos.Y;
+            if (flipX)
+                pos.X = 512 - pos.X;
 
             double startTime = parseDouble(s[2]) + offset;
             int type = parseInt(s[3]);
@@ -453,9 +456,17 @@ namespace Osu5.Beatmaps
                 obj = spinner;
                 pos = new Vector2(256, 192);
             }
+            else if ((type & 128) != 0)
+            {
+                // mania hold: the end time comes before the samples, "end:bank:add:..."
+                if (s.Length < 6)
+                    return;
+                var hold = new HoldNote { End = parseDouble(s[5].Split(':')[0]) + offset };
+                hold.Samples.Sound = sound;
+                obj = hold;
+            }
             else
             {
-                // mania holds and garbage, nothing to do with them here
                 return;
             }
 
@@ -503,6 +514,8 @@ namespace Osu5.Beatmaps
                     var v = version >= first_lazer_version ? new Vector2(px, py) : new Vector2((int)px, (int)py);
                     if (flipY)
                         v.Y = 384 - v.Y;
+                    if (flipX)
+                        v.X = 512 - v.X;
                     points.Add(v - start);
                 }
             }

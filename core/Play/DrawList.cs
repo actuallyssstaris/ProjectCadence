@@ -18,6 +18,10 @@ namespace Osu5.Play
         Judgement = 9,
         FollowPoint = 10,
         Cursor = 11,
+        // screen space, for taiko and mania (1920 x 1080)
+        Rect = 12,        // X, Y top left, Radius = width, P0 = height
+        Disc = 13,        // X, Y centre, Radius; Flags 1 = white rim
+        ScreenJudgement = 14, // like Judgement, at X, Y on screen
     }
 
     [StructLayout(LayoutKind.Sequential)]

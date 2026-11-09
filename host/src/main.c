@@ -51,6 +51,7 @@
 #define MAX_CMDS 4096
 #define MAX_POINTS 32768
 #define SHOWN_SCORES 5
+#define ACC_SAMPLES 200
 
 typedef enum {
     SCREEN_SELECT,
@@ -64,6 +65,7 @@ typedef enum {
     SCREEN_DOWNLOAD,
     SCREEN_WIZARD,
     SCREEN_MENU,
+    SCREEN_HELP,
 } screen;
 
 static struct {
@@ -91,6 +93,14 @@ static struct {
     int map_offset;       /* per map, from offsets.txt */
     bool fav_only;
     double delete_armed;  /* wall ms R3 was pressed once; a second press deletes */
+    int ruleset, keys;    /* of the map being played: 0 osu, 1 taiko, 3 mania; mania columns */
+    double break_flash;   /* wall ms a combo of 20+ broke */
+    double volume_shown;
+    float acc[ACC_SAMPLES];
+    int acc_n;
+    bool show_help;       /* the controls pages */
+    int help_page;
+    bool onboarded;
     double wiz_start, wiz_sum; /* offset finder: first beat (wall ms), summed tap errors */
     int wiz_taps, wiz_next;
     int menu_sel;
@@ -131,6 +141,8 @@ static struct {
 
     char status[256];
 } app = {.previewed = -1, .scores_for = -1, .new_place = -1};
+
+static void help_open(screen back);
 
 static osu5_draw cmds[MAX_CMDS];
 static float points[MAX_POINTS * 2];
@@ -178,6 +190,7 @@ static void settings_load(void)
             else if (!strcmp(key, "sort")) app.sort = (int)v >= 0 && (int)v <= SORT_COUNT ? (int)v : 0;
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
+            else if (!strcmp(key, "onboarded")) app.onboarded = v != 0;
         }
         fclose(f);
     }
@@ -189,9 +202,9 @@ static void settings_save(void)
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f)
         return;
-    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\n",
+    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
-            app.sort, app.storyboards, app.videos);
+            app.sort, app.storyboards, app.videos, app.onboarded);
     fclose(f);
 }
 
@@ -280,24 +293,46 @@ static const struct {
     int bit;
     const char *tag, *name, *what;
 } mod_list[] = {
+    /* easier */
     {OSU5_MOD_EASY, "EZ", "Easy", "bigger circles, more forgiving"},
     {OSU5_MOD_NOFAIL, "NF", "No Fail", "you can't fail"},
-    {OSU5_MOD_HALFTIME, "HT", "Half Time", "0.75x speed (pitch drops too)"},
-    {OSU5_MOD_HARDROCK, "HR", "Hard Rock", "smaller circles, mirrored map"},
+    {OSU5_MOD_HALFTIME, "HT", "Half Time", "0.75x speed, same pitch"},
+    {OSU5_MOD_DAYCORE, "DC", "Daycore", "0.75x speed, pitch drops"},
+    /* harder */
+    {OSU5_MOD_HARDROCK, "HR", "Hard Rock", "smaller circles, flipped map"},
+    {OSU5_MOD_SUDDENDEATH, "SD", "Sudden Death", "one miss and it's over"},
+    {OSU5_MOD_PERFECT, "PF", "Perfect", "anything but a 300 fails"},
+    {OSU5_MOD_DOUBLETIME, "DT", "Double Time", "1.5x speed, same pitch"},
+    {OSU5_MOD_NIGHTCORE, "NC", "Nightcore", "1.5x speed, pitch rises"},
     {OSU5_MOD_HIDDEN, "HD", "Hidden", "circles fade out before you hit them"},
-    {OSU5_MOD_DOUBLETIME, "DT", "Double Time", "1.5x speed (pitch rises too)"},
+    {OSU5_MOD_FLASHLIGHT, "FL", "Flashlight", "you only see around the cursor"},
+    {OSU5_MOD_MIRROR, "MR", "Mirror", "the map flipped left to right"},
+    /* help */
+    {OSU5_MOD_RELAX, "RX", "Relax", "aim yourself, the clicks are done for you"},
+    {OSU5_MOD_AUTOPILOT, "AP", "Autopilot", "click yourself, the aim is done for you"},
+    {OSU5_MOD_SPUNOUT, "SO", "Spun Out", "spinners spin themselves"},
     {OSU5_MOD_AUTO, "AT", "Auto", "watch a perfect play"},
 };
 #define MOD_COUNT (int)(sizeof(mod_list) / sizeof(mod_list[0]))
+#define MOD_COLS 4
 
 static double mod_rate(int mods)
 {
-    return mods & OSU5_MOD_DOUBLETIME ? 1.5 : mods & OSU5_MOD_HALFTIME ? 0.75 : 1.0;
+    return mods & (OSU5_MOD_DOUBLETIME | OSU5_MOD_NIGHTCORE) ? 1.5 : mods & (OSU5_MOD_HALFTIME | OSU5_MOD_DAYCORE) ? 0.75 : 1.0;
+}
+
+/* what the core gets: Nightcore and Daycore are its speed mods as well */
+static int core_mods(int mods)
+{
+    if (mods & OSU5_MOD_NIGHTCORE) mods |= OSU5_MOD_DOUBLETIME;
+    if (mods & OSU5_MOD_DAYCORE) mods |= OSU5_MOD_HALFTIME;
+    return mods;
 }
 
 /* same numbers as ModRules.ScoreMultiplier in the core */
 static double mod_multiplier(int mods)
 {
+    mods = core_mods(mods);
     double m = 1;
     if (mods & OSU5_MOD_NOFAIL) m *= 0.5;
     if (mods & OSU5_MOD_EASY) m *= 0.5;
@@ -305,6 +340,9 @@ static double mod_multiplier(int mods)
     if (mods & OSU5_MOD_HIDDEN) m *= 1.06;
     if (mods & OSU5_MOD_HARDROCK) m *= 1.06;
     if (mods & OSU5_MOD_DOUBLETIME) m *= 1.12;
+    if (mods & OSU5_MOD_FLASHLIGHT) m *= 1.12;
+    if (mods & (OSU5_MOD_RELAX | OSU5_MOD_AUTOPILOT)) m *= 0.1;
+    if (mods & OSU5_MOD_SPUNOUT) m *= 0.9;
     return m;
 }
 
@@ -324,11 +362,17 @@ static void toggle_mod(int bit)
     app.mods ^= bit;
     if (!(app.mods & bit))
         return;
-    /* pairs that cancel each other out */
-    if (bit == OSU5_MOD_EASY) app.mods &= ~OSU5_MOD_HARDROCK;
-    if (bit == OSU5_MOD_HARDROCK) app.mods &= ~OSU5_MOD_EASY;
-    if (bit == OSU5_MOD_DOUBLETIME) app.mods &= ~OSU5_MOD_HALFTIME;
-    if (bit == OSU5_MOD_HALFTIME) app.mods &= ~OSU5_MOD_DOUBLETIME;
+    /* groups where only one can be on */
+    static const int groups[] = {
+        OSU5_MOD_EASY | OSU5_MOD_HARDROCK,
+        OSU5_MOD_DOUBLETIME | OSU5_MOD_HALFTIME | OSU5_MOD_NIGHTCORE | OSU5_MOD_DAYCORE,
+        OSU5_MOD_NOFAIL | OSU5_MOD_SUDDENDEATH | OSU5_MOD_PERFECT,
+        OSU5_MOD_RELAX | OSU5_MOD_AUTOPILOT | OSU5_MOD_AUTO,
+        OSU5_MOD_AUTOPILOT | OSU5_MOD_SPUNOUT,
+    };
+    for (size_t g = 0; g < sizeof(groups) / sizeof(groups[0]); g++)
+        if (groups[g] & bit)
+            app.mods &= ~(groups[g] & ~bit);
 }
 
 /* ---- playing ---- */
@@ -350,7 +394,7 @@ static bool start_song(const song_entry *e)
         app.sb = NULL;
     }
 
-    osu5_set_mods(app.mods);
+    osu5_set_mods(core_mods(app.mods));
     if (osu5_load(e->file) != 0) {
         char err[200];
         osu5_string(OSU5_STR_ERROR, err, sizeof(err));
@@ -359,6 +403,7 @@ static bool start_song(const song_entry *e)
         app.previewed = -1;
         return false;
     }
+    app.ruleset = osu5_ruleset(&app.keys);
 
     char path[768];
     sound_buf music;
@@ -383,7 +428,8 @@ static bool start_song(const song_entry *e)
      * mod's rate over the stretched buffer; plain resampling if that fails */
     double rate = mod_rate(app.mods);
     sound_buf stretched;
-    bool kept_pitch = rate != 1 && audio_stretch(&music, rate, &stretched);
+    /* Nightcore and Daycore want the pitch to move: plain resampling */
+    bool kept_pitch = rate != 1 && !(app.mods & (OSU5_MOD_NIGHTCORE | OSU5_MOD_DAYCORE)) && audio_stretch(&music, rate, &stretched);
     if (kept_pitch) {
         sound_free(&music);
         music = stretched;
@@ -408,6 +454,8 @@ static bool start_song(const song_entry *e)
     app.map_offset = offsets_get(e->file);
     remember_selection(e->file);
     app.section_at = 0;
+    app.acc_n = 0;
+    app.break_flash = 0;
     app.prev_state = -1;
     sb_reset(app.sb);
     app.new_place = -1;
@@ -457,6 +505,38 @@ static void back_to_select(void)
 
 static double game_time(void) { return audio_music_time() + app.offset_ms + app.map_offset; }
 
+/* taiko: bits 0-1 don (left, right), 2-3 kat. mania: one bit a column, laid out
+ * so the shoulders take the outer columns and the face buttons the middle */
+static int ruleset_keys(uint32_t held)
+{
+    if (app.ruleset == 1) {
+        int k = 0;
+        if (held & (PAD_L2 | PAD_DOWN)) k |= 1;
+        if (held & (PAD_R2 | PAD_CROSS)) k |= 2;
+        if (held & (PAD_L1 | PAD_LEFT)) k |= 4;
+        if (held & (PAD_R1 | PAD_CIRCLE)) k |= 8;
+        return k;
+    }
+    static const uint32_t layouts[11][10] = {
+        {0},
+        {PAD_CROSS | PAD_R1 | PAD_L1},
+        {PAD_L1 | PAD_LEFT, PAD_R1 | PAD_CROSS},
+        {PAD_L1 | PAD_LEFT, PAD_CROSS | PAD_DOWN, PAD_R1 | PAD_CIRCLE},
+        {PAD_L2 | PAD_LEFT, PAD_L1 | PAD_DOWN, PAD_R1 | PAD_CROSS, PAD_R2 | PAD_CIRCLE},
+        {PAD_L2 | PAD_LEFT, PAD_L1 | PAD_DOWN, PAD_CROSS | PAD_UP, PAD_R1 | PAD_SQUARE, PAD_R2 | PAD_CIRCLE},
+        {PAD_L2, PAD_L1, PAD_LEFT, PAD_CIRCLE, PAD_R1, PAD_R2},
+        {PAD_L2, PAD_L1, PAD_LEFT, PAD_CROSS | PAD_DOWN, PAD_CIRCLE, PAD_R1, PAD_R2},
+        {PAD_L2, PAD_L1, PAD_LEFT, PAD_DOWN, PAD_CROSS, PAD_CIRCLE, PAD_R1, PAD_R2},
+        {PAD_L2, PAD_L1, PAD_LEFT, PAD_DOWN, PAD_UP, PAD_CROSS, PAD_CIRCLE, PAD_R1, PAD_R2},
+        {PAD_L2, PAD_L1, PAD_LEFT, PAD_DOWN, PAD_UP, PAD_TRIANGLE, PAD_CROSS, PAD_CIRCLE, PAD_R1, PAD_R2},
+    };
+    int cols = app.keys < 1 ? 1 : app.keys > 10 ? 10 : app.keys, k = 0;
+    for (int c = 0; c < cols; c++)
+        if (held & layouts[cols][c])
+            k |= 1 << c;
+    return k;
+}
+
 static void play_frame(const pad_state *pad, float dt)
 {
     double t = game_time();
@@ -477,7 +557,10 @@ static void play_frame(const pad_state *pad, float dt)
             app.cursor.y = f->y;
         }
     } else {
-        input_to_play(pad, &app.cursor, dt, app.sensitivity);
+        if (app.ruleset == 0)
+            input_to_play(pad, &app.cursor, dt, app.sensitivity);
+        else
+            app.cursor.keys = ruleset_keys(pad->held);
         osu5_update(t, app.cursor.x, app.cursor.y, app.cursor.keys);
         if (!(app.mods & OSU5_MOD_AUTO))
             replay_push(&app.rec, t, app.cursor.x, app.cursor.y, app.cursor.keys);
@@ -489,7 +572,26 @@ static void play_frame(const pad_state *pad, float dt)
         sb_hitsound(app.sb, &ev, t);
     }
 
+    int prev_combo = app.last_hud.combo;
     osu5_get_hud(t, &app.last_hud);
+    if (prev_combo >= 20 && app.last_hud.combo < prev_combo)
+        app.break_flash = wall_ms();
+
+    /* accuracy over the map, for the results graph */
+    int slot = (int)(app.last_hud.progress * (ACC_SAMPLES - 1));
+    if (app.last_hud.state != OSU5_STATE_INTRO && slot >= 0 && slot < ACC_SAMPLES) {
+        for (int i = app.acc_n; i <= slot; i++)
+            app.acc[i] = app.last_hud.accuracy;
+        if (slot + 1 > app.acc_n)
+            app.acc_n = slot + 1;
+    }
+
+    /* music volume on the d-pad, while playing (taiko and mania use it to play) */
+    if (pad->dpad_y && !app.watching && app.ruleset == 0) {
+        app.music_vol = fminf(1, fmaxf(0, app.music_vol - pad->dpad_y * 0.05f));
+        audio_music_volume(app.music_vol);
+        app.volume_shown = wall_ms();
+    }
 
     /* every break judges the section before it, like stable did */
     int state = app.last_hud.state;
@@ -542,9 +644,52 @@ static void render_play(void)
     if (app.sb)
         sb_draw(app.sb, t, SB_UNDER, dim);
     draw_gameplay(cmds, n, points, np);
+
+    if (app.mods & OSU5_MOD_FLASHLIGHT && app.ruleset == 0) {
+        /* dark everywhere but a circle round the cursor, smaller as the combo grows */
+        float cx = GFX_W / 2, cy = GFX_H / 2;
+        for (int i = n - 1; i >= 0; i--)
+            if (cmds[i].kind == OSU5_DRAW_CURSOR) {
+                draw_to_screen(cmds[i].x, cmds[i].y, &cx, &cy);
+                break;
+            }
+        int combo = app.last_hud.combo;
+        float r = (combo < 100 ? 180 : combo < 200 ? 160 : 140) * 2.25f;
+        if (app.last_hud.state == OSU5_STATE_BREAK)
+            r *= 2.5f;
+        gfx_bind(0);
+        float z = gfx_next_z();
+        gfx_push(&(gfx_inst){cx, cy, r + 2400, r + 2400, 0, z, gfx_rgba(0, 0, 0, 1), GK_RING, {2400, 0, 0, 0}});
+        for (int k = 0; k < 6; k++) /* soft edge */
+            gfx_push(&(gfx_inst){cx, cy, r - k * 10, r - k * 10, 0, z, gfx_rgba(0, 0, 0, 0.5f - k * 0.08f), GK_RING, {10, 0, 0, 0}});
+    }
+
     if (app.sb)
         sb_draw(app.sb, t, SB_OVER, 0);
     draw_hud(&app.last_hud, t);
+
+    /* red at the edges when a decent combo breaks */
+    double flash = wall_ms() - app.break_flash;
+    if (app.break_flash > 0 && flash < 400) {
+        float a = 0.45f * (float)(1 - flash / 400);
+        draw_rect(0, 0, GFX_W, 40, gfx_rgba(1, 0.15f, 0.15f, a));
+        draw_rect(0, GFX_H - 40, GFX_W, 40, gfx_rgba(1, 0.15f, 0.15f, a));
+        draw_rect(0, 40, 40, GFX_H - 80, gfx_rgba(1, 0.15f, 0.15f, a));
+        draw_rect(GFX_W - 40, 40, 40, GFX_H - 80, gfx_rgba(1, 0.15f, 0.15f, a));
+    }
+
+    if (app.last_hud.skip_target > 0 && !app.watching) {
+        draw_rect(GFX_W - 300, GFX_H - 150, 260, 80, gfx_rgba(1, 1, 1, 0.9f));
+        draw_text(GFX_W - 170, GFX_H - 128, 34, gfx_rgba(0.08f, 0.08f, 0.12f, 1), ALIGN_CENTRE, "skip  /\\");
+    }
+
+    if (wall_ms() - app.volume_shown < 1200) {
+        char vb[32];
+        snprintf(vb, sizeof(vb), "music %d%%", (int)lroundf(app.music_vol * 100));
+        draw_rect(GFX_W / 2 - 160, 120, 320, 70, gfx_rgba(0, 0, 0, 0.7f));
+        draw_rect(GFX_W / 2 - 140, 170, 280 * app.music_vol, 8, gfx_rgba(0.5f, 0.9f, 0.95f, 1));
+        draw_text(GFX_W / 2, 130, 28, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, vb);
+    }
 
     /* the break's verdict blinks a few times */
     double since = wall_ms() - app.section_at;
@@ -1037,9 +1182,23 @@ static void render_select(void)
             float tx = x + 28;
             if (st >= 0)
                 tx += star_pill(tx, y + 10, 30, st) + 14;
+            if (in->mode != 0) {
+                /* which game this difficulty is */
+                char tag[16];
+                snprintf(tag, sizeof(tag), in->mode == 1 ? "TAIKO" : "%dK", (int)lroundf(in->cs));
+                float tw = draw_text_width(16, tag) + 20;
+                draw_rect(tx, y + 12, tw, 26, in->mode == 1 ? gfx_rgba(0.92f, 0.3f, 0.3f, 1) : gfx_rgba(0.6f, 0.45f, 1, 1));
+                draw_text(tx + tw / 2, y + 17, 16, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, tag);
+                tx += tw + 12;
+            }
             snprintf(buf, sizeof(buf), "%.80s", in->version);
             draw_text(tx, y + 14, 24, tc, ALIGN_LEFT, buf);
-            snprintf(buf, sizeof(buf), "CS %.1f  AR %.1f  OD %.1f  HP %.1f", in->cs, in->ar, in->od, in->hp);
+            if (in->mode == 3)
+                snprintf(buf, sizeof(buf), "%d keys  OD %.1f  HP %.1f", (int)lroundf(in->cs), in->od, in->hp);
+            else if (in->mode == 1)
+                snprintf(buf, sizeof(buf), "OD %.1f  HP %.1f", in->od, in->hp);
+            else
+                snprintf(buf, sizeof(buf), "CS %.1f  AR %.1f  OD %.1f  HP %.1f", in->cs, in->ar, in->od, in->hp);
             draw_text(x + 28, y + 46, 16, tc, ALIGN_LEFT, buf);
             continue;
         }
@@ -1138,8 +1297,6 @@ scores_done:;
         draw_text(40, GFX_H - 100, 22, gfx_rgba(0.5f, 0.85f, 1, 1), ALIGN_LEFT, buf);
     }
 
-    draw_text(40, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
-              "CROSS play  SQUARE mods  L3 favourite  R3 delete  TRIANGLE get maps  OPTIONS settings  CIRCLE menu");
 
     if (app.status[0])
         draw_text(GFX_W / 2, GFX_H - 150, 26, gfx_rgba(1, 0.5f, 0.5f, 1), ALIGN_CENTRE, app.status);
@@ -1151,11 +1308,12 @@ scores_done:;
 
 static void mods_frame(const pad_state *pad)
 {
-    /* 3 x 3 grid, Auto alone on the last row */
-    int r = app.mod_sel / 3, c = app.mod_sel % 3;
-    r = (r + pad->nav_y + 3) % 3;
-    c = (c + pad->nav_x + 3) % 3;
-    app.mod_sel = r * 3 + c;
+    /* a row each: easier, harder, harder still, help */
+    int rows = (MOD_COUNT + MOD_COLS - 1) / MOD_COLS;
+    int r = app.mod_sel / MOD_COLS, c = app.mod_sel % MOD_COLS;
+    r = (r + pad->nav_y + rows) % rows;
+    c = (c + pad->nav_x + MOD_COLS) % MOD_COLS;
+    app.mod_sel = r * MOD_COLS + c;
     if (app.mod_sel >= MOD_COUNT)
         app.mod_sel = MOD_COUNT - 1;
 
@@ -1175,26 +1333,31 @@ static void render_mods(void)
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.7f));
     draw_text(GFX_W / 2, 110, 52, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "mods");
 
-    const float w = 420, h = 150, x0 = (GFX_W - 3 * w) / 2, y0 = 220;
+    /* one colour per row, so the kinds read at a glance */
+    static const float row_col[4][3] = {{0.5f, 0.9f, 0.5f}, {1, 0.45f, 0.45f}, {1, 0.75f, 0.3f}, {0.5f, 0.75f, 1}};
+    const float w = 400, h = 150, x0 = (GFX_W - MOD_COLS * w) / 2, y0 = 190;
     for (int i = 0; i < MOD_COUNT; i++) {
-        float x = x0 + (i % 3) * w, y = y0 + (i / 3) * h;
+        float x = x0 + (i % MOD_COLS) * w, y = y0 + (i / MOD_COLS) * h;
+        const float *rc = row_col[(i / MOD_COLS) % 4];
         bool on = app.mods & mod_list[i].bit, cur = i == app.mod_sel;
         draw_rect(x + 10, y + 10, w - 20, h - 20,
-                  on ? gfx_rgba(1, 0.8f, 0.3f, cur ? 1 : 0.85f) : gfx_rgba(1, 1, 1, cur ? 0.35f : 0.1f));
-        uint32_t tc = on ? gfx_rgba(0.12f, 0.08f, 0.02f, 1) : gfx_rgba(1, 1, 1, 1);
-        draw_text(x + 36, y + 32, 40, tc, ALIGN_LEFT, mod_list[i].tag);
-        draw_text(x + 130, y + 40, 28, tc, ALIGN_LEFT, mod_list[i].name);
-        draw_text(x + 36, y + 92, 17, tc, ALIGN_LEFT, mod_list[i].what);
+                  on ? gfx_rgba(rc[0], rc[1], rc[2], cur ? 1 : 0.85f) : gfx_rgba(1, 1, 1, cur ? 0.3f : 0.08f));
+        if (cur)
+            draw_rect(x + 10, y + h - 16, w - 20, 6, gfx_rgba(1, 1, 1, 0.9f));
+        uint32_t tc = on ? gfx_rgba(0.08f, 0.06f, 0.06f, 1) : gfx_rgba(1, 1, 1, 1);
+        draw_text(x + 30, y + 30, 38, on ? tc : gfx_rgba(rc[0], rc[1], rc[2], 1), ALIGN_LEFT, mod_list[i].tag);
+        draw_text(x + 110, y + 38, 26, tc, ALIGN_LEFT, mod_list[i].name);
+        draw_text(x + 30, y + 92, 16, tc, ALIGN_LEFT, mod_list[i].what);
     }
 
+    int rows = (MOD_COUNT + MOD_COLS - 1) / MOD_COLS;
     snprintf(buf, sizeof(buf), "score x%.2f", mod_multiplier(app.mods));
-    draw_text(GFX_W / 2, y0 + 3 * h + 40, 34, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_CENTRE, buf);
-    draw_text(GFX_W / 2, GFX_H - 90, 26, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "CROSS toggle   TRIANGLE clear all   CIRCLE done");
+    draw_text(GFX_W / 2, y0 + rows * h + 30, 34, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_CENTRE, buf);
 }
 
 /* ---- settings ---- */
 
-enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_STORYBOARD, SET_VIDEO, SET_WIZARD, SET_RESCAN, SET_COUNT };
+enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_STORYBOARD, SET_VIDEO, SET_WIZARD, SET_HELP, SET_RESCAN, SET_COUNT };
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -1222,6 +1385,12 @@ static void settings_frame(const pad_state *pad)
     case SET_VIDEO:
         if (d || pad->pressed & PAD_CROSS)
             app.videos = !app.videos;
+        break;
+    case SET_HELP:
+        if (pad->pressed & PAD_CROSS) {
+            help_open(SCREEN_SETTINGS);
+            return;
+        }
         break;
     case SET_WIZARD:
         if (pad->pressed & PAD_CROSS) {
@@ -1266,6 +1435,7 @@ static void render_settings(void)
         case SET_STORYBOARD: name = "storyboards"; snprintf(val, sizeof(val), "%s", app.storyboards ? "on" : "off"); break;
         case SET_VIDEO: name = "video backgrounds (mp4)"; snprintf(val, sizeof(val), "%s", app.videos ? "on" : "off"); break;
         case SET_WIZARD: name = "find my offset"; snprintf(val, sizeof(val), "CROSS"); break;
+        case SET_HELP: name = "show the controls"; snprintf(val, sizeof(val), "CROSS"); break;
         case SET_RESCAN: name = "rescan the Songs folder"; snprintf(val, sizeof(val), "CROSS"); break;
         }
         float y = 170 + i * 74;
@@ -1286,7 +1456,6 @@ static void render_settings(void)
     draw_text(160, 170 + SET_COUNT * 74 + 10, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, hint);
     if (app.status[0])
         draw_text(160, 170 + SET_COUNT * 74 + 44, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, app.status);
-    draw_text(160, GFX_H - 90, 26, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, "LEFT/RIGHT change   CIRCLE save and back");
 }
 
 /* ---- pause / fail / results ---- */
@@ -1328,33 +1497,67 @@ static void render_results(void)
     arc(cx, cy, R - 34, 8, 0, h->accuracy, gfx_rgba(1, 1, 1, 0.9f));
     draw_rank(h->rank, cx, cy, 240, false, 1);
 
-    float x = 900, y = 300;
+    float x = 900, y = 230;
     snprintf(buf, sizeof(buf), "%08lld", (long long)h->score);
     draw_text(x, y, 72, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "accuracy %.2f%%", h->accuracy * 100);
-    draw_text(x, y + 110, 34, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "max combo %dx", h->max_combo);
-    draw_text(x, y + 160, 34, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "300 %d   100 %d   50 %d   miss %d", h->great, h->ok, h->meh, h->miss);
-    draw_text(x, y + 230, 30, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "UR %.1f   %.2f*", h->unstable_rate, osu5_play_stars());
-    draw_text(x, y + 280, 30, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
     snprintf(buf, sizeof(buf), "%.0fpp", app.last_pp);
     draw_text(1620, y, 72, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, buf);
+    snprintf(buf, sizeof(buf), "%.2f%%   %dx   UR %.1f   %.2f*", h->accuracy * 100, h->max_combo, h->unstable_rate, osu5_play_stars());
+    draw_text(x, y + 100, 32, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+    snprintf(buf, sizeof(buf), "300 %d   100 %d   50 %d   miss %d", h->great, h->ok, h->meh, h->miss);
+    draw_text(x, y + 150, 28, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, buf);
 
     char tags[64];
     mod_tags(app.mods, tags, sizeof(tags));
     if (tags[0])
-        draw_text(x, y + 330, 30, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, tags);
+        draw_text(x, y + 200, 28, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, tags);
     if (app.watching)
-        draw_text(x, y + 390, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "watched a replay");
+        draw_text(x, y + 250, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "watched a replay");
     else if (app.new_place == 0)
-        draw_text(x, y + 390, 34, gfx_rgba(0.5f, 1, 0.6f, 1), ALIGN_LEFT, "new personal best!");
+        draw_text(x, y + 250, 32, gfx_rgba(0.5f, 1, 0.6f, 1), ALIGN_LEFT, "new personal best!");
     else if (app.mods & OSU5_MOD_AUTO)
-        draw_text(x, y + 390, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "auto plays aren't saved");
+        draw_text(x, y + 250, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "auto plays aren't saved");
 
-    draw_text(GFX_W / 2, 860, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE,
-              app.last_when && !app.watching ? "CROSS retry   SQUARE watch replay   CIRCLE back" : "CROSS retry   CIRCLE back");
+    /* hit offsets: where the taps landed against the beat */
+    static float errs[8192];
+    int ne = osu5_hit_errors(errs, 8192);
+    enum { BINS = 41 };
+    int bins[BINS] = {0}, top = 1;
+    float sum = 0;
+    for (int i = 0; i < ne; i++) {
+        int b = (int)lroundf(errs[i] / 5) + BINS / 2; /* 5 ms a bin, +-100 ms */
+        if (b >= 0 && b < BINS && ++bins[b] > top)
+            top = bins[b];
+        sum += errs[i];
+    }
+    float gx = 900, gy = 560, gw = 340, gh = 150;
+    draw_rect(gx, gy, gw, gh, gfx_rgba(0, 0, 0, 0.35f));
+    draw_rect(gx + gw / 2 - 1, gy, 2, gh, gfx_rgba(1, 1, 1, 0.35f));
+    for (int b = 0; b < BINS; b++) {
+        float bh = (gh - 10) * bins[b] / top;
+        float off = fabsf((b - BINS / 2) * 5.0f);
+        uint32_t c = off < 20 ? gfx_rgba(0.4f, 0.8f, 1, 0.9f) : off < 50 ? gfx_rgba(0.5f, 1, 0.5f, 0.9f) : gfx_rgba(1, 0.85f, 0.35f, 0.9f);
+        draw_rect(gx + b * gw / BINS + 1, gy + gh - bh, gw / BINS - 2, bh, c);
+    }
+    snprintf(buf, sizeof(buf), "hits: %+.1f ms on average", ne ? sum / ne : 0);
+    draw_text(gx, gy + gh + 10, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
+
+    /* accuracy through the map */
+    float ax = 1280, aw = 340;
+    draw_rect(ax, gy, aw, gh, gfx_rgba(0, 0, 0, 0.35f));
+    float lo = 1;
+    for (int i = 0; i < app.acc_n; i++)
+        lo = fminf(lo, app.acc[i]);
+    lo = fminf(lo, 0.9f);
+    for (int i = 1; i < app.acc_n; i++) {
+        float x0 = ax + aw * (i - 1) / (ACC_SAMPLES - 1), x1 = ax + aw * i / (ACC_SAMPLES - 1);
+        float y0 = gy + gh - 5 - (gh - 10) * (app.acc[i - 1] - lo) / (1 - lo);
+        float y1 = gy + gh - 5 - (gh - 10) * (app.acc[i] - lo) / (1 - lo);
+        gfx_bind(0);
+        gfx_push(&(gfx_inst){x0, y0, 2, 2, 0, gfx_next_z(), gfx_rgba(1, 0.85f, 0.4f, 1), GK_CAPSULE, {x1, y1, 0, 0}});
+    }
+    snprintf(buf, sizeof(buf), "accuracy, %.0f%% to 100%%", lo * 100);
+    draw_text(ax, gy + gh + 10, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
 }
 
 /* ---- offset finder: tap along to a click, the average miss is the offset ---- */
@@ -1400,6 +1603,100 @@ static void render_wizard(void)
     snprintf(buf, sizeof(buf), "%d / %d", app.wiz_taps, WIZ_TAPS);
     draw_text(GFX_W / 2, 760, 34, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, buf);
     draw_text(GFX_W / 2, 860, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "CIRCLE cancel");
+}
+
+/* ---- controls pages: shown once on the first launch, and from settings ---- */
+
+static const struct help_page {
+    const char *title;
+    const char *rows[14][2];
+} help_pages[] = {
+    {"playing", {
+        {"left stick", "aim: full tilt reaches the playfield edge"},
+        {"right stick", "nudge the cursor"},
+        {"touchpad", "touch to aim with it, press to click"},
+        {"R1  R2  CROSS", "hit (first key)"},
+        {"L1  L2  SQUARE", "hit (second key)"},
+        {"TRIANGLE", "skip the intro or a break"},
+        {"D-PAD up / down", "music volume"},
+        {"OPTIONS", "pause"},
+    }},
+    {"song select", {
+        {"left stick", "browse the sets"},
+        {"D-PAD up / down", "pick the difficulty"},
+        {"CROSS", "play"},
+        {"SQUARE", "mods"},
+        {"TRIANGLE", "get maps"},
+        {"L1", "search"},
+        {"R1", "change the sort, favourites last"},
+        {"L2", "online leaderboard"},
+        {"R2", "watch your best replay"},
+        {"L3", "favourite the set"},
+        {"R3  twice", "delete the set"},
+        {"OPTIONS", "settings"},
+        {"TOUCHPAD", "skins"},
+        {"CIRCLE", "main menu"},
+    }},
+    {"pause and results", {
+        {"CROSS", "continue / retry"},
+        {"TRIANGLE", "retry from the pause menu"},
+        {"CIRCLE", "back to song select"},
+        {"D-PAD left / right", "this map's offset, while paused"},
+        {"SQUARE", "watch the replay, on results"},
+    }},
+    {"taiko and mania", {
+        {"taiko: L2  R2  DOWN  CROSS", "don (red)"},
+        {"taiko: L1  R1  LEFT  CIRCLE", "kat (blue)"},
+        {"mania 4K", "L2  L1  R1  R2"},
+        {"mania 4K, also", "LEFT  DOWN  CROSS  CIRCLE"},
+        {"mania 7K", "L2  L1  LEFT  CROSS  CIRCLE  R1  R2"},
+        {"mania other", "the shoulders outside in, face buttons in the middle"},
+    }},
+};
+#define HELP_PAGES (int)(sizeof(help_pages) / sizeof(help_pages[0]))
+
+static screen help_return = SCREEN_MENU;
+
+static void help_open(screen back)
+{
+    app.help_page = 0;
+    help_return = back;
+    app.scr = SCREEN_HELP;
+}
+
+static void help_frame(const pad_state *pad)
+{
+    if (pad->pressed & PAD_CROSS || pad->nav_x > 0)
+        app.help_page++;
+    if (pad->nav_x < 0 && app.help_page > 0)
+        app.help_page--;
+    if (app.help_page >= HELP_PAGES || pad->pressed & PAD_CIRCLE) {
+        if (!app.onboarded) {
+            app.onboarded = true;
+            settings_save();
+        }
+        app.scr = help_return;
+    }
+}
+
+static void render_help(void)
+{
+    const struct help_page *p = &help_pages[app.help_page < HELP_PAGES ? app.help_page : HELP_PAGES - 1];
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.03f, 0.04f, 0.09f, 0.85f));
+    draw_text(GFX_W / 2, 90, 30, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_CENTRE, app.onboarded ? "controls" : "welcome to ProjectCadence");
+    draw_text(GFX_W / 2, 140, 56, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, p->title);
+    for (int i = 0; i < 14 && p->rows[i][0]; i++) {
+        float y = 250 + i * 50;
+        draw_rect(360, y - 6, 1200, 44, gfx_rgba(1, 1, 1, i % 2 ? 0.04f : 0.08f));
+        draw_text(900, y, 26, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, p->rows[i][0]);
+        draw_text(940, y, 26, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, p->rows[i][1]);
+    }
+    /* page dots, and how to move on */
+    for (int i = 0; i < HELP_PAGES; i++)
+        draw_rect(GFX_W / 2 - HELP_PAGES * 20 + i * 40 + 8, GFX_H - 120, 24, 8,
+                  gfx_rgba(1, 1, 1, i == app.help_page ? 0.95f : 0.25f));
+    draw_text(GFX_W / 2, GFX_H - 90, 24, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE,
+              app.help_page == HELP_PAGES - 1 ? "CROSS done" : "CROSS next   CIRCLE skip");
 }
 
 /* ---- main menu ---- */
@@ -1490,7 +1787,6 @@ static void render_menu(void)
         snprintf(buf, sizeof(buf), "now playing: %.100s - %.100s", in->artist, in->title);
         draw_text(GFX_W - 30, 20, 22, gfx_rgba(1, 1, 1, 0.75f), ALIGN_RIGHT, buf);
     }
-    draw_text(40, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, "UP/DOWN choose   CROSS go");
     draw_text(GFX_W - 30, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, CADENCE_VERSION);
 
     /* update banner along the top */
@@ -1551,8 +1847,11 @@ int main(void)
     }
     rescan();
     restore_selection();
-    if (app.scr == SCREEN_SELECT)
+    if (app.scr == SCREEN_SELECT) {
         menu_enter();
+        if (!app.onboarded)
+            help_open(SCREEN_MENU);
+    }
 
     double last = wall_ms();
 
@@ -1620,8 +1919,13 @@ int main(void)
             }
             break;
         case SCREEN_SKINS:
-            if (skin_ui_frame(&pad))
+            if (skin_ui_frame(&pad)) {
                 app.scr = SCREEN_SELECT;
+                if (!app.onboarded) {
+                    menu_enter();
+                    help_open(SCREEN_MENU);
+                }
+            }
             break;
         case SCREEN_MODS:
             mods_frame(&pad);
@@ -1638,6 +1942,9 @@ int main(void)
             break;
         case SCREEN_MENU:
             menu_frame(&pad);
+            break;
+        case SCREEN_HELP:
+            help_frame(&pad);
             break;
         }
 
@@ -1686,6 +1993,13 @@ int main(void)
             break;
         case SCREEN_MENU:
             render_menu();
+            break;
+        case SCREEN_HELP:
+            if (help_return == SCREEN_MENU)
+                render_menu();
+            else
+                draw_background(0.7f);
+            render_help();
             break;
         }
         gfx_end();

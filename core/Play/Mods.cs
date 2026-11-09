@@ -17,6 +17,15 @@ namespace Osu5.Play
         Easy = 16,
         DoubleTime = 32,
         HalfTime = 64,
+        SuddenDeath = 128,
+        Perfect = 256,
+        Flashlight = 512,
+        Nightcore = 1024,  // DoubleTime with the pitch going up; the host sets DoubleTime with it
+        Daycore = 2048,    // HalfTime, pitch down; same
+        Relax = 4096,
+        Autopilot = 8192,
+        SpunOut = 16384,
+        Mirror = 32768,
     }
 
     public static class ModRules
@@ -49,6 +58,9 @@ namespace Osu5.Play
             if ((mods & Mods.Hidden) != 0) m *= 1.06;
             if ((mods & Mods.HardRock) != 0) m *= 1.06;
             if ((mods & Mods.DoubleTime) != 0) m *= 1.12;
+            if ((mods & Mods.Flashlight) != 0) m *= 1.12;
+            if ((mods & (Mods.Relax | Mods.Autopilot)) != 0) m *= 0.1;
+            if ((mods & Mods.SpunOut) != 0) m *= 0.9;
             return m;
         }
 

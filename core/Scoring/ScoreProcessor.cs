@@ -25,12 +25,15 @@ namespace Osu5.Scoring
         public long TotalScore { get; private set; }
         public bool Failed;
         public double Multiplier = 1;
+        public int Ruleset;     // 0 osu, 1 taiko, 3 mania: the split between combo and accuracy differs
+        public int Perfect, Good; // mania's extra judgements
         public bool Hidden;     // turns S / SS into the silver ranks
 
         public int Great, Ok, Meh, Miss, SliderBreaks;
         public int SliderTailHits, LargeTickMisses; // pp wants these
 
         readonly List<double> hitErrors = new List<double>();
+        public IReadOnlyList<double> HitErrors => hitErrors;
 
         // feed every judgement's max result once, in time order, before play
         public void SetMaximums(IEnumerable<HitResult> maxResults)
@@ -49,9 +52,17 @@ namespace Osu5.Scoring
                 if (HitResults.AffectsCombo(r))
                 {
                     combo++;
-                    maxComboPortion += HitResults.BaseScore(r) * Math.Pow(combo, combo_exponent);
+                    maxComboPortion += HitResults.BaseScore(r) * comboWeight(combo);
                 }
             }
+        }
+
+        // osu! grows with the square root of the combo; taiko and mania level off at 400
+        double comboWeight(int combo)
+        {
+            if (Ruleset == 0)
+                return Math.Pow(combo, combo_exponent);
+            return Math.Min(Math.Max(0.5, Math.Log(combo, 4)), Math.Log(400, 4));
         }
 
         public void Apply(HitResult result, HitResult max, double hitError = double.NaN)
@@ -73,7 +84,7 @@ namespace Osu5.Scoring
                 else if (HitResults.AffectsCombo(result))
                 {
                     Combo++;
-                    comboPortion += HitResults.BaseScore(max) * Math.Pow(Combo, combo_exponent);
+                    comboPortion += HitResults.BaseScore(max) * comboWeight(Combo);
                 }
 
                 MaxCombo = Math.Max(MaxCombo, Combo);
@@ -91,6 +102,8 @@ namespace Osu5.Scoring
             switch (result)
             {
                 case HitResult.Great: Great++; break;
+                case HitResult.Perfect: Perfect++; break;
+                case HitResult.Good: Good++; break;
                 case HitResult.Ok: Ok++; break;
                 case HitResult.Meh: Meh++; break;
                 case HitResult.Miss: Miss++; break;
@@ -110,9 +123,13 @@ namespace Osu5.Scoring
             double comboProgress = maxComboPortion > 0 ? comboPortion / maxComboPortion : 1;
             double accProgress = maxAccuracyJudgements > 0 ? (double)accuracyJudged / maxAccuracyJudgements : 1;
 
-            TotalScore = (long)Math.Round((500000 * Accuracy * comboProgress
-                                           + 500000 * Math.Pow(Accuracy, 5) * accProgress
-                                           + bonusPortion) * Multiplier);
+            double total = Ruleset switch
+            {
+                1 => 250000 * comboProgress + 750000 * Math.Pow(Accuracy, 3.6) * accProgress,
+                3 => 150000 * comboProgress + 850000 * Math.Pow(Accuracy, 2 + 2 * Accuracy) * accProgress,
+                _ => 500000 * Accuracy * comboProgress + 500000 * Math.Pow(Accuracy, 5) * accProgress,
+            };
+            TotalScore = (long)Math.Round((total + bonusPortion) * Multiplier);
         }
 
         public Rank Rank
@@ -130,7 +147,7 @@ namespace Osu5.Scoring
                 else r = Rank.D;
 
                 // osu! ruleset: any miss caps you at A
-                if (r >= Rank.S && Miss > 0) r = Rank.A;
+                if (Ruleset == 0 && r >= Rank.S && Miss > 0) r = Rank.A;
                 if (Hidden && r == Rank.S) r = Rank.SH;
                 if (Hidden && r == Rank.X) r = Rank.XH;
                 return r;

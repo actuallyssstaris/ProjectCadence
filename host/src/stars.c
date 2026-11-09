@@ -198,5 +198,8 @@ int stars_generation(void)
 
 int stars_mods(int mods)
 {
+    /* Nightcore / Daycore rate the same as the speed change they come with */
+    if (mods & OSU5_MOD_NIGHTCORE) mods |= OSU5_MOD_DOUBLETIME;
+    if (mods & OSU5_MOD_DAYCORE) mods |= OSU5_MOD_HALFTIME;
     return mods & (OSU5_MOD_EASY | OSU5_MOD_HARDROCK | OSU5_MOD_HIDDEN | OSU5_MOD_DOUBLETIME | OSU5_MOD_HALFTIME);
 }

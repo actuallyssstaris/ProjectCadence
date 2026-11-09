@@ -74,6 +74,13 @@ namespace Osu5.Objects
     {
     }
 
+    // osu!mania's long note; only mania maps have them
+    public sealed class HoldNote : OsuObject
+    {
+        public double End;
+        public override double EndTime => End;
+    }
+
     public sealed class Spinner : OsuObject
     {
         public static readonly DiffRange ClearRpm = new DiffRange(90, 150, 225);

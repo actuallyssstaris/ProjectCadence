@@ -13,7 +13,8 @@ namespace Osu5.Native
     public static unsafe class Exports
     {
         static Beatmap? map;
-        static Player? player;
+        static IGame? player;
+        static float otherStars; // taiko / mania, which have no pp attributes
         static readonly DrawList drawList = new DrawList();
         static string lastError = "";
         static Mods mods;
@@ -22,7 +23,7 @@ namespace Osu5.Native
 
         // stars of the loaded map with its mods, and pp for the score so far
         [UnmanagedCallersOnly(EntryPoint = "osu5_play_stars", CallConvs = new[] { typeof(CallConvCdecl) })]
-        public static float PlayStars() => (float)(attributes?.Stars ?? 0);
+        public static float PlayStars() => attributes != null ? (float)attributes.Stars : otherStars;
 
         [UnmanagedCallersOnly(EntryPoint = "osu5_pp", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static float Pp()
@@ -51,6 +52,32 @@ namespace Osu5.Native
             }
         }
 
+        // every timed hit's offset in ms (negative = early), for the results graph
+        [UnmanagedCallersOnly(EntryPoint = "osu5_hit_errors", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static int HitErrors(float* outp, int max)
+        {
+            try
+            {
+                var e = player?.Score.HitErrors;
+                if (e == null) return 0;
+                int n = Math.Min(e.Count, max);
+                for (int i = 0; i < n; i++) outp[i] = (float)e[i];
+                return n;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        // 0 osu, 1 taiko, 3 mania for the loaded map; keys gets mania's column count
+        [UnmanagedCallersOnly(EntryPoint = "osu5_ruleset", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static int Ruleset(int* keys)
+        {
+            *keys = player is ManiaPlayer mp ? mp.Columns : 0;
+            return map?.Mode ?? 0;
+        }
+
         [UnmanagedCallersOnly(EntryPoint = "osu5_load", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static int Load(byte* path)
         {
@@ -58,19 +85,29 @@ namespace Osu5.Native
             {
                 string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
                 map = BeatmapDecoder.Decode(p, mods);
+                attributes = null;
+                otherStars = 0;
 
-                if (map.Mode != 0)
+                switch (map.Mode)
                 {
-                    lastError = "only osu!standard maps are supported";
-                    map = null;
-                    player = null;
-                    return -2;
+                    case 0:
+                        // before the player: Hidden changes the objects' fade-in
+                        attributes = Osu5.Stars.StarRating.Calculate(map, mods);
+                        player = new Player(map, mods, skinColours);
+                        return 0;
+                    case 1:
+                        player = new TaikoPlayer(map, mods);
+                        return 0;
+                    case 3:
+                        otherStars = (float)Osu5.Stars.ManiaStars.Calculate(map, mods);
+                        player = new ManiaPlayer(map, mods);
+                        return 0;
+                    default:
+                        lastError = "catch maps aren't supported yet";
+                        map = null;
+                        player = null;
+                        return -2;
                 }
-
-                // before the player: Hidden changes the objects' fade-in
-                attributes = Osu5.Stars.StarRating.Calculate(map, mods);
-                player = new Player(map, mods, skinColours);
-                return 0;
             }
             catch (Exception e)
             {
@@ -110,6 +147,8 @@ namespace Osu5.Native
             {
                 string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
                 var m = BeatmapDecoder.Decode(p, (Mods)flags);
+                if (m.Mode == 3)
+                    return (float)Osu5.Stars.ManiaStars.Calculate(m, (Mods)flags);
                 if (m.Mode != 0)
                     return -1;
                 return (float)Osu5.Stars.StarRating.Calculate(m, (Mods)flags).Stars;

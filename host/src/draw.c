@@ -601,6 +601,43 @@ void draw_gameplay(const osu5_draw *cmds, int n, const float *points, int npoint
             ring(x, y, 13 * k, 3, gfx_rgba(1, 1, 1, 1), gfx_next_z());
             break;
         }
+
+        /* taiko and mania hand these over in screen pixels already */
+        case OSU5_DRAW_RECT:
+            draw_rect(d->x, d->y, d->radius, d->p0, gfx_argb(d->colour, d->alpha));
+            break;
+
+        case OSU5_DRAW_DISC: {
+            float z = gfx_next_z();
+            disc(d->x, d->y, d->radius, gfx_argb(d->colour, d->alpha), z);
+            if (d->flags & 1)
+                ring(d->x, d->y, d->radius, fmaxf(3, d->radius * 0.1f), gfx_rgba(1, 1, 1, d->alpha), gfx_next_z());
+            break;
+        }
+
+        case OSU5_DRAW_SCREEN_JUDGEMENT: {
+            char buf[16];
+            const char *t;
+            uint32_t c;
+            if (d->number < 0) { /* a swell's hits still to go */
+                snprintf(buf, sizeof(buf), "%d", -d->number);
+                t = buf;
+                c = gfx_rgba(1, 0.75f, 0.3f, d->alpha);
+            } else {
+                switch (d->number) {
+                case OSU5_RESULT_PERFECT: t = "PERFECT"; c = gfx_rgba(1, 0.95f, 0.6f, d->alpha); break;
+                case OSU5_RESULT_GREAT: t = "GREAT"; c = gfx_rgba(0.4f, 0.8f, 1, d->alpha); break;
+                case OSU5_RESULT_GOOD: t = "GOOD"; c = gfx_rgba(0.5f, 1, 0.5f, d->alpha); break;
+                case OSU5_RESULT_OK: t = "OK"; c = gfx_rgba(0.4f, 0.9f, 0.3f, d->alpha); break;
+                case OSU5_RESULT_MEH: t = "MEH"; c = gfx_rgba(1, 0.8f, 0.3f, d->alpha); break;
+                default: t = "MISS"; c = gfx_rgba(0.93f, 0.2f, 0.2f, d->alpha); break;
+                }
+            }
+            float size = d->radius * (1 + 0.12f * (1 - d->p0));
+            draw_text(d->x, d->y - size / 2, size, c, ALIGN_CENTRE, t);
+            gfx_bind(0);
+            break;
+        }
         }
     }
 }
