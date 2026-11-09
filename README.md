@@ -39,13 +39,16 @@ mirror of osu.ppy.sh, and downloads ranked sets straight to the console. Or
 extract .osz files (they're zips) into `/data/osu5/Songs/<folder>/` over FTP and
 rescan from settings.
 
-Scores are kept per difficulty in `/data/osu5/scores.txt`.
+Star ratings use lazer's difficulty calculator, worked out on the console in the
+background and cached in `/data/osu5/stars.txt`. Scores are kept per difficulty
+in `/data/osu5/scores.txt`.
 
 ## Skins
 
 First launch asks for a skin. The picker can download osu!'s classic default
-(straight from ppy/osu-resources, CC BY-NC 4.0) or a few skins their authors
-publish on GitHub; nothing skin-related ships with this repo. Any other osu! skin
+(straight from ppy/osu-resources, CC BY-NC 4.0), a few skins their authors
+publish on GitHub, or any of the community skins listed by
+[o!rdr](https://ordr.issou.best); nothing skin-related ships with this repo. Any other osu! skin
 works too: unzip the .osk into `/data/osu5/skins/<name>/` and pick it from song
 select with the touchpad. Circles, numbers, cursor, slider parts, spinner, hit
 popups, score and combo digits, health bar, ranking letters, combo colours and
