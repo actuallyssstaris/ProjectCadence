@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Builds the core as sce_module/osu5core.prx through SharpProspero.
+       The host (PS5_Vulkan toolchain) loads it at startup, see host/src/core_loader.c.
+       Keeping the two toolchains in separate modules means their CRTs never meet. -->
+  <PropertyGroup>
+    <SharpProsperoRoot Condition="'$(SharpProsperoRoot)' == ''">$(SHARPPROSPERO_ROOT)</SharpProsperoRoot>
+  </PropertyGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.App.props" />
+
+  <PropertyGroup>
+    <OutputType>Library</OutputType>
+    <RootNamespace>Osu5</RootNamespace>
+    <AssemblyName>osu5core</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <ProsperoModuleKind>Prx</ProsperoModuleKind>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="../**/*.cs" Exclude="../prx/**;../obj/**;../bin/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProsperoExportSymbol Include="osu5_load" />
+    <ProsperoExportSymbol Include="osu5_unload" />
+    <ProsperoExportSymbol Include="osu5_set_mods" />
+    <ProsperoExportSymbol Include="osu5_start_time" />
+    <ProsperoExportSymbol Include="osu5_update" />
+    <ProsperoExportSymbol Include="osu5_frame" />
+    <ProsperoExportSymbol Include="osu5_get_hud" />
+    <ProsperoExportSymbol Include="osu5_poll_sound" />
+    <ProsperoExportSymbol Include="osu5_string" />
+    <ProsperoExportSymbol Include="osu5_difficulty" />
+    <ProsperoExportSymbol Include="osu5_peek" />
+    <ProsperoExportSymbol Include="module_start" />
+    <ProsperoExportSymbol Include="module_stop" />
+  </ItemGroup>
+
+  <!-- built by tools/build-core-prx.sh -->
+  <ItemGroup>
+    <ProsperoRuntimeObject Include="$(MSBuildThisFileDirectory)obj/shim.o" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="$(SharpProsperoRoot)\src\SharpProspero\SharpProspero.csproj" />
+  </ItemGroup>
+
+  <Import Project="$(SharpProsperoRoot)\build\Prospero.App.targets" />
+
+</Project>

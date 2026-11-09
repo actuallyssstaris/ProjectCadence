@@ -1,0 +1,12 @@
+build/
+dist/
+logs/
+bin/
+obj/
+core/prx/out/
+*.elf
+*.prx
+*.pkg
+.vs/
+*.user
+__pycache__/
