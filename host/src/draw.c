@@ -3,6 +3,8 @@
 #include "skin_img.h"
 
 #include "../third_party/font8x8_basic.h"
+#define STB_TRUETYPE_IMPLEMENTATION
+#include "../third_party/stb_truetype.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -12,14 +14,52 @@
 #define CELL 40   /* atlas cell, glyph is drawn 4x into the middle 32px */
 #define GLYPH 32
 
+#define FONT_FILE "/app0/assets/Inter-SemiBold.ttf"
+#define BAKE_PX 56.0f /* atlas glyph height; text is drawn scaled from it */
+#define ATLAS_W 1024
+#define ATLAS_H 512
+
 static int font_tex;
 static float pf_scale = 2.25f, pf_x = 384, pf_y = 108;
 static float cursor_scale = 1;
 
+/* the UI font, when it loaded; otherwise the 8x8 one below */
+static bool ttf;
+static stbtt_bakedchar baked[96];
+static float ascent; /* at BAKE_PX */
+
 void draw_set_cursor_scale(float s) { cursor_scale = s; }
+
+static bool load_ttf(void)
+{
+    FILE *f = fopen(FONT_FILE, "rb");
+    if (!f)
+        return false;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char *data = malloc((size_t)n);
+    bool ok = data && fread(data, 1, (size_t)n, f) == (size_t)n;
+    fclose(f);
+    uint8_t *px = ok ? calloc(ATLAS_W * ATLAS_H, 1) : NULL;
+    if (px && stbtt_BakeFontBitmap(data, 0, BAKE_PX, px, ATLAS_W, ATLAS_H, 32, 96, baked) > 0) {
+        stbtt_fontinfo info;
+        int asc, desc, gap;
+        stbtt_InitFont(&info, data, 0);
+        stbtt_GetFontVMetrics(&info, &asc, &desc, &gap);
+        ascent = asc * stbtt_ScaleForPixelHeight(&info, BAKE_PX);
+        font_tex = gfx_texture_r8(ATLAS_W, ATLAS_H, px);
+        ttf = font_tex != 0;
+    }
+    free(px);
+    free(data);
+    return ttf;
+}
 
 void draw_init(void)
 {
+    if (load_ttf())
+        return;
     const int cols = 16, rows = 8;
     int w = cols * CELL, h = rows * CELL;
     uint8_t *px = calloc((size_t)w * h, 1);
@@ -52,14 +92,55 @@ void draw_image(int tex, float x, float y, float w, float h, uint32_t rgba)
     gfx_push(&(gfx_inst){x + w / 2, y + h / 2, w / 2, h / 2, 0, gfx_next_z(), rgba, GK_TEX, {0, 0, 1, 1}});
 }
 
+/* the 8x8 font's size meant its full cell; the TTF is drawn a bit taller so the
+ * capitals end up about as big */
+#define TTF_SCALE(size) ((size) * 1.25f / BAKE_PX)
+
 float draw_text_width(float size, const char *s)
 {
-    return strlen(s) * size * 0.85f;
+    if (!ttf)
+        return strlen(s) * size * 0.85f;
+    float w = 0, k = TTF_SCALE(size);
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        int c = *p >= 32 && *p < 128 ? *p : '?';
+        w += baked[c - 32].xadvance * k;
+    }
+    return w;
+}
+
+static float draw_ttf(float x, float y, float size, uint32_t rgba, const char *s)
+{
+    float k = TTF_SCALE(size);
+    /* y is the top of the line, as with the old font: put the caps' top there */
+    float base = y + ascent * k * 0.82f;
+    float start = x;
+    gfx_bind(font_tex);
+    float z = gfx_next_z();
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        int c = *p >= 32 && *p < 128 ? *p : '?';
+        const stbtt_bakedchar *b = &baked[c - 32];
+        float w = (b->x1 - b->x0) * k, h = (b->y1 - b->y0) * k;
+        if (w > 0 && h > 0) {
+            float gx = x + b->xoff * k, gy = base + b->yoff * k;
+            gfx_push(&(gfx_inst){gx + w / 2, gy + h / 2, w / 2, h / 2, 0, z, rgba, GK_GLYPH,
+                                 {(float)b->x0 / ATLAS_W, (float)b->y0 / ATLAS_H, (float)b->x1 / ATLAS_W, (float)b->y1 / ATLAS_H}});
+        }
+        x += b->xadvance * k;
+    }
+    return x - start;
 }
 
 /* size = glyph height in pixels */
 float draw_text(float x, float y, float size, uint32_t rgba, int align, const char *s)
 {
+    if (ttf) {
+        float w = draw_text_width(size, s);
+        if (align == ALIGN_CENTRE)
+            x -= w / 2;
+        else if (align == ALIGN_RIGHT)
+            x -= w;
+        return draw_ttf(x, y, size, rgba, s);
+    }
     float adv = size * 0.85f;
     float w = draw_text_width(size, s);
     if (align == ALIGN_CENTRE)

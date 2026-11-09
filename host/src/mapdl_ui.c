@@ -140,9 +140,13 @@ void mapdl_ui_render(void)
 
             snprintf(buf, sizeof(buf), "%.60s - %.80s", s->artist, s->title);
             draw_text(140, y + 10, 26, tc, ALIGN_LEFT, buf);
-            snprintf(buf, sizeof(buf), "mapped by %.40s   %d %s, up to %.2f stars", s->creator, s->diffs,
-                     s->diffs == 1 ? "difficulty" : "difficulties", s->stars);
+            snprintf(buf, sizeof(buf), "mapped by %.40s   %d %s, up to %.2f stars   %s", s->creator, s->diffs,
+                     s->diffs == 1 ? "difficulty" : "difficulties", s->stars, s->status);
             draw_text(140, y + 44, 18, sc, ALIGN_LEFT, buf);
+            if (s->video) {
+                draw_rect(1500, y + 22, 120, 32, gfx_rgba(1, 0.47f, 0.63f, 0.95f));
+                draw_text(1560, y + 28, 20, gfx_rgba(0.1f, 0.05f, 0.08f, 1), ALIGN_CENTRE, "VIDEO");
+            }
 
             int state = mapdl_state(s->id);
             const char *label = state == 2 ? "installed" : state == 1 ? (st.current == s->id ? "downloading" : "queued") : "get";

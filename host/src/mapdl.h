@@ -16,6 +16,8 @@ typedef struct {
     char creator[48];
     int diffs;     /* osu!standard difficulties only */
     float stars;   /* the hardest of them */
+    bool video;
+    char status[16]; /* ranked, loved, graveyard... */
 } mapdl_set;
 
 typedef struct {

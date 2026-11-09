@@ -139,5 +139,7 @@ rm -rf -- "$app"
 mkdir -p "$app/sce_sys" "$app/sce_module"
 "$tool" self --sign --in "$work/eboot.elf" --out "$app/eboot.bin" --magic 0x1D3D154F
 cp "$root/sce_sys/param.json" "$root/sce_sys/icon0.png" "$app/sce_sys/"
+mkdir -p "$app/assets"
+cp "$root/host/fonts/Inter-SemiBold.ttf" "$root/host/fonts/Inter-LICENSE.txt" "$app/assets/"
 cp "$pv/runtime/libc.prx" "$app/sce_module/libc.prx"
 printf 'built %s (eboot %s bytes)\n' "$app" "$(stat -c %s "$app/eboot.bin")"

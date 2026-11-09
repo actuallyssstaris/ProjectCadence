@@ -25,6 +25,9 @@
 #include "songs.h"
 #include "stars.h"
 #include "thumbs.h"
+#include "prefs.h"
+#include "update.h"
+#include "video.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -32,8 +35,10 @@
 #define STBI_NO_STDIO_WRITE
 #include "../third_party/stb_image.h"
 
+#include <dirent.h>
 #include <math.h>
 #include <stdio.h>
+#include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -57,6 +62,8 @@ typedef enum {
     SCREEN_MODS,
     SCREEN_SETTINGS,
     SCREEN_DOWNLOAD,
+    SCREEN_WIZARD,
+    SCREEN_MENU,
 } screen;
 
 static struct {
@@ -80,6 +87,14 @@ static struct {
     float bg_dim;         /* during play */
     float cursor_scale;
     bool storyboards;
+    bool videos;
+    int map_offset;       /* per map, from offsets.txt */
+    bool fav_only;
+    double delete_armed;  /* wall ms R3 was pressed once; a second press deletes */
+    double wiz_start, wiz_sum; /* offset finder: first beat (wall ms), summed tap errors */
+    int wiz_taps, wiz_next;
+    int menu_sel;
+    int logo_tex;
 
     int bg_tex;
     int bg_w, bg_h;
@@ -146,6 +161,7 @@ static void settings_load(void)
     app.bg_dim = 0.8f;
     app.cursor_scale = 1.0f;
     app.storyboards = true;
+    app.videos = true;
 
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (f) {
@@ -159,8 +175,9 @@ static void settings_load(void)
             else if (!strcmp(key, "dim")) app.bg_dim = v;
             else if (!strcmp(key, "cursor")) app.cursor_scale = v;
             else if (!strcmp(key, "mods")) app.mods = (int)v & ~OSU5_MOD_AUTO;
-            else if (!strcmp(key, "sort")) app.sort = (int)v >= 0 && (int)v < SORT_COUNT ? (int)v : 0;
+            else if (!strcmp(key, "sort")) app.sort = (int)v >= 0 && (int)v <= SORT_COUNT ? (int)v : 0;
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
+            else if (!strcmp(key, "video")) app.videos = v != 0;
         }
         fclose(f);
     }
@@ -172,10 +189,43 @@ static void settings_save(void)
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f)
         return;
-    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\n",
+    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
-            app.sort, app.storyboards);
+            app.sort, app.storyboards, app.videos);
     fclose(f);
+}
+
+static const char *sort_label(void)
+{
+    return app.sort == SORT_COUNT ? "favourites" : songs_sort_name(app.sort);
+}
+
+/* the difficulty song select was on, so a relaunch lands there again */
+#define LAST_FILE DATA_DIR "/last.txt"
+
+static void remember_selection(const char *file)
+{
+    FILE *f = fopen(LAST_FILE, "w");
+    if (f) {
+        fprintf(f, "%s\n", file);
+        fclose(f);
+    }
+}
+
+static void restore_selection(void)
+{
+    FILE *f = fopen(LAST_FILE, "r");
+    char file[768] = "";
+    if (!f)
+        return;
+    if (fgets(file, sizeof(file), f))
+        file[strcspn(file, "\r\n")] = 0;
+    fclose(f);
+    int at = file[0] ? songs_find(&app.songs, file) : -1;
+    if (at >= 0) {
+        app.sel = at;
+        app.sel_scroll = (float)at;
+    }
 }
 
 /* ---- backgrounds ---- */
@@ -324,6 +374,10 @@ static bool start_song(const song_entry *e)
         load_background(path);
     if (app.storyboards)
         app.sb = sb_load(e->dir, e->file, e->info.background);
+    video_close();
+    double voff;
+    if (app.videos && mod_rate(app.mods) == 1 && video_find(e->dir, e->file, path, sizeof(path), &voff))
+        LOG("video: %s", video_open(path, voff) ? "opened" : "couldn't open, still background");
 
     /* DT/HT: stretch the song so the pitch stays, and let the clock run at the
      * mod's rate over the stretched buffer; plain resampling if that fails */
@@ -351,6 +405,8 @@ static bool start_song(const song_entry *e)
     app.cursor.x = 256;
     app.cursor.y = 192;
     app.finish_seen = 0;
+    app.map_offset = offsets_get(e->file);
+    remember_selection(e->file);
     app.section_at = 0;
     app.prev_state = -1;
     sb_reset(app.sb);
@@ -384,6 +440,7 @@ static void back_to_select(void)
     audio_music_rate(1);
     audio_music_volume(app.music_vol);
     osu5_unload();
+    video_close();
     if (app.sb) {
         sb_free(app.sb);
         app.sb = NULL;
@@ -398,7 +455,7 @@ static void back_to_select(void)
     app.scr = SCREEN_SELECT;
 }
 
-static double game_time(void) { return audio_music_time() + app.offset_ms; }
+static double game_time(void) { return audio_music_time() + app.offset_ms + app.map_offset; }
 
 static void play_frame(const pad_state *pad, float dt)
 {
@@ -443,6 +500,7 @@ static void play_frame(const pad_state *pad, float dt)
         sb_set_failing(app.sb, !app.section_pass, t);
     }
     app.prev_state = state;
+    video_tick(t, false);
 
     static double next_log;
     if (wall_ms() >= next_log) {
@@ -479,7 +537,7 @@ static void render_play(void)
     int n = osu5_frame(t, cmds, MAX_CMDS, points, MAX_POINTS, &np);
 
     float dim = app.last_hud.state == OSU5_STATE_BREAK ? app.bg_dim * 0.6f : app.bg_dim;
-    if (!app.sb || !sb_replaces_bg(app.sb))
+    if (!video_draw(dim) && (!app.sb || !sb_replaces_bg(app.sb)))
         draw_background(dim);
     if (app.sb)
         sb_draw(app.sb, t, SB_UNDER, dim);
@@ -515,7 +573,15 @@ static void apply_view(void)
     if (app.songs.count > 0)
         snprintf(keep, sizeof(keep), "%s", app.songs.items[app.sel].file);
     songs_filter(&app.all, &app.songs, app.filter);
-    songs_sort(&app.songs, app.sort);
+    if (app.sort == SORT_COUNT) {
+        /* the favourites view: only starred sets, by artist */
+        int n = 0;
+        for (int i = 0; i < app.songs.count; i++)
+            if (fav_is(app.songs.items[i].dir))
+                app.songs.items[n++] = app.songs.items[i];
+        app.songs.count = n;
+    }
+    songs_sort(&app.songs, app.sort == SORT_COUNT ? SORT_ARTIST : app.sort);
     int at = keep[0] ? songs_find(&app.songs, keep) : -1;
     if (at < 0 || at != app.sel) {
         app.sel = at >= 0 ? at : 0;
@@ -523,6 +589,24 @@ static void apply_view(void)
         app.previewed = -1;
         app.scores_for = -1;
     }
+}
+
+static bool remove_tree(const char *path)
+{
+    DIR *d = opendir(path);
+    if (!d)
+        return remove(path) == 0;
+    bool ok = true;
+    struct dirent *e;
+    while ((e = readdir(d))) {
+        if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
+            continue;
+        char sub[1024];
+        snprintf(sub, sizeof(sub), "%s/%s", path, e->d_name);
+        ok &= remove_tree(sub);
+    }
+    closedir(d);
+    return rmdir(path) == 0 && ok;
 }
 
 static void rescan(void)
@@ -576,6 +660,10 @@ static int closest_in_set(int start, int from)
 
 static void select_frame(const pad_state *pad)
 {
+    if (!app.searching && pad->pressed & PAD_CIRCLE) {
+        app.scr = SCREEN_MENU;
+        return;
+    }
     /* typing a search: the list follows every key */
     if (app.searching) {
         char before[64];
@@ -596,9 +684,31 @@ static void select_frame(const pad_state *pad)
     if (pad->pressed & PAD_L2 && online_enabled())
         app.show_online = !app.show_online;
     if (pad->pressed & PAD_R1) {
-        app.sort = (app.sort + 1) % SORT_COUNT;
+        app.sort = (app.sort + 1) % (SORT_COUNT + 1);
         apply_view();
         settings_save();
+    }
+    if (pad->pressed & PAD_L3 && app.songs.count > 0) {
+        bool on = fav_toggle(app.songs.items[app.sel].dir);
+        snprintf(app.status, sizeof(app.status), on ? "added to favourites" : "removed from favourites");
+        if (app.sort == SORT_COUNT)
+            apply_view();
+    }
+    if (pad->pressed & PAD_R3 && app.songs.count > 0) {
+        if (wall_ms() - app.delete_armed < 3000) {
+            char dir[512];
+            snprintf(dir, sizeof(dir), "%s", app.songs.items[app.sel].dir);
+            preview_cancel();
+            audio_music_stop();
+            bool ok = remove_tree(dir);
+            LOG("deleted %s: %s", dir, ok ? "ok" : "failed");
+            snprintf(app.status, sizeof(app.status), ok ? "deleted" : "couldn't delete everything");
+            app.delete_armed = 0;
+            rescan();
+            return;
+        }
+        app.delete_armed = wall_ms();
+        snprintf(app.status, sizeof(app.status), "press R3 again to delete this whole set");
     }
 
     if (pad->pressed & PAD_TOUCHPAD) {
@@ -851,9 +961,9 @@ static void render_select(void)
 
     /* search and sort, top right */
     if (app.filter[0] || app.searching)
-        snprintf(buf, sizeof(buf), "search: %s%s   sort: %s", app.filter, app.searching ? "_" : "", songs_sort_name(app.sort));
+        snprintf(buf, sizeof(buf), "search: %s%s   sort: %s", app.filter, app.searching ? "_" : "", sort_label());
     else
-        snprintf(buf, sizeof(buf), "L1 search   R1 sort: %s", songs_sort_name(app.sort));
+        snprintf(buf, sizeof(buf), "L1 search   R1 sort: %s", sort_label());
     draw_rect(0, 0, GFX_W, 52, gfx_rgba(0, 0, 0, 0.6f));
     draw_text(GFX_W - 30, 12, 26, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
     draw_text(40, 12, 28, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_LEFT, "ProjectCadence");
@@ -945,6 +1055,10 @@ static void render_select(void)
         uint32_t tc = header ? gfx_rgba(0.15f, 0.1f, 0.02f, 1) : gfx_rgba(1, 1, 1, 0.95f);
         snprintf(buf, sizeof(buf), "%.90s", in->title);
         draw_text(x + 20, y + 8, 26, tc, ALIGN_LEFT, buf);
+        if (e->video) {
+            draw_rect(GFX_W - 120, y + 10, 96, 26, gfx_rgba(1, 0.47f, 0.63f, 0.95f));
+            draw_text(GFX_W - 72, y + 15, 16, gfx_rgba(0.1f, 0.05f, 0.08f, 1), ALIGN_CENTRE, "VIDEO");
+        }
         /* star range of the set, once every difficulty in it is rated */
         float lo = 1e9f, hi = -1;
         for (int i = rows[r].index; i < rows[r].index + n; i++) {
@@ -1025,7 +1139,7 @@ scores_done:;
     }
 
     draw_text(40, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
-              "CROSS play  STICK maps  UP/DOWN difficulty  SQUARE mods  TRIANGLE get maps  OPTIONS settings");
+              "CROSS play  SQUARE mods  L3 favourite  R3 delete  TRIANGLE get maps  OPTIONS settings  CIRCLE menu");
 
     if (app.status[0])
         draw_text(GFX_W / 2, GFX_H - 150, 26, gfx_rgba(1, 0.5f, 0.5f, 1), ALIGN_CENTRE, app.status);
@@ -1080,7 +1194,7 @@ static void render_mods(void)
 
 /* ---- settings ---- */
 
-enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_STORYBOARD, SET_RESCAN, SET_COUNT };
+enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_STORYBOARD, SET_VIDEO, SET_WIZARD, SET_RESCAN, SET_COUNT };
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -1104,6 +1218,21 @@ static void settings_frame(const pad_state *pad)
     case SET_STORYBOARD:
         if (d || pad->pressed & PAD_CROSS)
             app.storyboards = !app.storyboards;
+        break;
+    case SET_VIDEO:
+        if (d || pad->pressed & PAD_CROSS)
+            app.videos = !app.videos;
+        break;
+    case SET_WIZARD:
+        if (pad->pressed & PAD_CROSS) {
+            app.wiz_start = wall_ms() + 1000;
+            app.wiz_taps = 0;
+            app.wiz_sum = 0;
+            app.wiz_next = 0;
+            audio_music_stop();
+            app.scr = SCREEN_WIZARD;
+            return;
+        }
         break;
     case SET_RESCAN:
         if (pad->pressed & PAD_CROSS) {
@@ -1135,14 +1264,16 @@ static void render_settings(void)
         case SET_DIM: name = "background dim in play"; snprintf(val, sizeof(val), "%d%%", (int)lroundf(app.bg_dim * 100)); break;
         case SET_CURSOR: name = "cursor size"; snprintf(val, sizeof(val), "%.1fx", app.cursor_scale); break;
         case SET_STORYBOARD: name = "storyboards"; snprintf(val, sizeof(val), "%s", app.storyboards ? "on" : "off"); break;
+        case SET_VIDEO: name = "video backgrounds (mp4)"; snprintf(val, sizeof(val), "%s", app.videos ? "on" : "off"); break;
+        case SET_WIZARD: name = "find my offset"; snprintf(val, sizeof(val), "CROSS"); break;
         case SET_RESCAN: name = "rescan the Songs folder"; snprintf(val, sizeof(val), "CROSS"); break;
         }
-        float y = 200 + i * 90;
+        float y = 170 + i * 74;
         bool on = i == app.set_sel;
-        draw_rect(160, y, 1600, 76, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
+        draw_rect(160, y, 1600, 64, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
         uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 1);
-        draw_text(190, y + 22, 32, tc, ALIGN_LEFT, name);
-        draw_text(1730, y + 22, 32, tc, ALIGN_RIGHT, val);
+        draw_text(190, y + 16, 30, tc, ALIGN_LEFT, name);
+        draw_text(1730, y + 16, 30, tc, ALIGN_RIGHT, val);
     }
 
     const char *hint = "";
@@ -1152,9 +1283,9 @@ static void render_settings(void)
     case SET_RESCAN: hint = "after copying maps over FTP"; break;
     default: break;
     }
-    draw_text(160, 200 + SET_COUNT * 90 + 20, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, hint);
+    draw_text(160, 170 + SET_COUNT * 74 + 10, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, hint);
     if (app.status[0])
-        draw_text(160, 200 + SET_COUNT * 90 + 60, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, app.status);
+        draw_text(160, 170 + SET_COUNT * 74 + 44, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, app.status);
     draw_text(160, GFX_H - 90, 26, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, "LEFT/RIGHT change   CIRCLE save and back");
 }
 
@@ -1226,6 +1357,158 @@ static void render_results(void)
               app.last_when && !app.watching ? "CROSS retry   SQUARE watch replay   CIRCLE back" : "CROSS retry   CIRCLE back");
 }
 
+/* ---- offset finder: tap along to a click, the average miss is the offset ---- */
+
+#define WIZ_BEAT 500.0
+#define WIZ_TAPS 16
+
+static void wizard_frame(const pad_state *pad)
+{
+    double now = wall_ms();
+    if (now >= app.wiz_start + app.wiz_next * WIZ_BEAT && app.wiz_next < WIZ_TAPS + 8) {
+        osu5_sound click = {OSU5_SOUND_HIT, 0, 1, 1, 100, 0, 0};
+        skin_play(&click, app.fx_vol);
+        app.wiz_next++;
+    }
+    if (pad->pressed & PAD_CROSS && now > app.wiz_start - 250) {
+        double beat = floor((now - app.wiz_start) / WIZ_BEAT + 0.5);
+        double err = now - (app.wiz_start + beat * WIZ_BEAT);
+        if (fabs(err) < 200) {
+            app.wiz_sum += err;
+            app.wiz_taps++;
+        }
+    }
+    if (app.wiz_taps >= WIZ_TAPS) {
+        app.offset_ms = (int)lround(app.wiz_sum / app.wiz_taps);
+        snprintf(app.status, sizeof(app.status), "offset set to %+d ms", app.offset_ms);
+        settings_save();
+        app.scr = SCREEN_SETTINGS;
+    } else if (pad->pressed & PAD_CIRCLE || app.wiz_next >= WIZ_TAPS + 8) {
+        snprintf(app.status, sizeof(app.status), app.wiz_taps < WIZ_TAPS ? "not enough taps, offset unchanged" : "");
+        app.scr = SCREEN_SETTINGS;
+    }
+}
+
+static void render_wizard(void)
+{
+    char buf[64];
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.8f));
+    draw_text(GFX_W / 2, 300, 52, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "tap CROSS on every click");
+    double k = fmod(wall_ms() - app.wiz_start + WIZ_BEAT * 10, WIZ_BEAT) / WIZ_BEAT;
+    float r = 60 + 30 * (float)(1 - k);
+    arc(GFX_W / 2, 560, r, 10, 0, 1, gfx_rgba(0.5f, 0.9f, 0.95f, (float)(1 - k)));
+    snprintf(buf, sizeof(buf), "%d / %d", app.wiz_taps, WIZ_TAPS);
+    draw_text(GFX_W / 2, 760, 34, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, buf);
+    draw_text(GFX_W / 2, 860, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "CIRCLE cancel");
+}
+
+/* ---- main menu ---- */
+
+enum { MENU_PLAY, MENU_MAPS, MENU_SKINS, MENU_SETTINGS, MENU_COUNT };
+
+static void menu_enter(void)
+{
+    app.scr = SCREEN_MENU;
+    if (!app.logo_tex) {
+        int w, h, n;
+        unsigned char *px = stbi_load("/app0/sce_sys/icon0.png", &w, &h, &n, 4);
+        if (px) {
+            app.logo_tex = gfx_texture(w, h, px);
+            stbi_image_free(px);
+        }
+    }
+}
+
+static void menu_frame(const pad_state *pad)
+{
+    app.menu_sel = (app.menu_sel + pad->nav_y + MENU_COUNT) % MENU_COUNT;
+
+    /* something playing behind the menu: whatever song select is on */
+    if (app.songs.count > 0 && app.previewed != app.sel) {
+        const song_entry *e = &app.songs.items[app.sel];
+        char audio[768] = "", bg[768] = "";
+        songs_file(e->dir, e->info.audio, audio, sizeof(audio));
+        if (!songs_file(e->dir, e->info.background, bg, sizeof(bg)))
+            bg[0] = 0;
+        preview_request(audio, bg, e->info.preview_time);
+        app.previewed = app.sel;
+    }
+    unsigned char *px;
+    int w, h;
+    char path[768];
+    if (preview_take_bg(&px, &w, &h, path, sizeof(path))) {
+        set_background(px, w, h, path);
+        if (px)
+            stbi_image_free(px);
+    }
+    preview_tick();
+
+    update_info up;
+    update_status(&up);
+    if (pad->pressed & PAD_TRIANGLE && (up.state == UPDATE_AVAILABLE || up.state == UPDATE_FAILED))
+        update_install();
+
+    if (!(pad->pressed & PAD_CROSS))
+        return;
+    switch (app.menu_sel) {
+    case MENU_PLAY: app.scr = SCREEN_SELECT; break;
+    case MENU_MAPS: mapdl_ui_open(); app.scr = SCREEN_DOWNLOAD; break;
+    case MENU_SKINS: skin_ui_open(false); app.scr = SCREEN_SKINS; break;
+    case MENU_SETTINGS: app.set_sel = 0; app.scr = SCREEN_SETTINGS; break;
+    }
+}
+
+static void render_menu(void)
+{
+    draw_background(0.55f);
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.03f, 0.04f, 0.09f, 0.35f));
+
+    /* the logo breathes, a little faster than resting */
+    float t = (float)(wall_ms() / 1000.0);
+    float pulse = 1 + 0.03f * sinf(t * 2 * 3.14159f * 1.2f);
+    float size = 420 * pulse, cx = 620, cy = GFX_H / 2;
+    arc(cx, cy, size * 0.62f, 6, 0, 1, gfx_rgba(1, 0.47f, 0.63f, 0.35f));
+    if (app.logo_tex) {
+        gfx_bind(app.logo_tex);
+        gfx_push(&(gfx_inst){cx, cy, size / 2, size / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX, {0, 0, 1, 1}});
+        gfx_bind(0);
+    }
+    draw_text(cx, cy + size / 2 + 50, 48, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "ProjectCadence");
+
+    static const char *items[MENU_COUNT] = {"play", "get maps", "skins", "settings"};
+    for (int i = 0; i < MENU_COUNT; i++) {
+        bool on = i == app.menu_sel;
+        float x = on ? 1100 : 1140, y = 330 + i * 110;
+        draw_rect(x, y, GFX_W - x, 90, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0, 0, 0, 0.55f));
+        draw_rect(x, y, 10, 90, gfx_rgba(0.5f, 0.9f, 0.95f, on ? 1 : 0.5f));
+        draw_text(x + 50, y + 26, 40, on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, items[i]);
+    }
+
+    if (app.songs.count > 0) {
+        const osu5_peek_info *in = &app.songs.items[app.sel].info;
+        char buf[300];
+        snprintf(buf, sizeof(buf), "now playing: %.100s - %.100s", in->artist, in->title);
+        draw_text(GFX_W - 30, 20, 22, gfx_rgba(1, 1, 1, 0.75f), ALIGN_RIGHT, buf);
+    }
+    draw_text(40, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, "UP/DOWN choose   CROSS go");
+    draw_text(GFX_W - 30, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, CADENCE_VERSION);
+
+    /* update banner along the top */
+    update_info up;
+    update_status(&up);
+    char ub[200] = "";
+    if (up.state == UPDATE_AVAILABLE)
+        snprintf(ub, sizeof(ub), "ProjectCadence %s is out (you have %s)   TRIANGLE update now", up.latest, CADENCE_VERSION);
+    else if (up.state == UPDATE_INSTALLING)
+        snprintf(ub, sizeof(ub), "updating to %s... %.1f MB", up.latest, up.bytes / 1048576.0);
+    else if (up.state == UPDATE_DONE || up.state == UPDATE_FAILED)
+        snprintf(ub, sizeof(ub), "%s%s", up.msg, up.state == UPDATE_FAILED ? "   TRIANGLE try again" : "");
+    if (ub[0]) {
+        draw_rect(0, 60, GFX_W, 56, up.state == UPDATE_FAILED ? gfx_rgba(0.6f, 0.15f, 0.2f, 0.9f) : gfx_rgba(0.1f, 0.45f, 0.55f, 0.9f));
+        draw_text(GFX_W / 2, 74, 28, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, ub);
+    }
+}
+
 int main(void)
 {
     log_open();
@@ -1254,6 +1537,7 @@ int main(void)
     audio_music_volume(app.music_vol);
     scores_load();
     online_init();
+    update_check();
     stars_init();
     LOG("settings read");
     skin_apply(skins_active());
@@ -1266,6 +1550,9 @@ int main(void)
         skins_install(0, &app.topup, false);
     }
     rescan();
+    restore_selection();
+    if (app.scr == SCREEN_SELECT)
+        menu_enter();
 
     double last = wall_ms();
 
@@ -1294,6 +1581,12 @@ int main(void)
             play_frame(&pad, dt);
             break;
         case SCREEN_PAUSE:
+            video_tick(app.play_time, true);
+            /* this map's own offset, on top of the global one */
+            if (pad.dpad_x) {
+                app.map_offset += pad.dpad_x * 5;
+                offsets_set(app.playing->file, app.map_offset);
+            }
             if (pad.pressed & (PAD_CROSS | PAD_OPTIONS)) {
                 audio_music_pause(false);
                 app.scr = SCREEN_PLAY;
@@ -1340,6 +1633,12 @@ int main(void)
             if (mapdl_ui_frame(&pad))
                 app.scr = SCREEN_SELECT;
             break;
+        case SCREEN_WIZARD:
+            wizard_frame(&pad);
+            break;
+        case SCREEN_MENU:
+            menu_frame(&pad);
+            break;
         }
 
         gfx_begin(0.06f, 0.06f, 0.09f);
@@ -1353,6 +1652,11 @@ int main(void)
         case SCREEN_PAUSE:
             render_play();
             render_overlay("paused", gfx_rgba(1, 1, 1, 1), "CROSS continue   TRIANGLE retry   CIRCLE quit");
+            {
+                char ob[64];
+                snprintf(ob, sizeof(ob), "map offset %+d ms   (LEFT/RIGHT)", app.map_offset);
+                draw_text(GFX_W / 2, 640, 26, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_CENTRE, ob);
+            }
             break;
         case SCREEN_FAILED:
             render_play();
@@ -1376,6 +1680,12 @@ int main(void)
         case SCREEN_DOWNLOAD:
             draw_background(0.7f);
             mapdl_ui_render();
+            break;
+        case SCREEN_WIZARD:
+            render_wizard();
+            break;
+        case SCREEN_MENU:
+            render_menu();
             break;
         }
         gfx_end();

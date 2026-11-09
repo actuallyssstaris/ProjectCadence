@@ -39,3 +39,8 @@ host/third_party:
 
 The bundled test map (tools/make-test-map.py) is generated, not taken from osu!.
 osu! is a trademark of ppy Pty Ltd; this project is not affiliated with ppy.
+
+host/third_party/stb_truetype.h - Sean Barrett, public domain.
+
+host/fonts/Inter-SemiBold.ttf - Inter by Rasmus Andersson (https://rsms.me/inter),
+SIL Open Font License 1.1, see host/fonts/Inter-LICENSE.txt.

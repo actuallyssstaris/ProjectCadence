@@ -62,7 +62,12 @@ static bool set_key(js *j, const char *key, void *ctx)
         json_str(j, s->title, sizeof(s->title));
     else if (!strcmp(key, "creator"))
         json_str(j, s->creator, sizeof(s->creator));
-    else if (!strcmp(key, "beatmaps") && *j->p == '[') {
+    else if (!strcmp(key, "status") && *j->p == '"')
+        json_str(j, s->status, sizeof(s->status));
+    else if (!strcmp(key, "video")) {
+        s->video = !strncmp(j->p, "true", 4);
+        json_skip(j);
+    } else if (!strcmp(key, "beatmaps") && *j->p == '[') {
         j->p++;
         for (;;) {
             json_ws(j);
@@ -212,7 +217,7 @@ bool mapdl_find(const char *query, int page)
         return false;
     char q[256];
     url_encode(query, q, sizeof(q));
-    snprintf(r->url, sizeof(r->url), "https://catboy.best/api/v2/search?query=%s&mode=0&status=1&limit=%d&offset=%d", q,
+    snprintf(r->url, sizeof(r->url), "https://catboy.best/api/v2/search?query=%s&mode=0&limit=%d&offset=%d", q,
              MAPDL_RESULTS, page * MAPDL_RESULTS);
 
     pthread_mutex_lock(&lock);
@@ -276,13 +281,13 @@ static void *download_thread(void *arg)
         char zip[128], url[160], dir[512];
         snprintf(zip, sizeof(zip), SONGS_DIR "/.dl-%d.osz", s.id);
 
-        /* no-video builds, a video can triple the size and we never show it */
-        snprintf(url, sizeof(url), "https://catboy.best/d/%dn", s.id);
+        /* with the video when there is one: they play behind the map now */
+        snprintf(url, sizeof(url), "https://catboy.best/d/%d", s.id);
         int st = net_fetch(url, zip, &current_bytes);
         if (st != 200) {
             LOG("mapdl: %d from catboy -> %d, trying nerinyan", s.id, st);
             current_bytes = 0;
-            snprintf(url, sizeof(url), "https://api.nerinyan.moe/d/%d?noVideo=1", s.id);
+            snprintf(url, sizeof(url), "https://api.nerinyan.moe/d/%d", s.id);
             st = net_fetch(url, zip, &current_bytes);
         }
 

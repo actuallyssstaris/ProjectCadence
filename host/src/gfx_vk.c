@@ -689,6 +689,50 @@ int gfx_texture(int w, int h, const void *rgba) { return upload(w, h, VK_FORMAT_
 
 int gfx_texture_r8(int w, int h, const void *r8) { return upload(w, h, VK_FORMAT_R8_UNORM, 1, r8); }
 
+/* new pixels for an RGBA texture of the same size (video frames). Call between
+ * frames, not while one is being recorded. */
+void gfx_texture_update(int id, int w, int h, const void *rgba)
+{
+    if (id <= 0 || id >= MAX_TEX || !g.tex[id].used)
+        return;
+    static VkBuffer staging;
+    static VkDeviceMemory smem;
+    static void *map;
+    static VkDeviceSize cap;
+    VkDeviceSize size = (VkDeviceSize)w * h * 4;
+    if (size > cap) {
+        if (cap) {
+            vkDestroyBuffer(g.dev, staging, NULL);
+            vkFreeMemory(g.dev, smem, NULL);
+            cap = 0;
+        }
+        if (!alloc_buffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, &staging, &smem, &map))
+            return;
+        cap = size;
+    }
+    memcpy(map, rgba, size);
+
+    texture *t = &g.tex[id];
+    VkCommandBufferBeginInfo bi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+    vkResetCommandBuffer(g.upload_cmd, 0);
+    vkBeginCommandBuffer(g.upload_cmd, &bi);
+    barrier(g.upload_cmd, t->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+            VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy copy = {
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageExtent = {(uint32_t)w, (uint32_t)h, 1},
+    };
+    vkCmdCopyBufferToImage(g.upload_cmd, staging, t->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+    barrier(g.upload_cmd, t->image, VK_IMAGE_ASPECT_COLOR_BIT, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+    vkEndCommandBuffer(g.upload_cmd);
+    VkSubmitInfo submit = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &g.upload_cmd};
+    vkQueueSubmit(g.queue, 1, &submit, VK_NULL_HANDLE);
+    vkQueueWaitIdle(g.queue);
+}
+
 void gfx_texture_free(int id)
 {
     if (id <= 0 || id >= MAX_TEX || !g.tex[id].used)

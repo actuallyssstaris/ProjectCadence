@@ -35,6 +35,8 @@ void gfx_end(void);
 int gfx_texture(int w, int h, const void *rgba);
 int gfx_texture_r8(int w, int h, const void *r8);
 void gfx_texture_free(int id);
+/* same size, new pixels; between frames only */
+void gfx_texture_update(int id, int w, int h, const void *rgba);
 
 void gfx_bind(int tex);
 void gfx_push(const gfx_inst *in);

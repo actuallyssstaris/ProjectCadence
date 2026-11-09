@@ -11,6 +11,7 @@ typedef struct {
     osu5_peek_info info;
     long added;       /* folder mtime */
     float key;        /* scratch for sorting */
+    bool video;       /* the set folder has a video file */
 } song_entry;
 
 typedef struct {

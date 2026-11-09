@@ -154,7 +154,11 @@ int songs_scan(const char *root, song_list *out)
         long added = stat(dir, &st) == 0 ? (long)st.st_mtime : 0;
 
         struct dirent *f;
+        int first = out->count;
+        bool video = false;
         while ((f = readdir(d))) {
+            if (has_ext(f->d_name, ".mp4") || has_ext(f->d_name, ".m4v") || has_ext(f->d_name, ".avi") || has_ext(f->d_name, ".flv"))
+                video = true;
             if (!has_ext(f->d_name, ".osu"))
                 continue;
 
@@ -177,6 +181,8 @@ int songs_scan(const char *root, song_list *out)
                 out->count++;
         }
         closedir(d);
+        for (int i = first; i < out->count; i++)
+            out->items[i].video = video;
     }
     closedir(top);
 
