@@ -14,6 +14,7 @@
 #include "mapdl_ui.h"
 #include "preview.h"
 #include "replay.h"
+#include "online.h"
 #include "storyboard.h"
 #include "sce.h"
 #include "scores.h"
@@ -64,6 +65,7 @@ static struct {
     char filter[64];
     int sort;
     bool searching;
+    bool show_online;     /* osu.ppy.sh leaderboard instead of local scores */
     kbd search;
     int sel;
     float sel_scroll;
@@ -557,6 +559,8 @@ static void select_frame(const pad_state *pad)
         app.searching = true;
         return;
     }
+    if (pad->pressed & PAD_L2 && online_enabled())
+        app.show_online = !app.show_online;
     if (pad->pressed & PAD_R1) {
         app.sort = (app.sort + 1) % SORT_COUNT;
         apply_view();
@@ -669,6 +673,41 @@ static void select_frame(const pad_state *pad)
         start_song(e);
     else if (pad->pressed & PAD_R2 && app.nscores > 0 && replay_exists(app.scores[0].when))
         watch_replay(e, app.scores[0].when);
+}
+
+/* top of the osu.ppy.sh leaderboard, in the box local scores use */
+static void render_online(int id)
+{
+    static online_board b;
+    char buf[160];
+    int st = online_board_for(id, &b);
+    const char *head = "online leaderboard";
+    if (id <= 0)
+        head = "this difficulty isn't on osu.ppy.sh";
+    else if (st == ONLINE_LOADING)
+        head = "loading leaderboard...";
+    else if (st == ONLINE_FAILED)
+        head = "couldn't reach osu.ppy.sh";
+    else if (b.count == 0)
+        head = "no online scores";
+    draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, head);
+    draw_text(820, 356, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, "L2 local");
+    if (st != ONLINE_READY)
+        return;
+
+    int rows = SHOWN_SCORES * 64 / 40;
+    for (int i = 0; i < b.count && i < rows; i++) {
+        const online_score *s = &b.s[i];
+        float y = 396 + i * 40;
+        snprintf(buf, sizeof(buf), "%d", i + 1);
+        draw_text(90, y + 6, 22, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, buf);
+        draw_rank(s->rank, 125, y + 18, 28, true, 1);
+        draw_text(160, y + 6, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, s->user);
+        snprintf(buf, sizeof(buf), "%.2f%%  %dx  %s", s->accuracy * 100, s->combo, s->mods);
+        draw_text(400, y + 9, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%.0fpp", s->pp);
+        draw_text(820, y + 6, 22, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, buf);
+    }
 }
 
 static void render_select(void)
@@ -805,8 +844,13 @@ static void render_select(void)
     snprintf(buf, sizeof(buf), "%s%soffset %+dms", tags, tags[0] ? "   " : "", app.offset_ms);
     draw_text(60, 262, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, buf);
 
-    /* local scores for this difficulty */
     draw_rect(40, 340, 800, 70 + SHOWN_SCORES * 64, gfx_rgba(0, 0, 0, 0.5f));
+    if (app.show_online) {
+        render_online(app.songs.items[app.sel].info.beatmap_id);
+        goto scores_done;
+    }
+
+    /* local scores for this difficulty */
     draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, app.nscores ? "your best" : "no scores yet");
     if (app.nscores && replay_exists(app.scores[0].when))
         draw_text(820, 356, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, "R2 watch replay");
@@ -824,6 +868,10 @@ static void render_select(void)
         snprintf(buf, sizeof(buf), "%.2f%%  %dx  %s", r->accuracy * 100, r->max_combo, tags);
         draw_text(150, y + 38, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
     }
+    if (online_enabled())
+        draw_text(820, 356 + (app.nscores && replay_exists(app.scores[0].when) ? 24 : 0), 18,
+                  gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, "L2 online");
+scores_done:;
 
     mapdl_status dl;
     mapdl_progress(&dl);
@@ -1045,6 +1093,7 @@ int main(void)
     settings_load();
     audio_music_volume(app.music_vol);
     scores_load();
+    online_init();
     stars_init();
     LOG("settings read");
     skin_apply(skins_active());

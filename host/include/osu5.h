@@ -102,6 +102,7 @@ typedef struct {
     int32_t mode;
     int32_t preview_time;
     int32_t set_id;
+    int32_t beatmap_id;
     float cs, ar, od, hp;
     char title[128];
     char artist[128];

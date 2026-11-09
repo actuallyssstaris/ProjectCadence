@@ -9,7 +9,7 @@ lazer.
 
 Maps and skins download on the console. There are local scores with pp, replays,
 storyboards, search and sort in song select, and the main mods (EZ, NF, HT, HR, HD,
-DT, Auto; DT and HT keep the music's pitch). No online leaderboards.
+DT, Auto; DT and HT keep the music's pitch).
 
 ## What's where
 
@@ -32,6 +32,7 @@ and breaks.
 Song select: the left stick scrolls through maps, d-pad up/down picks the
 difficulty, Cross plays, Square opens mods, Triangle opens the map downloader,
 L1 searches, R1 changes the sort, R2 watches your best replay on the difficulty,
+L2 switches to the osu.ppy.sh leaderboard,
 Options opens settings (volumes, offset, stick reach, background dim, cursor size,
 storyboards), the touchpad opens the skin picker.
 
@@ -48,6 +49,12 @@ rescan from settings.
 Star ratings use lazer's difficulty calculator, worked out on the console in the
 background and cached in `/data/cadence/stars.txt`. Scores are kept per difficulty
 in `/data/cadence/scores.txt`.
+
+## Online leaderboards
+
+Read only. Make an OAuth application on your osu! account settings page (any
+callback URL), then put its client id and secret on two lines in
+`/data/cadence/osuapi.txt`. L2 in song select shows the top scores.
 
 ## Skins
 

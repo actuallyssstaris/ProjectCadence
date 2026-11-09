@@ -14,4 +14,7 @@ int net_fetch(const char *url, const char *path, volatile uint64_t *got);
 /* same, into a malloc'd buffer (NUL terminated, free it) */
 int net_get(const char *url, char **out, size_t *len);
 
+/* any method; headers are name, value pairs ending in NULL; body may be NULL */
+int net_request(const char *method, const char *url, const char *const *headers, const char *body, char **out, size_t *len);
+
 #endif

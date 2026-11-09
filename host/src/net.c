@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 int sceNetInit(void);
 int sceNetPoolCreate(const char *name, int size, int flags);
@@ -16,6 +17,7 @@ int sceHttp2SetAutoRedirect(int id, int enable);
 int sceHttp2SetTimeOut(int id, uint32_t usec);
 int sceHttp2CreateRequestWithURL(int tmpl, const char *method, const char *url, uint64_t content_length);
 int sceHttp2DeleteRequest(int req);
+int sceHttp2AddRequestHeader(int req, const char *name, const char *value, uint32_t mode);
 int sceHttp2SendRequest(int req, const void *data, size_t size);
 int sceHttp2GetStatusCode(int req, int *status);
 int sceHttp2ReadData(int req, void *buf, size_t size);
@@ -47,17 +49,20 @@ bool net_init(void)
 
 /* sends the request; > 0 is a request id with a 200 behind it, otherwise the
  * status or error to hand back */
-static int open_get(const char *url, int *req_out)
+static int open_req(const char *method, const char *url, const char *const *headers, const char *body, int *req_out)
 {
     if (tmpl < 0 && !net_init())
         return -1;
 
-    int req = sceHttp2CreateRequestWithURL(tmpl, "GET", url, 0);
+    size_t blen = body ? strlen(body) : 0;
+    int req = sceHttp2CreateRequestWithURL(tmpl, method, url, blen);
     if (req < 0)
         return req;
+    for (int i = 0; headers && headers[i]; i += 2)
+        sceHttp2AddRequestHeader(req, headers[i], headers[i + 1], 0);
 
     int status = -1;
-    int rc = sceHttp2SendRequest(req, NULL, 0);
+    int rc = sceHttp2SendRequest(req, body, blen);
     if (rc == 0)
         rc = sceHttp2GetStatusCode(req, &status);
     if (rc != 0) {
@@ -70,6 +75,11 @@ static int open_get(const char *url, int *req_out)
     }
     *req_out = req;
     return 200;
+}
+
+static int open_get(const char *url, int *req_out)
+{
+    return open_req("GET", url, NULL, NULL, req_out);
 }
 
 int net_fetch(const char *url, const char *path, volatile uint64_t *got)
@@ -106,10 +116,15 @@ int net_fetch(const char *url, const char *path, volatile uint64_t *got)
 
 int net_get(const char *url, char **out, size_t *len)
 {
+    return net_request("GET", url, NULL, NULL, out, len);
+}
+
+int net_request(const char *method, const char *url, const char *const *headers, const char *body, char **out, size_t *len)
+{
     *out = NULL;
     *len = 0;
     int req;
-    int st = open_get(url, &req);
+    int st = open_req(method, url, headers, body, &req);
     if (st != 200)
         return st;
 

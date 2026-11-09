@@ -267,6 +267,7 @@ namespace Osu5.Native
             public int Mode;
             public int PreviewTime;
             public int BeatmapSetId;
+            public int BeatmapId;
             public float CS, AR, OD, HP;
             public fixed byte Title[128];
             public fixed byte Artist[128];
@@ -288,6 +289,7 @@ namespace Osu5.Native
                 info->Mode = m.Mode;
                 info->PreviewTime = m.Metadata.PreviewTime;
                 info->BeatmapSetId = m.Metadata.BeatmapSetId;
+                info->BeatmapId = m.Metadata.BeatmapId;
                 info->CS = m.Difficulty.CircleSize;
                 info->AR = m.Difficulty.ApproachRate;
                 info->OD = m.Difficulty.OverallDifficulty;
