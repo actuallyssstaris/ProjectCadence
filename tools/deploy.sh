@@ -16,6 +16,8 @@ put_tree() {
 }
 
 put_tree "$root/dist/PPSA70727" "data/homebrew/PPSA70727"
+# home screen icon
+put_tree "$root/dist/PPSA70727/sce_sys" "user/appmeta/PPSA70727"
 echo "title uploaded"
 
 if [[ $# -gt 0 ]]; then

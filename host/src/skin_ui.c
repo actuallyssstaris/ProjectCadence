@@ -40,7 +40,7 @@ void skin_apply(const char *id)
     char dir[256];
     if (!strcmp(id, "builtin")) {
         skin_images_load(NULL);
-        skin_load("/data/osu5/skin"); /* hitsounds dropped in by hand, if any */
+        skin_load("/data/cadence/skin"); /* hitsounds dropped in by hand, if any */
     } else {
         skins_path(id, dir, sizeof(dir));
         skin_images_load(dir);
@@ -270,7 +270,7 @@ void skin_ui_render(void)
     else if (cur->kind == ROW_REMOTE)
         draw_text(120, GFX_H - 236, 20, dim, ALIGN_LEFT, "skins from o!rdr (ordr.issou.best), made and shared by their authors");
 
-    draw_text(120, GFX_H - 168, 22, dim, ALIGN_LEFT, "or unzip any .osk into /data/osu5/skins/<name>/ over FTP and it shows up here");
+    draw_text(120, GFX_H - 168, 22, dim, ALIGN_LEFT, "or unzip any .osk into /data/cadence/skins/<name>/ over FTP and it shows up here");
     draw_text(120, GFX_H - 110, 26, white, ALIGN_LEFT,
               ui.first_run ? "CROSS pick   L1/R1 page   CIRCLE skip (built-in look)"
                            : "CROSS use / download   TRIANGLE re-download   L1/R1 page   CIRCLE back");

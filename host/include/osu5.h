@@ -114,6 +114,8 @@ typedef struct {
 enum { OSU5_STR_TITLE, OSU5_STR_ARTIST, OSU5_STR_VERSION, OSU5_STR_CREATOR, OSU5_STR_AUDIO, OSU5_STR_BACKGROUND, OSU5_STR_ERROR };
 
 int osu5_gc_check(void);
+float osu5_play_stars(void); /* the loaded map, with its mods */
+float osu5_pp(void);         /* the current score */
 float osu5_stars(const char *path, int mods); /* -1 on failure; safe off the main thread */ /* forces a collection, returns the gen0 count */
 int osu5_load(const char *path);
 void osu5_unload(void);

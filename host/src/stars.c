@@ -8,8 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define STARS_FILE "/data/osu5/stars.txt"
-#define SONGS_PREFIX "/data/osu5/Songs/"
+#define STARS_FILE "/data/cadence/stars.txt"
+#define SONGS_PREFIX "/data/cadence/Songs/"
 /* bump with the core's StarRating.Version so old numbers get thrown away */
 #define STARS_HEADER "osu5 stars 20260706"
 

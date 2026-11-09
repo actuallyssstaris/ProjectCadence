@@ -24,7 +24,11 @@ void audio_music_pause(bool paused);
 void audio_music_seek(double ms);
 void audio_music_stop(void);
 void audio_music_volume(float v);
-void audio_music_rate(double rate); /* 1.5 for DT, 0.75 for HT */
+void audio_music_rate(double rate); /* resampled playback speed; audio_music_set resets it */
+/* the buffer was time-stretched by this much: the clock reports song time */
+void audio_music_timescale(double scale);
+/* tempo change without the pitch moving (WSOLA); out is in.frames / rate long */
+bool audio_stretch(const sound_buf *in, double rate, sound_buf *out);
 uint32_t audio_music_frames(void);
 double audio_music_time(void); /* ms, can be negative during lead-in */
 bool audio_music_ended(void);

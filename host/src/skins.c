@@ -13,8 +13,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-#define SKINS_DIR "/data/osu5/skins"
-#define ACTIVE_FILE "/data/osu5/skin.txt"
+#define SKINS_DIR "/data/cadence/skins"
+#define ACTIVE_FILE "/data/cadence/skin.txt"
 
 /* Only skins their authors publish with a direct download. The big skin sites sit
  * behind bot checks a console can't pass, so those are left to the player. */

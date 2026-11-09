@@ -6,8 +6,8 @@
 #include <string.h>
 #include <time.h>
 
-#define SCORES_FILE "/data/osu5/scores.txt"
-#define SONGS_PREFIX "/data/osu5/Songs/"
+#define SCORES_FILE "/data/cadence/scores.txt"
+#define SONGS_PREFIX "/data/cadence/Songs/"
 
 typedef struct {
     char key[400];
@@ -52,8 +52,9 @@ void scores_load(void)
         *tab = 0;
         score_rec r;
         long long sc, when;
-        if (sscanf(tab + 1, "%lld %f %d %d %d %d %d %d %d %lld", &sc, &r.accuracy, &r.max_combo, &r.rank, &r.mods, &r.great,
-                   &r.ok, &r.meh, &r.miss, &when) != 10)
+        r.pp = 0; /* not written before v0.5 */
+        if (sscanf(tab + 1, "%lld %f %d %d %d %d %d %d %d %lld %f", &sc, &r.accuracy, &r.max_combo, &r.rank, &r.mods, &r.great,
+                   &r.ok, &r.meh, &r.miss, &when, &r.pp) < 10)
             continue;
         r.score = sc;
         r.when = when;
@@ -84,12 +85,19 @@ int scores_for(const char *osu_path, score_rec *out, int max)
     return n;
 }
 
-int scores_add(const char *osu_path, const osu5_hud *h, int mods)
+int scores_add(const char *osu_path, const osu5_hud *h, int mods, float pp, int64_t *when)
 {
     score_rec r = {
         .score = h->score, .accuracy = h->accuracy, .max_combo = h->max_combo, .rank = h->rank, .mods = mods,
-        .great = h->great, .ok = h->ok, .meh = h->meh, .miss = h->miss, .when = (int64_t)time(NULL),
+        .great = h->great, .ok = h->ok, .meh = h->meh, .miss = h->miss, .when = (int64_t)time(NULL), .pp = pp,
     };
+    /* two plays inside one second would share a replay file */
+    static int64_t last;
+    if (r.when <= last)
+        r.when = last + 1;
+    last = r.when;
+    if (when)
+        *when = r.when;
     const char *key = key_of(osu_path);
 
     int place = 0;
@@ -101,8 +109,8 @@ int scores_add(const char *osu_path, const osu5_hud *h, int mods)
 
     FILE *f = fopen(SCORES_FILE, "a");
     if (f) {
-        fprintf(f, "%s\t%lld %.6f %d %d %d %d %d %d %d %lld\n", key, (long long)r.score, r.accuracy, r.max_combo, r.rank, r.mods,
-                r.great, r.ok, r.meh, r.miss, (long long)r.when);
+        fprintf(f, "%s\t%lld %.6f %d %d %d %d %d %d %d %lld %.2f\n", key, (long long)r.score, r.accuracy, r.max_combo, r.rank,
+                r.mods, r.great, r.ok, r.meh, r.miss, (long long)r.when, r.pp);
         fclose(f);
     } else {
         LOG("scores: couldn't write " SCORES_FILE);

@@ -28,14 +28,14 @@ bool net_init(void)
         return true;
 
     int rc = sceNetInit();
-    int pool = sceNetPoolCreate("osu5", 64 * 1024, 0);
+    int pool = sceNetPoolCreate("cadence", 64 * 1024, 0);
     int ssl = sceSslInit(512 * 1024);
     int http = sceHttp2Init(pool, ssl, 512 * 1024, 4);
     LOG("net: init 0x%x pool %d ssl %d http %d", (unsigned)rc, pool, ssl, http);
     if (pool < 0 || ssl < 0 || http < 0)
         return false;
 
-    tmpl = sceHttp2CreateTemplate(http, "osu-ps5", 3, 1);
+    tmpl = sceHttp2CreateTemplate(http, "ProjectCadence", 3, 1);
     if (tmpl < 0) {
         LOG("net: template 0x%08x", (unsigned)tmpl);
         return false;

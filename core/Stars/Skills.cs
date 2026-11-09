@@ -52,6 +52,18 @@ namespace Osu5.Stars
             return difficulty;
         }
 
+        public virtual double CountTopWeightedObjectDifficulties(double difficultyValue)
+        {
+            if (ObjectDifficulties.Count == 0 || ObjectWeightSum == 0)
+                return 0.0;
+
+            double consistentTopObject = difficultyValue / ObjectWeightSum;
+            if (consistentTopObject == 0)
+                return 0;
+
+            return ObjectDifficulties.Sum(d => DiffUtils.Logistic(d / consistentTopObject, 0.88, 10, 1.1));
+        }
+
         public static double DifficultyToPerformance(double difficulty) => 4.0 * DiffUtils.Pow(difficulty, 3);
     }
 
@@ -153,6 +165,18 @@ namespace Osu5.Stars
             }
         }
 
+        public double CountTopWeightedStrains(double difficultyValue)
+        {
+            if (ObjectDifficulties.Count == 0)
+                return 0.0;
+
+            double consistentTopStrain = difficultyValue * (1 - DecayWeight);
+            if (consistentTopStrain == 0)
+                return ObjectDifficulties.Count;
+
+            return ObjectDifficulties.Sum(s => DiffUtils.Logistic(s / consistentTopStrain, 0.88, 10, 1.1));
+        }
+
         protected IEnumerable<StrainPeak> GetCurrentStrainPeaks()
         {
             if (finalPeak == null)
@@ -182,6 +206,7 @@ namespace Osu5.Stars
     {
         readonly bool includeSliders;
         double currentStrain;
+        readonly List<double> sliderStrains = new List<double>();
 
         public Aim(bool includeSliders)
         {
@@ -198,7 +223,21 @@ namespace Osu5.Stars
             double decay = strainDecay(current.AdjustedDeltaTime);
             currentStrain *= decay;
             currentStrain += calculateAdjustedDifficulty(current) * (1 - decay);
+
+            if (current.Base is Osu5.Objects.Slider)
+                sliderStrains.Add(currentStrain);
+
             return currentStrain;
+        }
+
+        public double GetDifficultSliders()
+        {
+            if (sliderStrains.Count == 0)
+                return 0;
+            double maxSliderStrain = sliderStrains.Max();
+            if (maxSliderStrain == 0)
+                return 0;
+            return sliderStrains.Sum(strain => DiffUtils.Logistic(strain / maxSliderStrain, 0.5, 12.0));
         }
 
         double calculateAdjustedDifficulty(DiffObject current)
@@ -307,6 +346,16 @@ namespace Osu5.Stars
 
             return currentStrain * RhythmEvaluator.EvaluateDifficultyOf(current);
         }
+
+        public double RelevantObjectCount()
+        {
+            if (ObjectDifficulties.Count == 0)
+                return 0;
+            double maxStrain = ObjectDifficulties.Max();
+            if (maxStrain == 0)
+                return 0;
+            return ObjectDifficulties.Sum(strain => DiffUtils.Logistic(strain / maxStrain, 0.5, 12.0));
+        }
     }
 
     sealed class Reading : HarmonicSkill
@@ -360,6 +409,18 @@ namespace Osu5.Stars
             }
 
             return difficulties;
+        }
+
+        public override double CountTopWeightedObjectDifficulties(double difficultyValue)
+        {
+            if (ObjectDifficulties.Count == 0 || ObjectWeightSum == 0)
+                return 0.0;
+
+            double consistentTopNote = difficultyValue / ObjectWeightSum;
+            if (consistentTopNote == 0)
+                return 0;
+
+            return ObjectDifficulties.Sum(d => DiffUtils.Logistic(d / consistentTopNote, 1.15, 5, 1.1));
         }
     }
 }

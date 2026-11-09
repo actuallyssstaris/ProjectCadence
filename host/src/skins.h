@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Skins live in /data/osu5/skins/<id>/; skin.txt says which one is in use
+/* Skins live in /data/cadence/skins/<id>/; skin.txt says which one is in use
  * ("builtin" for the drawn look). */
 
 typedef struct {

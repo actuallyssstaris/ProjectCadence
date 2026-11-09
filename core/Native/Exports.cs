@@ -18,6 +18,38 @@ namespace Osu5.Native
         static string lastError = "";
         static Mods mods;
         static uint[]? skinColours;
+        static Osu5.Stars.StarResult? attributes;
+
+        // stars of the loaded map with its mods, and pp for the score so far
+        [UnmanagedCallersOnly(EntryPoint = "osu5_play_stars", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static float PlayStars() => (float)(attributes?.Stars ?? 0);
+
+        [UnmanagedCallersOnly(EntryPoint = "osu5_pp", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static float Pp()
+        {
+            try
+            {
+                if (player == null || attributes == null)
+                    return 0;
+                var s = player.Score;
+                return (float)Osu5.Stars.Performance.Calculate(attributes, mods, new Osu5.Stars.PlayStats
+                {
+                    Accuracy = s.Accuracy,
+                    MaxCombo = s.MaxCombo,
+                    Great = s.Great,
+                    Ok = s.Ok,
+                    Meh = s.Meh,
+                    Miss = s.Miss,
+                    SliderTailHits = s.SliderTailHits,
+                    LargeTickMisses = s.LargeTickMisses,
+                });
+            }
+            catch (Exception e)
+            {
+                lastError = e.Message;
+                return 0;
+            }
+        }
 
         [UnmanagedCallersOnly(EntryPoint = "osu5_load", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static int Load(byte* path)
@@ -35,6 +67,8 @@ namespace Osu5.Native
                     return -2;
                 }
 
+                // before the player: Hidden changes the objects' fade-in
+                attributes = Osu5.Stars.StarRating.Calculate(map, mods);
                 player = new Player(map, mods, skinColours);
                 return 0;
             }

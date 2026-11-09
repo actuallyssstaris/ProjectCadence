@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 /* Beatmap search and download through a public mirror (catboy.best, nerinyan as
- * the fallback). Sets land in /data/osu5/Songs/<id> <artist> - <title>/. */
+ * the fallback). Sets land in /data/cadence/Songs/<id> <artist> - <title>/. */
 
 #define MAPDL_RESULTS 50
 

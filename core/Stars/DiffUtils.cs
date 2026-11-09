@@ -65,6 +65,51 @@ namespace Osu5.Stars
 
         public static double DegreesToRadians(double d) => double.DegreesToRadians(d);
 
+        public const double SQRT2 = 1.4142135623730950;
+
+        public static double Erf(double x)
+        {
+            if (x == 0)
+                return 0;
+            if (double.IsPositiveInfinity(x))
+                return 1;
+            if (double.IsNegativeInfinity(x))
+                return -1;
+            if (double.IsNaN(x))
+                return double.NaN;
+
+            double t = 1.0 / (1.0 + 0.3275911 * Math.Abs(x));
+            double tau = t * (0.254829592
+                              + t * (-0.284496736
+                                     + t * (1.421413741
+                                            + t * (-1.453152027
+                                                   + t * 1.061405429))));
+            double erf = 1.0 - tau * Math.Exp(-x * x);
+            return x >= 0 ? erf : -erf;
+        }
+
+        public static double ErfInv(double x)
+        {
+            if (x <= -1)
+                return double.NegativeInfinity;
+            if (x >= 1)
+                return double.PositiveInfinity;
+            if (x == 0)
+                return 0;
+
+            const double a = 0.147;
+            double sgn = Math.Sign(x);
+            x = Math.Abs(x);
+
+            double ln = Math.Log(1 - x * x);
+            double t1 = 2 / (Math.PI * a) + ln / 2;
+            double t2 = ln / a;
+            double baseApprox = Math.Sqrt(t1 * t1 - t2) - t1;
+
+            double c = x >= 0.85 ? Pow((x - 0.85) / 0.293, 8) : 0;
+            return sgn * (Math.Sqrt(baseApprox) + c);
+        }
+
         // osu-framework's AddInPlace: keep a sorted list sorted
         public static void AddInPlace<T>(this List<T> list, T item)
         {

@@ -1,4 +1,4 @@
-/* Payload: keep a copy of the kernel message buffer in /data/osu5/klog.txt for
+/* Payload: keep a copy of the kernel message buffer in /data/cadence/klog.txt for
  * three minutes. Reads kern.msgbuf (what dmesg reads), so it works while
  * something else holds /dev/klog. */
 #include <fcntl.h>
@@ -38,7 +38,7 @@ int main(void)
     while (time(NULL) < end) {
         size_t n = cap;
         if (sysctlbyname("kern.msgbuf", buf, &n, NULL, 0) == 0) {
-            int out = open("/data/osu5/klog.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
+            int out = open("/data/cadence/klog.txt", O_WRONLY | O_CREAT | O_TRUNC, 0666);
             if (out >= 0) {
                 write(out, buf, n);
                 close(out);

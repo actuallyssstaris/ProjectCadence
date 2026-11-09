@@ -56,7 +56,12 @@ foreach (string arg in args)
         if (!ok) bad++;
 
         var sr = Osu5.Stars.StarRating.Calculate(BeatmapDecoder.Decode(f, mods), mods);
-        Console.WriteLine($"{(ok ? "ok  " : "FAIL")} {Path.GetFileNameWithoutExtension(f)} [{mods}] {sr.Stars:F3}* (aim {sr.Aim:F3} speed {sr.Speed:F3} reading {sr.Reading:F3})");
+        double pp = Osu5.Stars.Performance.Calculate(sr, mods, new Osu5.Stars.PlayStats
+        {
+            Accuracy = s.Accuracy, MaxCombo = s.MaxCombo, Great = s.Great, Ok = s.Ok, Meh = s.Meh, Miss = s.Miss,
+            SliderTailHits = s.SliderTailHits, LargeTickMisses = s.LargeTickMisses,
+        });
+        Console.WriteLine($"{(ok ? "ok  " : "FAIL")} {Path.GetFileNameWithoutExtension(f)} [{mods}] {sr.Stars:F3}* {pp:F1}pp (aim {sr.Aim:F3} speed {sr.Speed:F3} reading {sr.Reading:F3} combo {sr.MaxCombo})");
         Console.WriteLine($"     v{map.FormatVersion} {circles}c {sliders}s {spinners}sp  combo {s.MaxCombo}/{expectCombo}  acc {s.Accuracy:P2}  score {s.TotalScore}  300 {s.Great} 100 {s.Ok} 50 {s.Meh} x {s.Miss}  sb {s.SliderBreaks}  ur {s.UnstableRate:F1}");
     }
 }

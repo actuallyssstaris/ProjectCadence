@@ -8,10 +8,13 @@
 #include "draw.h"
 #include "gfx.h"
 #include "input.h"
+#include "kbd.h"
 #include "log.h"
 #include "mapdl.h"
 #include "mapdl_ui.h"
 #include "preview.h"
+#include "replay.h"
+#include "storyboard.h"
 #include "sce.h"
 #include "scores.h"
 #include "skin.h"
@@ -33,7 +36,7 @@
 #include <string.h>
 #include <time.h>
 
-#define DATA_DIR "/data/osu5"
+#define DATA_DIR "/data/cadence"
 #define SONGS_DIR DATA_DIR "/Songs"
 #define SKIN_DIR DATA_DIR "/skin"
 #define SETTINGS_FILE DATA_DIR "/settings.txt"
@@ -56,7 +59,12 @@ typedef enum {
 
 static struct {
     screen scr;
-    song_list songs;
+    song_list all;        /* everything in Songs/ */
+    song_list songs;      /* what song select shows: filtered and sorted */
+    char filter[64];
+    int sort;
+    bool searching;
+    kbd search;
     int sel;
     float sel_scroll;
     double sel_changed;   /* wall ms, previews wait for the selection to settle */
@@ -68,6 +76,7 @@ static struct {
     float music_vol, fx_vol;
     float bg_dim;         /* during play */
     float cursor_scale;
+    bool storyboards;
 
     int bg_tex;
     int bg_w, bg_h;
@@ -84,6 +93,15 @@ static struct {
     int nscores;
     int scores_for;       /* song index the list above belongs to */
     int new_place;        /* where the last result landed, -1 not saved */
+
+    replay rec;           /* the play going on now */
+    replay watch;         /* the one being watched */
+    bool watching;
+    int rp_pos;
+    int saved_mods;       /* the player's own, while a replay's are in */
+    int64_t last_when;    /* last saved score / replay, 0 none */
+    float last_pp;
+    storyboard *sb;
 
     int mod_sel;
     int set_sel;
@@ -121,6 +139,7 @@ static void settings_load(void)
     app.fx_vol = 0.8f;
     app.bg_dim = 0.8f;
     app.cursor_scale = 1.0f;
+    app.storyboards = true;
 
     FILE *f = fopen(SETTINGS_FILE, "r");
     if (f) {
@@ -134,6 +153,8 @@ static void settings_load(void)
             else if (!strcmp(key, "dim")) app.bg_dim = v;
             else if (!strcmp(key, "cursor")) app.cursor_scale = v;
             else if (!strcmp(key, "mods")) app.mods = (int)v & ~OSU5_MOD_AUTO;
+            else if (!strcmp(key, "sort")) app.sort = (int)v >= 0 && (int)v < SORT_COUNT ? (int)v : 0;
+            else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
         }
         fclose(f);
     }
@@ -145,8 +166,9 @@ static void settings_save(void)
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f)
         return;
-    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\n", app.offset_ms,
-            app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO);
+    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\n",
+            app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
+            app.sort, app.storyboards);
     fclose(f);
 }
 
@@ -267,6 +289,10 @@ static bool start_song(const song_entry *e)
 {
     snprintf(app.status, sizeof(app.status), "loading...");
     preview_cancel();
+    if (app.sb) {
+        sb_free(app.sb);
+        app.sb = NULL;
+    }
 
     osu5_set_mods(app.mods);
     if (osu5_load(e->file) != 0) {
@@ -290,21 +316,57 @@ static bool start_song(const song_entry *e)
 
     if (songs_file(e->dir, e->info.background, path, sizeof(path)))
         load_background(path);
+    if (app.storyboards)
+        app.sb = sb_load(e->dir, e->file, e->info.background);
 
+    /* DT/HT: stretch the song so the pitch stays, and let the clock run at the
+     * mod's rate over the stretched buffer; plain resampling if that fails */
+    double rate = mod_rate(app.mods);
+    sound_buf stretched;
+    bool kept_pitch = rate != 1 && audio_stretch(&music, rate, &stretched);
+    if (kept_pitch) {
+        sound_free(&music);
+        music = stretched;
+    }
     audio_music_set(&music);
     audio_music_volume(app.music_vol);
-    audio_music_rate(mod_rate(app.mods));
+    if (kept_pitch)
+        audio_music_timescale(rate);
+    else
+        audio_music_rate(rate);
     audio_music_play(osu5_start_time());
-    LOG("play %s from %.0f ms, mods %d", e->file, osu5_start_time(), app.mods);
+    LOG("play %s from %.0f ms, mods %d%s%s", e->file, osu5_start_time(), app.mods, app.watching ? ", replay" : "",
+        app.sb ? ", storyboard" : "");
 
+    if (!app.watching)
+        replay_reset(&app.rec, e->file, app.mods);
+    app.rp_pos = 0;
     app.playing = e;
     app.cursor.x = 256;
     app.cursor.y = 192;
     app.finish_seen = 0;
     app.new_place = -1;
+    app.last_when = 0;
+    app.last_pp = 0;
     app.status[0] = 0;
     app.scr = SCREEN_PLAY;
     return true;
+}
+
+/* plays back a saved replay; its mods stand in for the chosen ones until we're back */
+static void watch_replay(const song_entry *e, int64_t when)
+{
+    if (!replay_load(&app.watch, when)) {
+        snprintf(app.status, sizeof(app.status), "couldn't read that replay");
+        return;
+    }
+    app.saved_mods = app.mods;
+    app.mods = app.watch.mods;
+    app.watching = true;
+    if (!start_song(e)) {
+        app.watching = false;
+        app.mods = app.saved_mods;
+    }
 }
 
 static void back_to_select(void)
@@ -313,6 +375,14 @@ static void back_to_select(void)
     audio_music_rate(1);
     audio_music_volume(app.music_vol);
     osu5_unload();
+    if (app.sb) {
+        sb_free(app.sb);
+        app.sb = NULL;
+    }
+    if (app.watching) {
+        app.watching = false;
+        app.mods = app.saved_mods;
+    }
     app.previewed = -1; /* get the preview going again */
     app.sel_changed = 0;
     app.scores_for = -1;
@@ -332,8 +402,20 @@ static void play_frame(const pad_state *pad, float dt)
         return;
     }
 
-    input_to_play(pad, &app.cursor, dt, app.sensitivity);
-    osu5_update(t, app.cursor.x, app.cursor.y, app.cursor.keys);
+    if (app.watching) {
+        /* the recorded calls, at their own times, up to now */
+        while (app.rp_pos < app.watch.count && app.watch.frames[app.rp_pos].t <= t) {
+            const replay_frame *f = &app.watch.frames[app.rp_pos++];
+            osu5_update(f->t, f->x, f->y, f->keys);
+            app.cursor.x = f->x;
+            app.cursor.y = f->y;
+        }
+    } else {
+        input_to_play(pad, &app.cursor, dt, app.sensitivity);
+        osu5_update(t, app.cursor.x, app.cursor.y, app.cursor.keys);
+        if (!(app.mods & OSU5_MOD_AUTO))
+            replay_push(&app.rec, t, app.cursor.x, app.cursor.y, app.cursor.keys);
+    }
 
     osu5_sound ev;
     while (osu5_poll_sound(&ev))
@@ -358,8 +440,12 @@ static void play_frame(const pad_state *pad, float dt)
         if (app.finish_seen == 0) {
             app.finish_seen = wall_ms();
         } else if (wall_ms() - app.finish_seen > 1500) {
-            if (!(app.mods & OSU5_MOD_AUTO) && app.playing)
-                app.new_place = scores_add(app.playing->file, &app.last_hud, app.mods);
+            app.last_pp = osu5_pp();
+            if (!(app.mods & OSU5_MOD_AUTO) && !app.watching && app.playing) {
+                app.new_place = scores_add(app.playing->file, &app.last_hud, app.mods, app.last_pp, &app.last_when);
+                if (!replay_save(&app.rec, app.last_when))
+                    app.last_when = 0;
+            }
             app.scr = SCREEN_RESULTS;
         }
     }
@@ -371,28 +457,46 @@ static void render_play(void)
     int np = 0;
     int n = osu5_frame(t, cmds, MAX_CMDS, points, MAX_POINTS, &np);
 
-    draw_background(app.last_hud.state == OSU5_STATE_BREAK ? app.bg_dim * 0.6f : app.bg_dim);
+    float dim = app.last_hud.state == OSU5_STATE_BREAK ? app.bg_dim * 0.6f : app.bg_dim;
+    if (!app.sb || !sb_replaces_bg(app.sb))
+        draw_background(dim);
+    if (app.sb)
+        sb_draw(app.sb, t, SB_UNDER, dim);
     draw_gameplay(cmds, n, points, np);
+    if (app.sb)
+        sb_draw(app.sb, t, SB_OVER, 0);
     draw_hud(&app.last_hud, t);
+    if (app.watching)
+        draw_text(GFX_W / 2, 20, 30, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "replay");
 }
 
 /* ---- song select ---- */
 
-static void rescan(void)
+/* rebuilds the visible list from everything, keeping the selection if it survived */
+static void apply_view(void)
 {
     char keep[768] = "";
     if (app.songs.count > 0)
         snprintf(keep, sizeof(keep), "%s", app.songs.items[app.sel].file);
-    songs_scan(SONGS_DIR, &app.songs);
+    songs_filter(&app.all, &app.songs, app.filter);
+    songs_sort(&app.songs, app.sort);
     int at = keep[0] ? songs_find(&app.songs, keep) : -1;
-    app.sel = at >= 0 ? at : 0;
-    app.sel_scroll = (float)app.sel;
-    app.previewed = -1;
-    app.scores_for = -1;
+    if (at < 0 || at != app.sel) {
+        app.sel = at >= 0 ? at : 0;
+        app.sel_scroll = (float)app.sel;
+        app.previewed = -1;
+        app.scores_for = -1;
+    }
+}
+
+static void rescan(void)
+{
+    songs_scan(SONGS_DIR, &app.all);
     /* everything gets rated in the background, what's on screen first */
-    for (int i = 0; i < app.songs.count; i++)
-        stars_want(app.songs.items[i].file, 0, false);
-    LOG("%d maps", app.songs.count);
+    for (int i = 0; i < app.all.count; i++)
+        stars_want(app.all.items[i].file, 0, false);
+    apply_view();
+    LOG("%d maps", app.all.count);
 }
 
 /* a set is a run of difficulties from one folder (the scan sorts them together) */
@@ -436,6 +540,29 @@ static int closest_in_set(int start, int from)
 
 static void select_frame(const pad_state *pad)
 {
+    /* typing a search: the list follows every key */
+    if (app.searching) {
+        char before[64];
+        snprintf(before, sizeof(before), "%s", app.filter);
+        int k = kbd_frame(&app.search, pad);
+        if (strcmp(before, app.filter))
+            apply_view();
+        if (k != KBD_TYPING)
+            app.searching = false;
+        return;
+    }
+    if (pad->pressed & PAD_L1) {
+        app.search.text = app.filter;
+        app.search.cap = sizeof(app.filter);
+        app.searching = true;
+        return;
+    }
+    if (pad->pressed & PAD_R1) {
+        app.sort = (app.sort + 1) % SORT_COUNT;
+        apply_view();
+        settings_save();
+    }
+
     if (pad->pressed & PAD_TOUCHPAD) {
         skin_ui_open(false);
         app.scr = SCREEN_SKINS;
@@ -466,7 +593,7 @@ static void select_frame(const pad_state *pad)
     }
 
     if (app.songs.count == 0) {
-        if (pad->pressed & PAD_CROSS)
+        if (pad->pressed & PAD_CROSS && !app.filter[0])
             rescan();
         return;
     }
@@ -488,8 +615,6 @@ static void select_frame(const pad_state *pad)
     if (app.sel < 0) app.sel = 0;
     if (app.sel >= app.songs.count) app.sel = app.songs.count - 1;
 
-    if (pad->pressed & PAD_L1) { app.offset_ms -= 5; settings_save(); }
-    if (pad->pressed & PAD_R1) { app.offset_ms += 5; settings_save(); }
 
     /* the open set and the selection with the current mods get rated first;
      * once new numbers land, the open set re-sorts by stars */
@@ -542,12 +667,30 @@ static void select_frame(const pad_state *pad)
 
     if (pad->pressed & PAD_CROSS)
         start_song(e);
+    else if (pad->pressed & PAD_R2 && app.nscores > 0 && replay_exists(app.scores[0].when))
+        watch_replay(e, app.scores[0].when);
 }
 
 static void render_select(void)
 {
     draw_background(0.75f);
     char buf[300];
+
+    /* search and sort, top right */
+    if (app.filter[0] || app.searching)
+        snprintf(buf, sizeof(buf), "search: %s%s   sort: %s", app.filter, app.searching ? "_" : "", songs_sort_name(app.sort));
+    else
+        snprintf(buf, sizeof(buf), "L1 search   R1 sort: %s", songs_sort_name(app.sort));
+    draw_rect(900, 0, GFX_W - 900, 52, gfx_rgba(0, 0, 0, 0.6f));
+    draw_text(GFX_W - 30, 12, 26, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
+
+    if (app.songs.count == 0 && app.all.count > 0) {
+        snprintf(buf, sizeof(buf), "nothing matches \"%s\"", app.filter);
+        draw_text(GFX_W / 2, 400, 40, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, buf);
+        if (app.searching)
+            kbd_render(&app.search);
+        return;
+    }
 
     if (app.songs.count == 0) {
         draw_text(GFX_W / 2, 400, 48, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "no beatmaps yet");
@@ -665,12 +808,18 @@ static void render_select(void)
     /* local scores for this difficulty */
     draw_rect(40, 340, 800, 70 + SHOWN_SCORES * 64, gfx_rgba(0, 0, 0, 0.5f));
     draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, app.nscores ? "your best" : "no scores yet");
+    if (app.nscores && replay_exists(app.scores[0].when))
+        draw_text(820, 356, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, "R2 watch replay");
     for (int i = 0; i < app.nscores; i++) {
         const score_rec *r = &app.scores[i];
         float y = 400 + i * 64;
         draw_rank(r->rank, 95, y + 26, 44, true, 1);
         snprintf(buf, sizeof(buf), "%lld", (long long)r->score);
         draw_text(150, y + 6, 28, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+        if (r->pp > 0) {
+            snprintf(buf, sizeof(buf), "%.0fpp", r->pp);
+            draw_text(820, y + 10, 26, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, buf);
+        }
         mod_tags(r->mods, tags, sizeof(tags));
         snprintf(buf, sizeof(buf), "%.2f%%  %dx  %s", r->accuracy * 100, r->max_combo, tags);
         draw_text(150, y + 38, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
@@ -688,6 +837,8 @@ static void render_select(void)
 
     if (app.status[0])
         draw_text(GFX_W / 2, GFX_H - 150, 26, gfx_rgba(1, 0.5f, 0.5f, 1), ALIGN_CENTRE, app.status);
+    if (app.searching)
+        kbd_render(&app.search);
 }
 
 /* ---- mod select ---- */
@@ -737,7 +888,7 @@ static void render_mods(void)
 
 /* ---- settings ---- */
 
-enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_RESCAN, SET_COUNT };
+enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_STORYBOARD, SET_RESCAN, SET_COUNT };
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -757,6 +908,10 @@ static void settings_frame(const pad_state *pad)
     case SET_CURSOR:
         app.cursor_scale = clampf(app.cursor_scale + d * 0.1f, 0.5f, 2);
         draw_set_cursor_scale(app.cursor_scale);
+        break;
+    case SET_STORYBOARD:
+        if (d || pad->pressed & PAD_CROSS)
+            app.storyboards = !app.storyboards;
         break;
     case SET_RESCAN:
         if (pad->pressed & PAD_CROSS) {
@@ -787,6 +942,7 @@ static void render_settings(void)
         case SET_SENS: name = "left stick reach"; snprintf(val, sizeof(val), "%.2fx", app.sensitivity); break;
         case SET_DIM: name = "background dim in play"; snprintf(val, sizeof(val), "%d%%", (int)lroundf(app.bg_dim * 100)); break;
         case SET_CURSOR: name = "cursor size"; snprintf(val, sizeof(val), "%.1fx", app.cursor_scale); break;
+        case SET_STORYBOARD: name = "storyboards"; snprintf(val, sizeof(val), "%s", app.storyboards ? "on" : "off"); break;
         case SET_RESCAN: name = "rescan the Songs folder"; snprintf(val, sizeof(val), "CROSS"); break;
         }
         float y = 200 + i * 90;
@@ -842,19 +998,24 @@ static void render_results(void)
     draw_text(x, y + 160, 34, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
     snprintf(buf, sizeof(buf), "300 %d   100 %d   50 %d   miss %d", h->great, h->ok, h->meh, h->miss);
     draw_text(x, y + 230, 30, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "UR %.1f", h->unstable_rate);
+    snprintf(buf, sizeof(buf), "UR %.1f   %.2f*", h->unstable_rate, osu5_play_stars());
     draw_text(x, y + 280, 30, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
+    snprintf(buf, sizeof(buf), "%.0fpp", app.last_pp);
+    draw_text(1620, y, 72, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, buf);
 
     char tags[64];
     mod_tags(app.mods, tags, sizeof(tags));
     if (tags[0])
         draw_text(x, y + 330, 30, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, tags);
-    if (app.new_place == 0)
+    if (app.watching)
+        draw_text(x, y + 390, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "watched a replay");
+    else if (app.new_place == 0)
         draw_text(x, y + 390, 34, gfx_rgba(0.5f, 1, 0.6f, 1), ALIGN_LEFT, "new personal best!");
     else if (app.mods & OSU5_MOD_AUTO)
         draw_text(x, y + 390, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "auto plays aren't saved");
 
-    draw_text(GFX_W / 2, 860, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "CROSS retry   CIRCLE back");
+    draw_text(GFX_W / 2, 860, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE,
+              app.last_when && !app.watching ? "CROSS retry   SQUARE watch replay   CIRCLE back" : "CROSS retry   CIRCLE back");
 }
 
 int main(void)
@@ -874,9 +1035,9 @@ int main(void)
     LOG("gfx up");
 
     if (!input_init(user))
-        notify("osu5: no controller");
+        notify("ProjectCadence: no controller");
     if (!audio_init(user))
-        notify("osu5: audio out failed, playing silent");
+        notify("ProjectCadence: audio out failed, playing silent");
     LOG("input/audio done");
 
     LOG("gc check: %d collections", osu5_gc_check());
@@ -943,8 +1104,18 @@ int main(void)
             break;
         }
         case SCREEN_RESULTS:
-            if (pad.pressed & PAD_CROSS) start_song(app.playing);
-            else if (pad.pressed & PAD_CIRCLE) back_to_select();
+            if (pad.pressed & PAD_CROSS) {
+                /* after a replay, retry means playing it yourself */
+                if (app.watching) {
+                    app.watching = false;
+                    app.mods = app.saved_mods;
+                }
+                start_song(app.playing);
+            } else if (pad.pressed & PAD_SQUARE && app.last_when && !app.watching) {
+                watch_replay(app.playing, app.last_when);
+            } else if (pad.pressed & PAD_CIRCLE) {
+                back_to_select();
+            }
             break;
         case SCREEN_SKINS:
             if (skin_ui_frame(&pad))

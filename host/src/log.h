@@ -1,7 +1,7 @@
 #ifndef OSU5_LOG_H
 #define OSU5_LOG_H
 
-/* printf to klog, plus a copy in /data/osu5/osu5.log (klog drops lines when
+/* printf to klog, plus a copy in /data/cadence/osu5.log (klog drops lines when
  * nobody is connected, the file doesn't) */
 void log_open(void);
 void logf_(const char *fmt, ...) __attribute__((format(printf, 1, 2)));

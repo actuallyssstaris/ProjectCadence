@@ -4,7 +4,7 @@
 #include <stdbool.h>
 
 /* Star ratings, worked out by the core on a background thread and kept in
- * /data/osu5/stars.txt so each map is only ever calculated once per mod set. */
+ * /data/cadence/stars.txt so each map is only ever calculated once per mod set. */
 
 void stars_init(void);
 

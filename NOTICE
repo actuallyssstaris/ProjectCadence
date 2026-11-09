@@ -1,4 +1,4 @@
-osu-ps5 includes or is derived from the following.
+ProjectCadence includes or is derived from the following.
 
 core/ (beatmap decoding, slider paths, stacking, judging, scoring, health) is
 ported from osu! (https://github.com/ppy/osu) and osu-framework:

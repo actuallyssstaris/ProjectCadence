@@ -2,14 +2,12 @@
 #include "mapdl_ui.h"
 #include "draw.h"
 #include "gfx.h"
+#include "kbd.h"
 #include "mapdl.h"
 #include "sce.h"
 
 #include <stdio.h>
 #include <string.h>
-
-static const char *keys[4] = {"1234567890", "qwertyuiop", "asdfghjkl'", "zxcvbnm-.!"};
-enum { KEY_SPACE, KEY_DEL, KEY_GO }; /* the wide bottom row */
 
 static struct {
     char query[64];
@@ -17,7 +15,7 @@ static struct {
     int sel;
     float scroll;
     bool typing;
-    int kx, ky; /* keyboard cursor, ky 4 = bottom row */
+    kbd keys;
     mapdl_search res;
     char note[128];
 } ui;
@@ -35,6 +33,8 @@ static void run_search(void)
 void mapdl_ui_open(void)
 {
     ui.typing = false;
+    ui.keys.text = ui.query;
+    ui.keys.cap = sizeof(ui.query);
     mapdl_results(&ui.res);
     if (ui.res.state == 0) {
         ui.page = 0;
@@ -42,68 +42,18 @@ void mapdl_ui_open(void)
     }
 }
 
-static int wide_key(void) { return ui.kx * 3 / 10; }
-
-static void type_key(void)
-{
-    size_t n = strlen(ui.query);
-    if (ui.ky == 4) {
-        if (wide_key() == KEY_DEL) {
-            if (n) ui.query[n - 1] = 0;
-        } else if (wide_key() == KEY_GO) {
-            ui.typing = false;
-            ui.page = 0;
-            run_search();
-        } else if (n + 1 < sizeof(ui.query)) {
-            ui.query[n] = ' ';
-            ui.query[n + 1] = 0;
-        }
-        return;
-    }
-    if (n + 1 < sizeof(ui.query)) {
-        ui.query[n] = keys[ui.ky][ui.kx];
-        ui.query[n + 1] = 0;
-    }
-}
-
-static void keyboard_frame(const pad_state *pad)
-{
-    /* kx stays a column of the 10 wide rows; on the bottom row it picks one of
-     * the three wide keys, so going up and down keeps roughly the same spot */
-    ui.ky = (ui.ky + pad->nav_y + 5) % 5;
-    if (pad->nav_x) {
-        if (ui.ky == 4) {
-            static const int centre[3] = {1, 5, 8};
-            ui.kx = centre[(wide_key() + pad->nav_x + 3) % 3];
-        } else {
-            ui.kx = (ui.kx + pad->nav_x + 10) % 10;
-        }
-    }
-
-    size_t n = strlen(ui.query);
-    if (pad->pressed & PAD_CROSS)
-        type_key();
-    if (pad->pressed & PAD_SQUARE && n)
-        ui.query[n - 1] = 0;
-    if (pad->pressed & PAD_TRIANGLE && n + 1 < sizeof(ui.query)) {
-        ui.query[n] = ' ';
-        ui.query[n + 1] = 0;
-    }
-    if (pad->pressed & (PAD_OPTIONS | PAD_R2)) {
-        ui.typing = false;
-        ui.page = 0;
-        run_search();
-    }
-    if (pad->pressed & PAD_CIRCLE)
-        ui.typing = false;
-}
-
 bool mapdl_ui_frame(const pad_state *pad)
 {
     mapdl_results(&ui.res);
 
     if (ui.typing) {
-        keyboard_frame(pad);
+        int k = kbd_frame(&ui.keys, pad);
+        if (k != KBD_TYPING)
+            ui.typing = false;
+        if (k == KBD_DONE) {
+            ui.page = 0;
+            run_search();
+        }
         return false;
     }
 
@@ -139,31 +89,6 @@ bool mapdl_ui_frame(const pad_state *pad)
         }
     }
     return false;
-}
-
-static void render_keyboard(void)
-{
-    const float kw = 92, kh = 78, x0 = (GFX_W - kw * 10) / 2, y0 = GFX_H - 5 * kh - 120;
-    draw_rect(x0 - 20, y0 - 20, kw * 10 + 40, kh * 5 + 40, gfx_rgba(0, 0, 0, 0.85f));
-    char c[2] = {0, 0};
-    for (int r = 0; r < 4; r++) {
-        for (int k = 0; k < 10; k++) {
-            bool on = !(ui.ky != r || ui.kx != k);
-            float x = x0 + k * kw, y = y0 + r * kh;
-            draw_rect(x + 4, y + 4, kw - 8, kh - 8, on ? gfx_rgba(1, 1, 1, 0.95f) : gfx_rgba(1, 1, 1, 0.12f));
-            c[0] = keys[r][k];
-            draw_text(x + kw / 2, y + kh / 2 - 18, 36, on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, c);
-        }
-    }
-    static const char *wide[3] = {"space", "delete", "search"};
-    for (int k = 0; k < 3; k++) {
-        bool on = ui.ky == 4 && wide_key() == k;
-        float w = kw * 10 / 3, x = x0 + k * w, y = y0 + 4 * kh;
-        draw_rect(x + 4, y + 4, w - 8, kh - 8, on ? gfx_rgba(1, 1, 1, 0.95f) : gfx_rgba(1, 1, 1, 0.12f));
-        draw_text(x + w / 2, y + kh / 2 - 15, 30, on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, wide[k]);
-    }
-    draw_text(GFX_W / 2, GFX_H - 90, 24, gfx_rgba(1, 1, 1, 0.75f), ALIGN_CENTRE,
-              "CROSS type   SQUARE delete   TRIANGLE space   OPTIONS search   CIRCLE close");
 }
 
 void mapdl_ui_render(void)
@@ -232,7 +157,7 @@ void mapdl_ui_render(void)
     draw_text(120, GFX_H - 110, 22, dim, ALIGN_LEFT, "maps come from catboy.best, a public mirror of osu.ppy.sh");
 
     if (ui.typing)
-        render_keyboard();
+        kbd_render(&ui.keys);
     else
         draw_text(120, GFX_H - 70, 26, white, ALIGN_LEFT, "CROSS download   TRIANGLE search   L1/R1 page   CIRCLE back");
 }

@@ -28,6 +28,7 @@ namespace Osu5.Scoring
         public bool Hidden;     // turns S / SS into the silver ranks
 
         public int Great, Ok, Meh, Miss, SliderBreaks;
+        public int SliderTailHits, LargeTickMisses; // pp wants these
 
         readonly List<double> hitErrors = new List<double>();
 
@@ -93,6 +94,8 @@ namespace Osu5.Scoring
                 case HitResult.Ok: Ok++; break;
                 case HitResult.Meh: Meh++; break;
                 case HitResult.Miss: Miss++; break;
+                case HitResult.SliderTailHit: SliderTailHits++; break;
+                case HitResult.LargeTickMiss: LargeTickMisses++; break;
             }
 
             if (!double.IsNaN(hitError))

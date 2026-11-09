@@ -93,7 +93,7 @@ DEVICE_FUNCS(DECL)
 
 #define MAX_INST 65536
 #define MAX_DRAWS 1024
-#define MAX_TEX 256
+#define MAX_TEX 1024 /* storyboards can bring a few hundred images */
 
 typedef struct {
     VkImage image;
@@ -268,7 +268,7 @@ static bool create_device(void)
     const char *exts[] = {VK_KHR_SURFACE_EXTENSION_NAME, VK_KHR_DISPLAY_EXTENSION_NAME};
     VkApplicationInfo app = {
         .sType = VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = "osu5",
+        .pApplicationName = "ProjectCadence",
         .apiVersion = VK_API_VERSION_1_3,
     };
     VkInstanceCreateInfo ici = {

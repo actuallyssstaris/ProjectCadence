@@ -11,7 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SONGS_DIR "/data/osu5/Songs"
+#define SONGS_DIR "/data/cadence/Songs"
 #define QUEUE_MAX 32
 #define KNOWN_MAX 8192
 
