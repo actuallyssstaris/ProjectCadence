@@ -16,6 +16,7 @@
 #include "replay.h"
 #include "online.h"
 #include "mp.h"
+#include "account.h"
 #include "md5.h"
 #include "storyboard.h"
 #include "sce.h"
@@ -43,6 +44,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <time.h>
 
 #define DATA_DIR "/data/cadence"
@@ -69,6 +71,7 @@ typedef enum {
     SCREEN_MENU,
     SCREEN_HELP,
     SCREEN_MP,
+    SCREEN_ACCOUNT,
 } screen;
 
 static struct {
@@ -78,7 +81,8 @@ static struct {
     char filter[64];
     int sort;
     bool searching;
-    bool show_online;     /* osu.ppy.sh leaderboard instead of local scores */
+    int board;            /* song select: 0 your scores, 1 the online board */
+    int board_src;        /* which online board: 0 ProjectCadence, 1 osu.ppy.sh */
     kbd search;
     int sel;
     float sel_scroll;
@@ -111,7 +115,15 @@ static struct {
     int mp_round_seen, mp_saved_mods;
     double mp_sent;
     char mp_map_wanted[33]; /* the room map we last asked the downloader for */
+    int mp_type_for;      /* what the keyboard is filling in */
+    char mp_line[124], mp_pw[40];
+    int mp_join_id;
+    int mp_quick;         /* open quick-lines list: the row, -1 closed */
+    bool mp_mods;         /* the mods screen is choosing our own, for a free-mod room */
     char ps_name[32];
+    char acc_name[24], acc_pass[64];
+    int acc_row;
+    bool acc_typing;
     double break_flash;   /* wall ms a combo of 20+ broke */
     double volume_shown;
     float acc[ACC_SAMPLES];
@@ -158,13 +170,14 @@ static struct {
     skin_job topup;       /* default skin from an older version, fetched quietly */
 
     char status[256];
-} app = {.previewed = -1, .scores_for = -1, .new_place = -1};
+} app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1};
 
 static void help_open(screen back);
 int sceUserServiceGetUserName(int32_t user, char *name, size_t size);
 static void mp_report(bool failed, bool done);
 static void menu_enter(void);
 static void mp_board(float x, float y, float w, bool compact);
+static const char *map_md5(const char *file);
 
 static osu5_draw cmds[MAX_CMDS];
 static float points[MAX_POINTS * 2];
@@ -213,6 +226,7 @@ static void settings_load(void)
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
             else if (!strcmp(key, "onboarded")) app.onboarded = v != 0;
+            else if (!strcmp(key, "boards")) app.board_src = v != 0;
         }
         fclose(f);
     }
@@ -224,9 +238,9 @@ static void settings_save(void)
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f)
         return;
-    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\n",
+    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
-            app.sort, app.storyboards, app.videos, app.onboarded);
+            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src);
     fclose(f);
 }
 
@@ -537,8 +551,17 @@ static double game_time(void) { return audio_music_time() + app.offset_ms + app.
 
 /* taiko: bits 0-1 don (left, right), 2-3 kat. mania: one bit a column, laid out
  * so the shoulders take the outer columns and the face buttons the middle */
-static int ruleset_keys(uint32_t held)
+static int ruleset_keys(const pad_state *pad)
 {
+    uint32_t held = pad->held;
+    if (app.ruleset == 2) {
+        /* catch: stick or d-pad to move, any face or shoulder button to dash */
+        int k = 0;
+        if (pad->lx < -0.3f || held & PAD_LEFT) k |= 1;
+        if (pad->lx > 0.3f || held & PAD_RIGHT) k |= 2;
+        if (held & (PAD_CROSS | PAD_SQUARE | PAD_CIRCLE | PAD_R1 | PAD_R2 | PAD_L1 | PAD_L2)) k |= 4;
+        return k;
+    }
     if (app.ruleset == 1) {
         int k = 0;
         if (held & (PAD_L2 | PAD_DOWN)) k |= 1;
@@ -590,7 +613,7 @@ static void play_frame(const pad_state *pad, float dt)
         if (app.ruleset == 0)
             input_to_play(pad, &app.cursor, dt, app.sensitivity);
         else
-            app.cursor.keys = ruleset_keys(pad->held);
+            app.cursor.keys = ruleset_keys(pad);
         osu5_update(t, app.cursor.x, app.cursor.y, app.cursor.keys);
         if (!(app.mods & OSU5_MOD_AUTO))
             replay_push(&app.rec, t, app.cursor.x, app.cursor.y, app.cursor.keys);
@@ -666,6 +689,9 @@ static void play_frame(const pad_state *pad, float dt)
                 app.new_place = scores_add(app.playing->file, &app.last_hud, app.mods, app.last_pp, &app.last_when);
                 if (!replay_save(&app.rec, app.last_when))
                     app.last_when = 0;
+                const osu5_hud *h = &app.last_hud;
+                account_submit(map_md5(app.playing->file), app.playing->info.beatmap_id, app.ruleset, h->score, h->accuracy,
+                               h->max_combo, app.mods, app.last_pp, h->rank, h->great, h->ok, h->meh, h->miss);
             }
             app.scr = SCREEN_RESULTS;
         }
@@ -869,8 +895,8 @@ static void select_frame(const pad_state *pad)
         app.searching = true;
         return;
     }
-    if (pad->pressed & PAD_L2 && online_enabled())
-        app.show_online = !app.show_online;
+    if (pad->pressed & PAD_L2)
+        app.board = !app.board; /* yours <-> the online board picked in settings */
     if (pad->pressed & PAD_R1) {
         app.sort = (app.sort + 1) % (SORT_COUNT + 1);
         apply_view();
@@ -1105,6 +1131,56 @@ static void thumb_box(int tex, float x, float y, float w, float h, float alpha)
     gfx_bind(0);
 }
 
+/* a map's md5, worked out once per file */
+static const char *map_md5(const char *file)
+{
+    static char for_file[768], md5[33];
+    if (strcmp(file, for_file)) {
+        snprintf(for_file, sizeof(for_file), "%s", file);
+        if (!md5_file(file, md5))
+            md5[0] = 0;
+    }
+    return md5;
+}
+
+/* ProjectCadence's own top 50 for the difficulty */
+static void render_global(const song_entry *e)
+{
+    static global_board b;
+    char buf[160];
+    int st = account_board(map_md5(e->file), &b);
+    const char *head = "ProjectCadence top scores";
+    if (st == ONLINE_LOADING)
+        head = "loading...";
+    else if (st == ONLINE_FAILED)
+        head = "couldn't reach the ProjectCadence server";
+    else if (b.count == 0)
+        head = account_signed_in() ? "no scores yet: be the first" : "no scores yet; sign in from settings to post yours";
+    draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, head);
+    draw_text(820, 356, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, "L2 yours");
+    if (st != ONLINE_READY)
+        return;
+
+    int rows = SHOWN_SCORES * 64 / 40;
+    for (int i = 0; i < b.count && i < rows; i++) {
+        const global_score *s = &b.s[i];
+        float y = 396 + i * 40;
+        bool me = account_signed_in() && !strcasecmp(s->name, account_name());
+        if (me)
+            draw_rect(50, y, 780, 38, gfx_rgba(0.5f, 0.9f, 0.95f, 0.15f));
+        snprintf(buf, sizeof(buf), "%d", i + 1);
+        draw_text(90, y + 6, 22, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, buf);
+        draw_rank(s->rank, 125, y + 18, 28, true, 1);
+        draw_text(160, y + 6, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, s->name);
+        char tags[64];
+        mod_tags(s->mods, tags, sizeof(tags));
+        snprintf(buf, sizeof(buf), "%.2f%%  %dx  %s", s->acc * 100, s->combo, tags);
+        draw_text(400, y + 9, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%lld", s->score);
+        draw_text(820, y + 6, 22, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, buf);
+    }
+}
+
 /* top of the osu.ppy.sh leaderboard, in the box local scores use */
 static void render_online(const song_entry *e)
 {
@@ -1132,7 +1208,7 @@ static void render_online(const song_entry *e)
         head = buf;
     }
     draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, head);
-    draw_text(820, 356, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, "L2 local");
+    draw_text(820, 356, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, "L2 yours");
     if (st != ONLINE_READY)
         return;
 
@@ -1237,9 +1313,14 @@ static void render_select(void)
             if (in->mode != 0) {
                 /* which game this difficulty is */
                 char tag[16];
-                snprintf(tag, sizeof(tag), in->mode == 1 ? "TAIKO" : "%dK", (int)lroundf(in->cs));
+                if (in->mode == 3)
+                    snprintf(tag, sizeof(tag), "%dK", (int)lroundf(in->cs));
+                else
+                    snprintf(tag, sizeof(tag), "%s", in->mode == 1 ? "TAIKO" : "CATCH");
                 float tw = draw_text_width(16, tag) + 20;
-                draw_rect(tx, y + 12, tw, 26, in->mode == 1 ? gfx_rgba(0.92f, 0.3f, 0.3f, 1) : gfx_rgba(0.6f, 0.45f, 1, 1));
+                uint32_t tagc = in->mode == 1 ? gfx_rgba(0.92f, 0.3f, 0.3f, 1) : in->mode == 2 ? gfx_rgba(0.3f, 0.75f, 0.45f, 1)
+                                                                               : gfx_rgba(0.6f, 0.45f, 1, 1);
+                draw_rect(tx, y + 12, tw, 26, tagc);
                 draw_text(tx + tw / 2, y + 17, 16, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, tag);
                 tx += tw + 12;
             }
@@ -1314,7 +1395,11 @@ static void render_select(void)
     draw_text(60, 262, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, buf);
 
     draw_rect(40, 340, 800, 70 + SHOWN_SCORES * 64, gfx_rgba(0, 0, 0, 0.5f));
-    if (app.show_online) {
+    if (app.board && (app.board_src == 0 || !online_enabled())) {
+        render_global(&app.songs.items[app.sel]);
+        goto scores_done;
+    }
+    if (app.board) {
         render_online(&app.songs.items[app.sel]);
         goto scores_done;
     }
@@ -1337,9 +1422,8 @@ static void render_select(void)
         snprintf(buf, sizeof(buf), "%.2f%%  %dx  %s", r->accuracy * 100, r->max_combo, tags);
         draw_text(150, y + 38, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
     }
-    if (online_enabled())
-        draw_text(820, 356 + (app.nscores && replay_exists(app.scores[0].when) ? 24 : 0), 18,
-                  gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, "L2 online");
+    draw_text(820, 356 + (app.nscores && replay_exists(app.scores[0].when) ? 24 : 0), 18,
+              gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, app.board_src && online_enabled() ? "L2 osu.ppy.sh" : "L2 global");
 scores_done:;
 
     mapdl_status dl;
@@ -1376,6 +1460,12 @@ static void mods_frame(const pad_state *pad)
     if (pad->pressed & (PAD_CIRCLE | PAD_SQUARE)) {
         settings_save();
         app.scr = SCREEN_SELECT;
+        if (app.mp_mods) {
+            /* a free-mod room: these are ours for the next round */
+            mp_my_mods(app.mods);
+            app.mp_mods = false;
+            app.scr = SCREEN_MP;
+        }
     }
 }
 
@@ -1409,7 +1499,7 @@ static void render_mods(void)
 
 /* ---- settings ---- */
 
-enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_STORYBOARD, SET_VIDEO, SET_WIZARD, SET_HELP, SET_RESCAN, SET_COUNT };
+enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_STORYBOARD, SET_VIDEO, SET_WIZARD, SET_HELP, SET_ACCOUNT, SET_BOARD, SET_RESCAN, SET_COUNT };
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -1443,6 +1533,17 @@ static void settings_frame(const pad_state *pad)
             help_open(SCREEN_SETTINGS);
             return;
         }
+        break;
+    case SET_ACCOUNT:
+        if (pad->pressed & PAD_CROSS) {
+            app.acc_row = 0;
+            app.scr = SCREEN_ACCOUNT;
+            return;
+        }
+        break;
+    case SET_BOARD:
+        if (d || pad->pressed & PAD_CROSS)
+            app.board_src = !app.board_src;
         break;
     case SET_WIZARD:
         if (pad->pressed & PAD_CROSS) {
@@ -1488,14 +1589,23 @@ static void render_settings(void)
         case SET_VIDEO: name = "video backgrounds (mp4)"; snprintf(val, sizeof(val), "%s", app.videos ? "on" : "off"); break;
         case SET_WIZARD: name = "find my offset"; snprintf(val, sizeof(val), "CROSS"); break;
         case SET_HELP: name = "show the controls"; snprintf(val, sizeof(val), "CROSS"); break;
+        case SET_ACCOUNT:
+            name = "ProjectCadence account";
+            snprintf(val, sizeof(val), "%s", account_signed_in() ? account_name() : "sign in");
+            break;
+        case SET_BOARD:
+            name = "online leaderboard in song select";
+            snprintf(val, sizeof(val), "%s", !app.board_src ? "ProjectCadence"
+                     : online_enabled() ? "osu.ppy.sh (official)" : "osu.ppy.sh (needs osuapi.txt)");
+            break;
         case SET_RESCAN: name = "rescan the Songs folder"; snprintf(val, sizeof(val), "CROSS"); break;
         }
-        float y = 170 + i * 74;
+        float y = 150 + i * 64;
         bool on = i == app.set_sel;
-        draw_rect(160, y, 1600, 64, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
+        draw_rect(160, y, 1600, 56, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
         uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 1);
-        draw_text(190, y + 16, 30, tc, ALIGN_LEFT, name);
-        draw_text(1730, y + 16, 30, tc, ALIGN_RIGHT, val);
+        draw_text(190, y + 13, 28, tc, ALIGN_LEFT, name);
+        draw_text(1730, y + 13, 28, tc, ALIGN_RIGHT, val);
     }
 
     const char *hint = "";
@@ -1505,9 +1615,9 @@ static void render_settings(void)
     case SET_RESCAN: hint = "after copying maps over FTP"; break;
     default: break;
     }
-    draw_text(160, 170 + SET_COUNT * 74 + 10, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, hint);
+    draw_text(160, 150 + SET_COUNT * 64 + 6, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, hint);
     if (app.status[0])
-        draw_text(160, 170 + SET_COUNT * 74 + 44, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, app.status);
+        draw_text(160, 150 + SET_COUNT * 64 + 38, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, app.status);
 }
 
 /* ---- pause / fail / results ---- */
@@ -1696,6 +1806,23 @@ static void mp_save_cfg(void)
     fclose(f);
 }
 
+/* what the on-screen keyboard is filling in on the multiplayer screen */
+enum { TYPE_CFG, TYPE_CHAT, TYPE_NEW_PW, TYPE_JOIN_PW };
+
+static void mp_type(int what, char *buf, size_t cap)
+{
+    app.mp_type_for = what;
+    app.mp_kbd.text = buf;
+    app.mp_kbd.cap = cap;
+    app.mp_typing = true;
+}
+
+/* the lines L1 offers, for when typing is too slow */
+static const char *const quick_lines[] = {
+    "gl hf", "gg", "ready?", "one more?", "wait for me", "nice one", "pick something harder", "brb",
+};
+#define QUICK_COUNT (int)(sizeof(quick_lines) / sizeof(quick_lines[0]))
+
 static void mp_open(void)
 {
     if (!app.mp_on)
@@ -1779,7 +1906,9 @@ static void mp_tick(void)
         int idx = mp_find_map(s);
         if (idx >= 0) {
             app.mp_saved_mods = app.mods;
-            app.mods = s->mods;
+            /* free mods: everyone keeps their own */
+            if (!s->freemod)
+                app.mods = s->mods;
             app.mp_playing = true;
             app.mp_reported = false;
             app.mp_sent = 0;
@@ -1797,15 +1926,36 @@ static void mp_tick(void)
 
 static void mp_frame(const pad_state *pad)
 {
+    const mp_state *s = &app.mps;
     if (app.mp_typing) {
         int k = kbd_frame(&app.mp_kbd, pad);
-        if (k != KBD_TYPING) {
-            app.mp_typing = false;
+        if (k == KBD_TYPING)
+            return;
+        app.mp_typing = false;
+        bool done = k == KBD_DONE;
+        switch (app.mp_type_for) {
+        case TYPE_CFG:
             mp_save_cfg();
+            break;
+        case TYPE_CHAT:
+            if (done && app.mp_line[0])
+                mp_chat(app.mp_line);
+            app.mp_line[0] = 0;
+            break;
+        case TYPE_NEW_PW:
+            if (done) {
+                char name[64];
+                snprintf(name, sizeof(name), "%.24s's room", app.mp_user);
+                mp_create(name, app.mp_pw);
+            }
+            break;
+        case TYPE_JOIN_PW:
+            if (done)
+                mp_join(app.mp_join_id, app.mp_pw);
+            break;
         }
         return;
     }
-    const mp_state *s = &app.mps;
     bool bancho = app.mp_kind == MP_BANCHO;
 
     if (!app.mp_on || s->conn == MP_FAILED || s->conn == MP_OFF) {
@@ -1823,9 +1973,7 @@ static void mp_frame(const pad_state *pad)
             char *field = app.mp_cfg == 1 ? (bancho ? app.mp_bancho : app.mp_rooms_url) : app.mp_cfg == 2 ? app.mp_user : app.mp_pass;
             size_t cap = app.mp_cfg == 1 ? (bancho ? sizeof(app.mp_bancho) : sizeof(app.mp_rooms_url))
                        : app.mp_cfg == 2 ? sizeof(app.mp_user) : sizeof(app.mp_pass);
-            app.mp_kbd.text = field;
-            app.mp_kbd.cap = cap;
-            app.mp_typing = true;
+            mp_type(TYPE_CFG, field, cap);
         } else if (pad->pressed & PAD_CROSS && app.mp_cfg == 4) {
             if (bancho && (!app.mp_bancho[0] || !app.mp_pass[0])) {
                 snprintf(app.status, sizeof(app.status), "a bancho server needs its address and your password");
@@ -1853,16 +2001,25 @@ static void mp_frame(const pad_state *pad)
     }
 
     if (!s->in_room) {
-        int rows = 1 + s->nrooms;
+        /* make a room, make a private one, then the open rooms */
+        int rows = 2 + s->nrooms;
         app.mp_sel = (app.mp_sel + pad->nav_y + rows) % rows;
         if (pad->pressed & PAD_CROSS) {
             app.mp_ready = false;
+            app.mp_pw[0] = 0;
             if (app.mp_sel == 0) {
                 char name[64];
                 snprintf(name, sizeof(name), "%.24s's room", app.mp_user);
-                mp_create(name);
+                mp_create(name, "");
+            } else if (app.mp_sel == 1) {
+                mp_type(TYPE_NEW_PW, app.mp_pw, sizeof(app.mp_pw));
             } else {
-                mp_join(s->rooms[app.mp_sel - 1].id);
+                const mp_room_brief *r = &s->rooms[app.mp_sel - 2];
+                app.mp_join_id = r->id;
+                if (r->locked)
+                    mp_type(TYPE_JOIN_PW, app.mp_pw, sizeof(app.mp_pw));
+                else
+                    mp_join(r->id, "");
             }
         }
         if (pad->pressed & PAD_TRIANGLE)
@@ -1874,18 +2031,50 @@ static void mp_frame(const pad_state *pad)
         return;
     }
 
-    /* in a room */
+    /* in a room; the quick lines list takes the pad while it's open */
+    if (app.mp_quick >= 0) {
+        app.mp_quick = (app.mp_quick + pad->nav_y + QUICK_COUNT) % QUICK_COUNT;
+        if (pad->pressed & PAD_CROSS) {
+            mp_chat(quick_lines[app.mp_quick]);
+            app.mp_quick = -1;
+        } else if (pad->pressed & (PAD_CIRCLE | PAD_L1)) {
+            app.mp_quick = -1;
+        }
+        return;
+    }
     bool have = mp_find_map(s) >= 0;
-    if (pad->pressed & PAD_CROSS && s->state != MP_PLAYING) {
+    bool between = s->state != MP_PLAYING;
+    if (pad->pressed & PAD_CROSS && between) {
         app.mp_ready = !app.mp_ready && have;
         mp_ready(app.mp_ready, have);
     }
-    if (s->i_host && pad->pressed & PAD_SQUARE && s->state != MP_PLAYING) {
-        app.mp_pick = true;
-        app.scr = SCREEN_SELECT;
+    if (pad->pressed & PAD_SQUARE && between) {
+        if (s->i_host) {
+            app.mp_pick = true;
+            app.scr = SCREEN_SELECT;
+        } else if (s->freemod) {
+            /* your own mods, back here when done */
+            app.mp_mods = true;
+            app.mod_sel = 0;
+            app.scr = SCREEN_MODS;
+        }
     }
-    if (s->i_host && pad->pressed & PAD_TRIANGLE && s->state != MP_PLAYING)
+    if (s->i_host && pad->pressed & PAD_TRIANGLE && between)
         mp_start();
+    if (s->i_host && pad->pressed & PAD_R2 && between)
+        mp_settings(!s->teams, s->freemod);
+    if (s->i_host && pad->pressed & PAD_L3 && between)
+        mp_settings(s->teams, !s->freemod);
+    if (s->teams && pad->pressed & PAD_L2 && between) {
+        int mine = 0;
+        for (int i = 0; i < s->nmembers; i++)
+            if (s->members[i].me) mine = s->members[i].team;
+        mp_team(!mine);
+    }
+    if (pad->pressed & PAD_R1)
+        mp_type(TYPE_CHAT, app.mp_line, sizeof(app.mp_line));
+    if (pad->pressed & PAD_L1)
+        app.mp_quick = 0;
     if (pad->pressed & PAD_CIRCLE) {
         mp_leave();
         app.mp_ready = false;
@@ -1977,18 +2166,20 @@ static void render_mp(void)
     draw_text(GFX_W - 120, 90, 24, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_RIGHT, buf);
 
     if (!s->in_room) {
-        int rows = 1 + s->nrooms;
+        int rows = 2 + s->nrooms;
         for (int i = 0; i < rows && i < 9; i++) {
             float y = 190 + i * 88;
             bool on = i == app.mp_sel;
             draw_rect(120, y, 1680, 76, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0, 0, 0, 0.5f));
             uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 1);
-            if (i == 0) {
-                draw_text(150, y + 22, 30, tc, ALIGN_LEFT, "+  make a room");
+            if (i < 2) {
+                draw_text(150, y + 22, 30, tc, ALIGN_LEFT, i == 0 ? "+  make a room" : "+  make a private room (password)");
                 continue;
             }
-            const mp_room_brief *r = &s->rooms[i - 1];
+            const mp_room_brief *r = &s->rooms[i - 2];
             draw_text(150, y + 10, 28, tc, ALIGN_LEFT, r->name);
+            if (r->locked)
+                draw_text(1770, y + 22, 24, on ? gfx_rgba(0.6f, 0.3f, 0.1f, 1) : gfx_rgba(1, 0.75f, 0.4f, 1), ALIGN_RIGHT, "password");
             snprintf(buf, sizeof(buf), "%d playing here%s   %.80s", r->players, r->playing ? ", mid round" : "", r->map);
             draw_text(150, y + 46, 18, tc, ALIGN_LEFT, buf);
         }
@@ -2021,22 +2212,68 @@ static void render_mp(void)
             const mp_member *m = &s->members[i];
             float y = 310 + i * 60;
             draw_rect(120, y, 1100, 52, m->me ? gfx_rgba(0.5f, 0.9f, 0.95f, 0.2f) : gfx_rgba(0, 0, 0, 0.45f));
-            snprintf(buf, sizeof(buf), "%s%s", m->name, m->host ? "   (host)" : "");
+            if (s->teams) /* the team's colour down the left */
+                draw_rect(120, y, 10, 52, m->team ? gfx_rgba(0.35f, 0.6f, 1, 1) : gfx_rgba(1, 0.35f, 0.35f, 1));
+            char mt[48] = "";
+            if (s->freemod && m->mods)
+                mod_tags(m->mods, mt, sizeof(mt));
+            snprintf(buf, sizeof(buf), "%s%s%s%s", m->name, m->host ? "   (host)" : "", mt[0] ? "   " : "", mt);
             draw_text(140, y + 12, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
             const char *tag = s->state == MP_PLAYING ? (m->done ? "done" : "playing") : !m->has_map ? "no map yet" : m->ready ? "ready" : "";
             draw_text(1200, y + 14, 24, m->ready ? gfx_rgba(0.5f, 1, 0.6f, 1) : gfx_rgba(1, 0.75f, 0.4f, 1), ALIGN_RIGHT, tag);
         }
     }
 
-    /* what this player can do here, kept short */
-    float hy = 310;
-    draw_rect(1280, hy, 520, s->i_host ? 230 : 130, gfx_rgba(0, 0, 0, 0.5f));
-    draw_text(1300, hy + 20, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, app.mp_ready ? "CROSS  not ready" : "CROSS  ready");
-    draw_text(1300, hy + 70, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "CIRCLE  leave");
+    /* the room's rules, and what this player can do here */
+    snprintf(buf, sizeof(buf), "%s   %s", s->teams ? "teams: red vs blue" : "everyone for themselves",
+             s->freemod ? "free mods" : "host's mods");
+    draw_text(1280, 160, 24, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_LEFT, buf);
+    const char *acts[8];
+    int na = 0;
+    acts[na++] = app.mp_ready ? "CROSS  not ready" : "CROSS  ready";
     if (s->i_host) {
-        draw_text(1300, hy + 120, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "SQUARE  pick the map");
-        draw_text(1300, hy + 170, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "TRIANGLE  start");
+        acts[na++] = "SQUARE  pick the map";
+        acts[na++] = "TRIANGLE  start";
+        acts[na++] = s->teams ? "R2  no teams" : "R2  teams";
+        acts[na++] = s->freemod ? "L3  host's mods" : "L3  free mods";
+    } else if (s->freemod) {
+        acts[na++] = "SQUARE  your mods";
     }
+    if (s->teams)
+        acts[na++] = "L2  switch team";
+    acts[na++] = "R1 type   L1 quick chat";
+    acts[na++] = "CIRCLE  leave";
+    float hy = 200;
+    draw_rect(1280, hy, 520, 16 + na * 40, gfx_rgba(0, 0, 0, 0.5f));
+    for (int i = 0; i < na; i++)
+        draw_text(1300, hy + 12 + i * 40, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, acts[i]);
+
+    /* chat, newest at the bottom */
+    float cy = hy + 36 + na * 40, ch = GFX_H - 130 - cy;
+    draw_rect(1280, cy, 520, ch, gfx_rgba(0, 0, 0, 0.5f));
+    int lines = (int)(ch - 20) / 30;
+    for (int i = 0; i < lines && i < s->nchat; i++) {
+        int k = s->nchat - 1 - i;
+        float ly = cy + ch - 40 - i * 30;
+        if (s->chat[k].from[0])
+            snprintf(buf, sizeof(buf), "%.16s: %.60s", s->chat[k].from, s->chat[k].text);
+        else
+            snprintf(buf, sizeof(buf), "%.70s", s->chat[k].text);
+        draw_text(1295, ly, 18, s->chat[k].from[0] ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 0.85f, 0.4f, 0.9f), ALIGN_LEFT, buf);
+    }
+
+    if (app.mp_quick >= 0) {
+        draw_rect(700, 300, 520, 30 + QUICK_COUNT * 52, gfx_rgba(0.05f, 0.06f, 0.1f, 0.95f));
+        for (int i = 0; i < QUICK_COUNT; i++) {
+            float qy = 315 + i * 52;
+            if (i == app.mp_quick)
+                draw_rect(710, qy - 4, 500, 46, gfx_rgba(1, 1, 1, 0.9f));
+            draw_text(730, qy + 6, 26, i == app.mp_quick ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 0.9f),
+                      ALIGN_LEFT, quick_lines[i]);
+        }
+    }
+    if (app.mp_typing)
+        kbd_render(&app.mp_kbd);
     if (s->state == MP_PLAYING && s->go_at > 0) {
         double left = s->go_at - wall_ms();
         if (left > 0) {
@@ -2046,6 +2283,83 @@ static void render_mp(void)
     }
     if (s->error[0])
         draw_text(120, GFX_H - 100, 24, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, s->error);
+}
+
+/* ---- account: sign in or make one, for global scores and your name in rooms ---- */
+
+enum { ACC_NAME, ACC_PASS, ACC_SIGN_IN, ACC_CREATE, ACC_SIGN_OUT, ACC_ROWS };
+
+static void account_frame(const pad_state *pad)
+{
+    if (app.acc_typing) {
+        int k = kbd_frame(&app.mp_kbd, pad);
+        if (k != KBD_TYPING)
+            app.acc_typing = false;
+        return;
+    }
+    int rows = account_signed_in() ? ACC_ROWS : ACC_ROWS - 1;
+    app.acc_row = (app.acc_row + pad->nav_y + rows) % rows;
+    bool busy = account_state(NULL, 0) == ACC_BUSY;
+    if (pad->pressed & PAD_CROSS && !busy) {
+        switch (app.acc_row) {
+        case ACC_NAME:
+        case ACC_PASS:
+            app.mp_kbd.text = app.acc_row == ACC_NAME ? app.acc_name : app.acc_pass;
+            app.mp_kbd.cap = app.acc_row == ACC_NAME ? sizeof(app.acc_name) : sizeof(app.acc_pass);
+            app.acc_typing = true;
+            break;
+        case ACC_SIGN_IN:
+        case ACC_CREATE:
+            account_sign_in(app.acc_name, app.acc_pass, app.acc_row == ACC_CREATE);
+            break;
+        case ACC_SIGN_OUT:
+            account_sign_out();
+            app.acc_row = 0;
+            break;
+        }
+    }
+    /* signed in: the password has done its job */
+    if (account_state(NULL, 0) == ACC_OK && app.acc_pass[0])
+        memset(app.acc_pass, 0, sizeof(app.acc_pass));
+    if (pad->pressed & PAD_CIRCLE)
+        app.scr = SCREEN_SETTINGS;
+}
+
+static void render_account(void)
+{
+    char msg[128], buf[160];
+    int st = account_state(msg, sizeof(msg));
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.7f));
+    draw_text(160, 90, 52, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "ProjectCadence account");
+    if (account_signed_in())
+        snprintf(buf, sizeof(buf), "signed in as %s: your best scores go to the global board", account_name());
+    else
+        snprintf(buf, sizeof(buf), "an account puts your scores on the global board and your name on you in rooms");
+    draw_text(160, 160, 24, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_LEFT, buf);
+
+    static const char *labels[ACC_ROWS] = {"name", "password", "sign in", "make a new account", "sign out"};
+    int rows = account_signed_in() ? ACC_ROWS : ACC_ROWS - 1;
+    for (int i = 0; i < rows; i++) {
+        float y = 230 + i * 90;
+        bool on = i == app.acc_row;
+        draw_rect(160, y, 1600, 76, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
+        uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 1);
+        draw_text(190, y + 22, 30, tc, ALIGN_LEFT, labels[i]);
+        if (i == ACC_NAME)
+            draw_text(1730, y + 22, 30, tc, ALIGN_RIGHT, app.acc_name);
+        if (i == ACC_PASS) {
+            char stars[24];
+            size_t n = strlen(app.acc_pass);
+            memset(stars, '*', n < 20 ? n : 20);
+            stars[n < 20 ? n : 20] = 0;
+            draw_text(1730, y + 22, 30, tc, ALIGN_RIGHT, stars);
+        }
+    }
+    const char *line = st == ACC_BUSY ? "talking to the server..." : st == ACC_FAILED ? msg : st == ACC_OK ? "done" : "";
+    draw_text(160, 230 + rows * 90 + 20, 26, st == ACC_FAILED ? gfx_rgba(1, 0.55f, 0.5f, 1) : gfx_rgba(0.5f, 1, 0.6f, 1),
+              ALIGN_LEFT, line);
+    if (app.acc_typing)
+        kbd_render(&app.mp_kbd);
 }
 
 /* ---- controls pages: shown once on the first launch, and from settings ---- */
@@ -2097,7 +2411,9 @@ static const struct help_page {
         {"CIRCLE", "leave the room"},
         {"missing maps", "download by themselves"},
     }},
-    {"taiko and mania", {
+    {"taiko, catch and mania", {
+        {"catch: left stick or D-PAD", "move"},
+        {"catch: any face button or shoulder", "dash"},
         {"taiko: L2  R2  DOWN  CROSS", "don (red)"},
         {"taiko: L1  R1  LEFT  CIRCLE", "kat (blue)"},
         {"mania 4K", "L2  L1  R1  R2"},
@@ -2315,6 +2631,7 @@ int main(void)
     rescan();
     restore_selection();
     mp_load_cfg();
+    account_init(CADENCE_ROOMS);
     if (app.scr == SCREEN_SELECT) {
         menu_enter();
         if (!app.onboarded)
@@ -2419,6 +2736,9 @@ int main(void)
         case SCREEN_HELP:
             help_frame(&pad);
             break;
+        case SCREEN_ACCOUNT:
+            account_frame(&pad);
+            break;
         case SCREEN_MP:
             mp_frame(&pad);
             break;
@@ -2476,6 +2796,10 @@ int main(void)
             else
                 draw_background(0.7f);
             render_help();
+            break;
+        case SCREEN_ACCOUNT:
+            draw_background(0.7f);
+            render_account();
             break;
         case SCREEN_MP:
             render_mp();

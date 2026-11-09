@@ -21,6 +21,8 @@ namespace Osu5.Scoring
         LargeBonus,
         Perfect,   // mania only
         Good,      // mania only
+        SmallTickHit,  // catch's tiny droplets: accuracy only
+        SmallTickMiss,
     }
 
     public static class HitResults
@@ -36,10 +38,11 @@ namespace Osu5.Scoring
             HitResult.LargeBonus => 50,
             HitResult.Perfect => 305,
             HitResult.Good => 200,
+            HitResult.SmallTickHit => 10,
             _ => 0,
         };
 
-        public static bool IsHit(HitResult r) => r is not (HitResult.None or HitResult.Miss or HitResult.LargeTickMiss or HitResult.IgnoreMiss);
+        public static bool IsHit(HitResult r) => r is not (HitResult.None or HitResult.Miss or HitResult.LargeTickMiss or HitResult.IgnoreMiss or HitResult.SmallTickMiss);
 
         public static bool IsBasic(HitResult r) => r is HitResult.Miss or HitResult.Meh or HitResult.Ok or HitResult.Great or HitResult.Perfect or HitResult.Good;
 
@@ -51,7 +54,8 @@ namespace Osu5.Scoring
         public static bool BreaksCombo(HitResult r) => r is HitResult.Miss or HitResult.LargeTickMiss;
 
         public static bool AffectsAccuracy(HitResult r) => r is HitResult.Miss or HitResult.Meh or HitResult.Ok or HitResult.Great or HitResult.Perfect or HitResult.Good
-            or HitResult.LargeTickHit or HitResult.LargeTickMiss or HitResult.SliderTailHit;
+            or HitResult.LargeTickHit or HitResult.LargeTickMiss or HitResult.SliderTailHit
+            or HitResult.SmallTickHit or HitResult.SmallTickMiss;
 
         // from lazer's Judgement.HealthIncreaseFor, max increase is 0.05
         public static double Health(HitResult r) => r switch
@@ -63,6 +67,8 @@ namespace Osu5.Scoring
             HitResult.Great => 0.05,
             HitResult.Perfect => 0.05,
             HitResult.Good => 0.04,
+            HitResult.SmallTickHit => 0.002,
+            HitResult.SmallTickMiss => -0.004,
             HitResult.LargeTickHit => 0.05,
             HitResult.SliderTailHit => 0.02,
             HitResult.SmallBonus => 0.005,

@@ -11,3 +11,9 @@ class_name = "Rooms"
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Rooms"]
+
+# accounts and global scores
+[[d1_databases]]
+binding = "DB"
+database_name = "projectcadence"
+database_id = "4fbb1a13-7933-4478-a7d4-9548cd015b36"

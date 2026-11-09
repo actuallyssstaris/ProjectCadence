@@ -102,8 +102,11 @@ namespace Osu5.Native
                         otherStars = (float)Osu5.Stars.ManiaStars.Calculate(map, mods);
                         player = new ManiaPlayer(map, mods);
                         return 0;
+                    case 2:
+                        player = new CatchPlayer(map, mods);
+                        return 0;
                     default:
-                        lastError = "catch maps aren't supported yet";
+                        lastError = "unknown game mode";
                         map = null;
                         player = null;
                         return -2;

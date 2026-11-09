@@ -7,6 +7,7 @@
 #include "md5.h"
 #include "net.h"
 #include "online.h"
+#include "account.h"
 #include "../include/osu5.h"
 
 #include <pthread.h>
@@ -22,12 +23,12 @@ static mp_state st;
 static int kind;
 static char server[160], user[32], pass[64];
 
-enum { OP_REFRESH, OP_CREATE, OP_JOIN, OP_LEAVE, OP_MAP, OP_READY, OP_START, OP_SCORE };
+enum { OP_REFRESH, OP_CREATE, OP_JOIN, OP_LEAVE, OP_MAP, OP_READY, OP_START, OP_SCORE, OP_SETTINGS, OP_TEAM, OP_MODS, OP_CHAT };
 
 typedef struct {
     int op;
     int a, b, mods, mode;
-    char s1[128], md5[33];
+    char s1[128], s2[40], md5[33];
     bool f1, f2;
     long long score;
     int combo, max_combo, n300, n100, n50, miss;
@@ -79,6 +80,9 @@ static double cd_offset; /* server clock minus ours, ms */
 typedef struct {
     bool has;
     int id, host, mods, round;
+    bool teams, freemod;
+    int nchat;
+    struct { int id; char from[24]; char text[124]; } chat[40];
     double start_at;
     char name[48], state[16];
     int map_id, map_set;
@@ -123,6 +127,9 @@ static bool member_key(js *j, const char *key, void *ctx)
     else if (!strcmp(key, "n50")) m->n50 = (int)json_num(j);
     else if (!strcmp(key, "miss")) m->miss = (int)json_num(j);
     else if (!strcmp(key, "acc")) m->acc = (float)json_num(j);
+    else if (!strcmp(key, "team")) m->team = (int)json_num(j);
+    else if (!strcmp(key, "mods")) m->mods = (int)json_num(j);
+    else if (!strcmp(key, "account")) m->account = jbool(j);
     else return false;
     return true;
 }
@@ -138,6 +145,37 @@ static bool map_key(js *j, const char *key, void *ctx)
     return true;
 }
 
+static bool chat_key(js *j, const char *key, void *ctx)
+{
+    typeof(((cd_room *)0)->chat[0]) *c = ctx;
+    if (!strcmp(key, "id")) c->id = (int)json_num(j);
+    else if (!strcmp(key, "from")) return json_str(j, c->from, sizeof(c->from));
+    else if (!strcmp(key, "text")) return json_str(j, c->text, sizeof(c->text));
+    else return false;
+    return true;
+}
+
+static bool read_chat(js *j, cd_room *r)
+{
+    j->p++;
+    for (;;) {
+        json_ws(j);
+        if (*j->p == ']') {
+            j->p++;
+            return true;
+        }
+        typeof(r->chat[0]) c;
+        memset(&c, 0, sizeof(c));
+        if (!json_object(j, chat_key, &c))
+            return false;
+        if (r->nchat < 40)
+            r->chat[r->nchat++] = c;
+        json_ws(j);
+        if (*j->p == ',')
+            j->p++;
+    }
+}
+
 static bool room_key(js *j, const char *key, void *ctx)
 {
     cd_room *r = ctx;
@@ -145,6 +183,9 @@ static bool room_key(js *j, const char *key, void *ctx)
     else if (!strcmp(key, "host")) r->host = (int)json_num(j);
     else if (!strcmp(key, "mods")) r->mods = (int)json_num(j);
     else if (!strcmp(key, "round")) r->round = (int)json_num(j);
+    else if (!strcmp(key, "teams")) r->teams = jbool(j);
+    else if (!strcmp(key, "freemod")) r->freemod = jbool(j);
+    else if (!strcmp(key, "chat") && *j->p == '[') return read_chat(j, r);
     else if (!strcmp(key, "start_at")) r->start_at = json_num(j);
     else if (!strcmp(key, "name")) return json_str(j, r->name, sizeof(r->name));
     else if (!strcmp(key, "state")) return json_str(j, r->state, sizeof(r->state));
@@ -183,6 +224,8 @@ static bool brief_key(js *j, const char *key, void *ctx)
         char s[16];
         if (!json_str(j, s, sizeof(s))) return false;
         b->playing = !strcmp(s, "playing");
+    } else if (!strcmp(key, "locked")) {
+        b->locked = jbool(j);
     } else
         return false;
     return true;
@@ -288,6 +331,10 @@ static int cd_call(const char *method, const char *path, const char *body)
             snprintf(st.map_md5, sizeof(st.map_md5), "%s", rm->md5);
             snprintf(st.map_title, sizeof(st.map_title), "%s", rm->title);
             st.mods = rm->mods;
+            st.teams = rm->teams;
+            st.freemod = rm->freemod;
+            st.nchat = rm->nchat;
+            memcpy(st.chat, rm->chat, sizeof(rm->chat[0]) * (size_t)rm->nchat);
             st.nmembers = rm->n;
             for (int i = 0; i < rm->n; i++) {
                 st.members[i] = rm->m[i];
@@ -310,8 +357,9 @@ static void cd_rooms(void)
 
 static bool cd_login(void)
 {
-    char body[96];
-    snprintf(body, sizeof(body), "{\"name\":\"%s\"}", user);
+    char body[256];
+    /* signed in: the server puts our account name on us instead */
+    snprintf(body, sizeof(body), "{\"name\":\"%s\",\"session\":\"%s\"}", user, account_session());
     if (cd_call("POST", "/api/hello", body) != 200 || !cd_token[0])
         return false;
     cd_rooms();
@@ -336,14 +384,38 @@ static void cd_do(const cmd *c)
     case OP_REFRESH:
         cd_rooms();
         return;
-    case OP_CREATE:
+    case OP_CREATE: {
+        char pw[80];
         json_escape(c->s1, esc, sizeof(esc));
-        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"name\":\"%s\"}", cd_token, esc);
+        json_escape(c->s2, pw, sizeof(pw));
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"name\":\"%s\",\"password\":\"%s\"}", cd_token, esc, pw);
         cd_call("POST", "/api/rooms", body);
         return;
-    case OP_JOIN:
-        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"room\":%d}", cd_token, c->a);
+    }
+    case OP_JOIN: {
+        char pw[80];
+        json_escape(c->s2, pw, sizeof(pw));
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"room\":%d,\"password\":\"%s\"}", cd_token, c->a, pw);
         cd_call("POST", "/api/join", body);
+        return;
+    }
+    case OP_SETTINGS:
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"teams\":%s,\"freemod\":%s}", cd_token, c->f1 ? "true" : "false",
+                 c->f2 ? "true" : "false");
+        cd_call("POST", "/api/settings", body);
+        return;
+    case OP_TEAM:
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"team\":%d}", cd_token, c->a);
+        cd_call("POST", "/api/team", body);
+        return;
+    case OP_MODS:
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"mods\":%d}", cd_token, c->mods);
+        cd_call("POST", "/api/mods", body);
+        return;
+    case OP_CHAT:
+        json_escape(c->s1, esc, sizeof(esc));
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"text\":\"%s\"}", cd_token, esc);
+        cd_call("POST", "/api/chat", body);
         return;
     case OP_LEAVE:
         snprintf(body, sizeof(body), "{\"token\":\"%s\"}", cd_token);
@@ -401,11 +473,12 @@ enum {
     C_PART_LOBBY = 29, C_JOIN_LOBBY = 30, C_CREATE_MATCH = 31, C_JOIN_MATCH = 32, C_PART_MATCH = 33,
     C_MATCH_READY = 39, C_MATCH_CHANGE_SETTINGS = 41, C_MATCH_START = 44, C_MATCH_SCORE_UPDATE = 47,
     C_MATCH_COMPLETE = 49, C_MATCH_CHANGE_MODS = 51, C_MATCH_LOAD_COMPLETE = 52, C_MATCH_NO_BEATMAP = 54,
-    C_MATCH_NOT_READY = 55, C_MATCH_FAILED = 56, C_MATCH_HAS_BEATMAP = 59,
+    C_MATCH_NOT_READY = 55, C_MATCH_FAILED = 56, C_MATCH_HAS_BEATMAP = 59, C_SEND_PUBLIC_MESSAGE = 1,
+    C_MATCH_CHANGE_TEAM = 77,
 
     S_USER_ID = 5, S_NOTIFICATION = 24, S_UPDATE_MATCH = 26, S_NEW_MATCH = 27, S_DISPOSE_MATCH = 28,
     S_MATCH_JOIN_SUCCESS = 36, S_MATCH_JOIN_FAIL = 37, S_MATCH_START = 46, S_MATCH_SCORE_UPDATE = 48,
-    S_MATCH_ALL_LOADED = 53, S_MATCH_COMPLETE = 58, S_USER_PRESENCE = 83,
+    S_MATCH_ALL_LOADED = 53, S_MATCH_COMPLETE = 58, S_USER_PRESENCE = 83, S_SEND_MESSAGE = 7,
 };
 
 enum { SLOT_OPEN = 1, SLOT_LOCKED = 2, SLOT_NOT_READY = 4, SLOT_READY = 8, SLOT_NO_MAP = 16, SLOT_PLAYING = 32,
@@ -444,6 +517,9 @@ static int round_no;
 static double go_at;
 static struct { int id; char name[32]; } names[512];
 static int nnames;
+/* the match's chat channel, newest last */
+static struct { int id; char from[24]; char text[124]; } bc_chat[40];
+static int bc_nchat, bc_chat_id;
 
 /* ---- writing ---- */
 
@@ -630,7 +706,11 @@ static void bc_publish(void)
             if (lobby[i].status[s] & SLOT_HAS_PLAYER) b->players++;
     }
     st.in_room = in_match;
+    st.nchat = bc_nchat;
+    memcpy(st.chat, bc_chat, sizeof(bc_chat[0]) * (size_t)bc_nchat);
     if (in_match) {
+        st.teams = cur.team_type == 2 || cur.team_type == 3;
+        st.freemod = cur.freemods != 0;
         st.room_id = cur.id;
         snprintf(st.room_name, sizeof(st.room_name), "%s", cur.name);
         st.i_host = cur.host == bc_me;
@@ -690,6 +770,24 @@ static void handle(uint16_t id, rd *r)
         char msg[160];
         r_str(r, msg, sizeof(msg));
         fail(msg);
+        break;
+    }
+    case S_SEND_MESSAGE: {
+        char from[24], text[124], target[40];
+        r_str(r, from, sizeof(from));
+        r_str(r, text, sizeof(text));
+        r_str(r, target, sizeof(target));
+        /* only what's said in the match */
+        if (strcmp(target, "#multiplayer") && strncmp(target, "#mp_", 4))
+            break;
+        if (bc_nchat == 40) {
+            memmove(bc_chat, bc_chat + 1, sizeof(bc_chat[0]) * 39);
+            bc_nchat--;
+        }
+        bc_chat[bc_nchat].id = ++bc_chat_id;
+        snprintf(bc_chat[bc_nchat].from, sizeof(bc_chat[0].from), "%s", from);
+        snprintf(bc_chat[bc_nchat].text, sizeof(bc_chat[0].text), "%s", text);
+        bc_nchat++;
         break;
     }
     case S_USER_PRESENCE: {
@@ -885,6 +983,44 @@ static void bc_do(const cmd *c)
         packet(c->f2 ? C_MATCH_HAS_BEATMAP : C_MATCH_NO_BEATMAP);
         packet(c->f1 ? C_MATCH_READY : C_MATCH_NOT_READY);
         break;
+    case OP_CHAT: {
+        size_t at = begin(C_SEND_PUBLIC_MESSAGE);
+        w_str("");
+        w_str(c->s1);
+        w_str("#multiplayer");
+        w_i32(0);
+        end(at);
+        /* the server doesn't echo our own lines back */
+        if (bc_nchat == 40) {
+            memmove(bc_chat, bc_chat + 1, sizeof(bc_chat[0]) * 39);
+            bc_nchat--;
+        }
+        bc_chat[bc_nchat].id = ++bc_chat_id;
+        snprintf(bc_chat[bc_nchat].from, sizeof(bc_chat[0].from), "%s", user);
+        snprintf(bc_chat[bc_nchat].text, sizeof(bc_chat[0].text), "%s", c->s1);
+        bc_nchat++;
+        break;
+    }
+    case OP_TEAM:
+        packet(C_MATCH_CHANGE_TEAM); /* bancho only flips it */
+        break;
+    case OP_MODS: {
+        size_t at = begin(C_MATCH_CHANGE_MODS);
+        w_u32(to_osu(c->mods));
+        end(at);
+        break;
+    }
+    case OP_SETTINGS: {
+        if (!in_match)
+            break;
+        bmatch m = cur;
+        m.team_type = c->f1 ? 2 : 0;
+        m.freemods = c->f2;
+        size_t at = begin(C_MATCH_CHANGE_SETTINGS);
+        w_match(&m);
+        end(at);
+        break;
+    }
     case OP_START:
         packet(C_MATCH_START);
         break;
@@ -1079,15 +1215,32 @@ void mp_snapshot(mp_state *out)
 
 void mp_refresh(void) { push(&(cmd){.op = OP_REFRESH}); }
 
-void mp_create(const char *name)
+void mp_create(const char *name, const char *password)
 {
     cmd c = {.op = OP_CREATE};
     snprintf(c.s1, sizeof(c.s1), "%s", name);
+    snprintf(c.s2, sizeof(c.s2), "%s", password ? password : "");
     push(&c);
 }
 
-void mp_join(int id) { push(&(cmd){.op = OP_JOIN, .a = id}); }
+void mp_join(int id, const char *password)
+{
+    cmd c = {.op = OP_JOIN, .a = id};
+    snprintf(c.s2, sizeof(c.s2), "%s", password ? password : "");
+    push(&c);
+}
+
 void mp_leave(void) { push(&(cmd){.op = OP_LEAVE}); }
+void mp_settings(bool teams, bool freemod) { push(&(cmd){.op = OP_SETTINGS, .f1 = teams, .f2 = freemod}); }
+void mp_team(int team) { push(&(cmd){.op = OP_TEAM, .a = team}); }
+void mp_my_mods(int mods) { push(&(cmd){.op = OP_MODS, .mods = mods}); }
+
+void mp_chat(const char *text)
+{
+    cmd c = {.op = OP_CHAT};
+    snprintf(c.s1, sizeof(c.s1), "%s", text);
+    push(&c);
+}
 
 void mp_set_map(int beatmap_id, int set_id, int mode, const char *md5, const char *title, int mods)
 {

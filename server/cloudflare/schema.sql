@@ -1,0 +1,35 @@
+-- ProjectCadence accounts and scores
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  pass_hash TEXT NOT NULL,
+  salt TEXT NOT NULL,
+  created INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  token TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL,
+  created INTEGER NOT NULL
+);
+
+-- one row per player and map: their best
+CREATE TABLE IF NOT EXISTS scores (
+  user_id INTEGER NOT NULL,
+  map_md5 TEXT NOT NULL,
+  beatmap_id INTEGER NOT NULL DEFAULT 0,
+  mode INTEGER NOT NULL DEFAULT 0,
+  score INTEGER NOT NULL,
+  acc REAL NOT NULL,
+  max_combo INTEGER NOT NULL,
+  mods INTEGER NOT NULL,
+  pp REAL NOT NULL DEFAULT 0,
+  rank INTEGER NOT NULL,
+  n300 INTEGER NOT NULL DEFAULT 0,
+  n100 INTEGER NOT NULL DEFAULT 0,
+  n50 INTEGER NOT NULL DEFAULT 0,
+  miss INTEGER NOT NULL DEFAULT 0,
+  played INTEGER NOT NULL,
+  PRIMARY KEY (user_id, map_md5)
+);
+CREATE INDEX IF NOT EXISTS scores_by_map ON scores (map_md5, score DESC);

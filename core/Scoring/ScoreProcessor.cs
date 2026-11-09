@@ -27,6 +27,7 @@ namespace Osu5.Scoring
         public double Multiplier = 1;
         public int Ruleset;     // 0 osu, 1 taiko, 3 mania: the split between combo and accuracy differs
         public int Perfect, Good; // mania's extra judgements
+        public int LargeTickHits, SmallTickHits, SmallTickMisses; // catch's droplets
         public bool Hidden;     // turns S / SS into the silver ranks
 
         public int Great, Ok, Meh, Miss, SliderBreaks;
@@ -104,6 +105,9 @@ namespace Osu5.Scoring
                 case HitResult.Great: Great++; break;
                 case HitResult.Perfect: Perfect++; break;
                 case HitResult.Good: Good++; break;
+                case HitResult.LargeTickHit: LargeTickHits++; break;
+                case HitResult.SmallTickHit: SmallTickHits++; break;
+                case HitResult.SmallTickMiss: SmallTickMisses++; break;
                 case HitResult.Ok: Ok++; break;
                 case HitResult.Meh: Meh++; break;
                 case HitResult.Miss: Miss++; break;

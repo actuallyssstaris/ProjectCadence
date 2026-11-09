@@ -177,8 +177,8 @@ int songs_scan(const char *root, song_list *out)
             if (snprintf(e->file, sizeof(e->file), "%s/%s", dir, f->d_name) >= (int)sizeof(e->file))
                 continue;
 
-            /* osu!, taiko and mania; catch not yet */
-            if (osu5_peek(e->file, &e->info) == 0 && (e->info.mode == 0 || e->info.mode == 1 || e->info.mode == 3))
+            /* osu!, taiko, catch and mania */
+            if (osu5_peek(e->file, &e->info) == 0 && (e->info.mode >= 0 && e->info.mode <= 3))
                 out->count++;
         }
         closedir(d);

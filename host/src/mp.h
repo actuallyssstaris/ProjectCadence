@@ -21,13 +21,16 @@ typedef struct {
     bool ready, has_map, done, failed, host, me;
     int score, combo, max_combo, n300, n100, n50, miss;
     float acc;
+    int team;           /* 0 red, 1 blue */
+    int mods;           /* their own, when the room has free mods */
+    bool account;       /* a signed-in name */
 } mp_member;
 
 typedef struct {
     int id;
     char name[48];
     int players;
-    bool playing;
+    bool playing, locked;
     char map[96];
 } mp_room_brief;
 
@@ -51,6 +54,9 @@ typedef struct {
     char map_md5[33];
     char map_title[128];
     int mods;           /* ours (OSU5_MOD_*) */
+    bool teams, freemod;
+    int nchat;
+    struct { int id; char from[24]; char text[124]; } chat[40];
     int nmembers;
     mp_member members[MP_MAX_MEMBERS];
 } mp_state;
@@ -61,8 +67,12 @@ void mp_disconnect(void);
 void mp_snapshot(mp_state *out);
 
 void mp_refresh(void);
-void mp_create(const char *name);
-void mp_join(int room_id);
+void mp_create(const char *name, const char *password);
+void mp_join(int room_id, const char *password);
+void mp_settings(bool teams, bool freemod); /* host */
+void mp_team(int team);
+void mp_my_mods(int mods);
+void mp_chat(const char *text);
 void mp_leave(void);
 void mp_set_map(int beatmap_id, int set_id, int mode, const char *md5, const char *title, int mods);
 void mp_ready(bool ready, bool has_map);
