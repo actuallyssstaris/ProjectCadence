@@ -1545,7 +1545,16 @@ static void render_mods(void)
 /* ---- settings ---- */
 
 /* grouped the way the screen shows them */
-enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, SET_SENS, SET_CURSOR, SET_HELP, SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_ACCOUNT, SET_BOARD, SET_RESCAN, SET_COUNT };
+enum {
+    SET_HELP, SET_UPDATE,                       /* general */
+    SET_SKIN,                                   /* skin */
+    SET_SENS, SET_CURSOR,                       /* input */
+    SET_DIM, SET_STORYBOARD, SET_VIDEO,         /* gameplay */
+    SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, /* audio */
+    SET_ACCOUNT, SET_BOARD,                     /* online */
+    SET_RESCAN,                                 /* maintenance */
+    SET_COUNT
+};
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -1573,6 +1582,18 @@ static void settings_frame(const pad_state *pad)
     case SET_VIDEO:
         if (d || pad->pressed & PAD_CROSS)
             app.videos = !app.videos;
+        break;
+    case SET_SKIN:
+        if (pad->pressed & PAD_CROSS) {
+            skin_ui_open(false);
+            app.scr = SCREEN_SKINS;
+        }
+        break;
+    case SET_UPDATE:
+        if (pad->pressed & PAD_CROSS) {
+            update_check();
+            snprintf(app.status, sizeof(app.status), "checking for a new version...");
+        }
         break;
     case SET_HELP:
         if (pad->pressed & PAD_CROSS) {
@@ -1618,7 +1639,8 @@ static void settings_frame(const pad_state *pad)
 static void render_settings(void)
 {
     static const struct { int first; const char *name; } sections[] = {
-        {SET_MUSIC, "audio"}, {SET_SENS, "input"}, {SET_DIM, "visuals"}, {SET_ACCOUNT, "online"}, {SET_RESCAN, "maintenance"},
+        {SET_HELP, "general"}, {SET_SKIN, "skin"}, {SET_SENS, "input"}, {SET_DIM, "gameplay"},
+        {SET_MUSIC, "audio"}, {SET_ACCOUNT, "online"}, {SET_RESCAN, "maintenance"},
     };
     const int nsec = sizeof(sections) / sizeof(sections[0]);
     int cur = 0;
@@ -1694,6 +1716,16 @@ static void render_settings(void)
                      : online_enabled() ? "osu.ppy.sh" : "osu.ppy.sh (needs osuapi.txt)");
             break;
         case SET_RESCAN: name = "rescan the Songs folder"; kind = 3; break;
+        case SET_SKIN: name = "current skin"; snprintf(val, sizeof(val), "%.40s", skins_active()); break;
+        case SET_UPDATE: {
+            update_info up;
+            update_status(&up);
+            name = "check for updates";
+            kind = up.state == UPDATE_AVAILABLE ? 0 : 3;
+            if (kind == 0)
+                snprintf(val, sizeof(val), "%s is out", up.latest);
+            break;
+        }
         }
         bool on = i == app.set_sel;
         float x = panel_x + 40, w = panel_w - 80;
@@ -1740,11 +1772,28 @@ static void render_settings(void)
 
 /* ---- pause / fail / results ---- */
 
-static void render_overlay(const char *title, uint32_t colour, const char *hint)
+/* pause and fail: a yellow heading over a stack of wide buttons, each with its pad button */
+typedef struct {
+    const char *label, *button;
+    uint32_t colour;
+} overlay_button;
+
+static void render_overlay(const char *title, const char *info, const overlay_button *b, int n)
 {
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.6f));
-    draw_text(GFX_W / 2, 380, 96, colour, ALIGN_CENTRE, title);
-    draw_text(GFX_W / 2, 560, 30, gfx_rgba(1, 1, 1, 0.85f), ALIGN_CENTRE, hint);
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.75f));
+    draw_text(GFX_W / 2, 250, 64, ui_hex(UI_YELLOW, 1), ALIGN_CENTRE, title);
+    if (info && info[0])
+        draw_text(GFX_W / 2, 340, 24, gfx_rgba(1, 1, 1, 0.85f), ALIGN_CENTRE, info);
+    const float w = 760, h = 96, x = (GFX_W - w) / 2;
+    float y = 420;
+    for (int i = 0; i < n; i++) {
+        ui_shear_rect(x, y, w, h - 4, 22, ui_hex(b[i].colour, 1));
+        /* a lighter band in the middle, the way the dialog buttons glow */
+        ui_shear_rect(x + w * 0.3f, y, w * 0.4f, h - 4, 22, gfx_rgba(1, 1, 1, 0.08f));
+        draw_text(GFX_W / 2, y + 22, 32, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, b[i].label);
+        draw_text(x + w - 50, y + 32, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_RIGHT, b[i].button);
+        y += h + 2;
+    }
 }
 
 static void render_results(void)
@@ -2288,27 +2337,63 @@ static void render_mp(void)
     draw_text(GFX_W - 120, 90, 24, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_RIGHT, buf);
 
     if (!s->in_room) {
-        int rows = 2 + s->nrooms;
-        for (int i = 0; i < rows && i < 9; i++) {
-            float y = 190 + i * 88;
-            bool on = i == app.mp_sel;
-            draw_rect(120, y, 1680, 76, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0, 0, 0, 0.5f));
-            uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 1);
-            if (i < 2) {
-                draw_text(150, y + 22, 30, tc, ALIGN_LEFT, i == 0 ? "+  make a room" : "+  make a private room (password)");
+        /* the lounge: heading and a create button, then one wide card per room */
+        draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.06f, 0.05f, 0.08f, 0.55f));
+        float hx = draw_text(40, 60, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "multiplayer  ·  ");
+        draw_text(40 + hx, 60, 30, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, "lounge");
+
+        const float cx = 225, cw = 1470, ch = 100, gap = 12;
+        for (int b = 0; b < 2; b++) {
+            bool on = app.mp_sel == b;
+            float bx = 40 + b * 300;
+            ui_round_rect(bx, 110, 280, 76, 10, on ? ui_mix(ui_hex(UI_PURPLE, 1), gfx_rgba(1, 1, 1, 1), 0.2f) : ui_hex(UI_PURPLE, 0.9f));
+            if (on)
+                ui_round_rect(bx, 180, 280, 6, 3, gfx_rgba(1, 1, 1, 0.9f));
+            draw_text(bx + 140, 134, 22, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, b == 0 ? "create room" : "create private room");
+        }
+
+        /* keep the selected card on screen */
+        static float scroll;
+        float want = app.mp_sel >= 2 ? (app.mp_sel - 2) * (ch + gap) - 3 * (ch + gap) : 0;
+        scroll = ui_approach(scroll, want < 0 ? 0 : want, 0.25f);
+        for (int i = 0; i < s->nrooms; i++) {
+            const mp_room_brief *r = &s->rooms[i];
+            float y = 220 + i * (ch + gap) - scroll;
+            if (y < 200 || y > GFX_H - 120)
                 continue;
+            bool on = app.mp_sel == i + 2;
+            uint32_t state = r->playing ? UI_PURPLE : r->locked ? UI_PINK : UI_GREEN;
+            if (on)
+                ui_round_rect(cx - 4, y - 4, cw + 8, ch + 8, 14, gfx_rgba(1, 1, 1, 0.85f));
+            ui_round_rect(cx, y, cw, ch, 10, gfx_rgba(0.12f, 0.11f, 0.15f, 0.96f));
+            ui_triangles(cx + cw * 0.45f, y, cw * 0.55f, ch, gfx_rgba(0.18f, 0.16f, 0.22f, 0.5f), wall_ms(), (unsigned)i + 11, 8);
+            ui_round_rect(cx, y, 12, ch, 6, ui_hex(state, 1));
+
+            /* status and kind pills */
+            const char *st = r->playing ? "in progress" : r->locked ? "open (private)" : "open";
+            float pw = draw_text_width(15, st) + 24;
+            ui_round_rect(cx + 30, y + 10, pw, 24, 12, ui_hex(state, 1));
+            draw_text(cx + 30 + pw / 2, y + 13, 15, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, st);
+            draw_text(cx + 30, y + 38, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, r->name);
+            if (r->map[0]) {
+                snprintf(buf, sizeof(buf), "currently playing  %.90s", r->map);
+                draw_text(cx + 30, y + 70, 17, ui_hex(UI_LIME, 1), ALIGN_LEFT, buf);
             }
-            const mp_room_brief *r = &s->rooms[i - 2];
-            draw_text(150, y + 10, 28, tc, ALIGN_LEFT, r->name);
-            if (r->locked)
-                draw_text(1770, y + 22, 24, on ? gfx_rgba(0.6f, 0.3f, 0.1f, 1) : gfx_rgba(1, 0.75f, 0.4f, 1), ALIGN_RIGHT, "password");
-            snprintf(buf, sizeof(buf), "%d playing here%s   %.80s", r->players, r->playing ? ", mid round" : "", r->map);
-            draw_text(150, y + 46, 18, tc, ALIGN_LEFT, buf);
+            /* players, on the right */
+            snprintf(buf, sizeof(buf), "%d %s", r->players, r->players == 1 ? "player" : "players");
+            float ww = draw_text_width(18, buf) + 40;
+            ui_round_rect(cx + cw - ww - 24, y + ch / 2 - 20, ww, 40, 20, gfx_rgba(0, 0, 0, 0.5f));
+            draw_text(cx + cw - 24 - ww / 2, y + ch / 2 - 11, 18, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, buf);
         }
         if (s->nrooms == 0)
-            draw_text(120, 300, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "no rooms open yet");
+            draw_text(GFX_W / 2, 400, 28, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "no rooms open yet: make one");
         if (s->error[0])
-            draw_text(120, GFX_H - 120, 24, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, s->error);
+            draw_text(cx, GFX_H - 150, 24, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, s->error);
+
+        /* back, bottom left */
+        ui_shear_rect(-30, GFX_H - 70, 230, 70, 18, ui_hex(UI_PINK, 1));
+        ui_arrow_left(40, GFX_H - 35, 22, gfx_rgba(1, 1, 1, 1));
+        draw_text(120, GFX_H - 50, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
         return;
     }
 
@@ -2937,7 +3022,12 @@ int main(void)
             break;
         case SCREEN_PAUSE:
             render_play();
-            render_overlay("paused", gfx_rgba(1, 1, 1, 1), "CROSS continue   TRIANGLE retry   CIRCLE quit");
+            {
+                static const overlay_button pb[] = {
+                    {"continue", "CROSS", 0x88B300}, {"retry", "TRIANGLE", 0xD99D00}, {"quit", "CIRCLE", 0xAA1B27},
+                };
+                render_overlay("paused", "", pb, 3);
+            }
             {
                 char ob[64];
                 snprintf(ob, sizeof(ob), "map offset %+d ms   (LEFT/RIGHT)", app.map_offset);
@@ -2946,7 +3036,10 @@ int main(void)
             break;
         case SCREEN_FAILED:
             render_play();
-            render_overlay("failed", gfx_rgba(1, 0.35f, 0.35f, 1), "CROSS retry   CIRCLE back");
+            {
+                static const overlay_button fb[] = {{"retry", "CROSS", 0xD99D00}, {"quit", "CIRCLE", 0xAA1B27}};
+                render_overlay("failed", "", fb, 2);
+            }
             break;
         case SCREEN_RESULTS:
             render_results();
