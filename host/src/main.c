@@ -2675,24 +2675,26 @@ static void render_menu(void)
     }
 
     /* the button strip through the middle, the logo sitting on its left end */
-    const float bar_h = 140, bar_y = GFX_H / 2 - bar_h / 2, lean = 28, base_w = 196;
+    const float bar_h = 132, bar_y = GFX_H / 2 - bar_h / 2, lean = 25, base_w = 181;
     float pulse = 1 + 0.025f * sinf(t * 2 * 3.14159f * 1.2f);
     float lx = 640, ly = GFX_H / 2, lsize = 330 * pulse;
-    draw_rect(0, bar_y, GFX_W, bar_h, gfx_rgba(0.12f, 0.12f, 0.14f, 0.6f));
+    draw_rect(0, bar_y, GFX_W, bar_h, gfx_rgba(0.2f, 0.2f, 0.2f, 0.82f));
 
     static const char *items[MENU_COUNT] = {"play", "multiplayer", "get maps", "skins", "settings"};
     static const uint32_t cols[MENU_COUNT] = {UI_PURPLE, UI_PURPLE_DARK, UI_LIME, UI_ORANGE, UI_GREY};
     static float widths[MENU_COUNT];
-    float x = lx - base_w - lean;
+    float x = lx - lsize * 0.32f - base_w - lean; /* settings tucks just under the logo's edge */
     for (int k = 0; k < MENU_COUNT; k++) {
         int i = menu_order[k];
         bool on = i == app.menu_sel;
         if (k == 1)
-            x = lx + 110; /* the rest start past the logo */
+            x = lx + lsize * 0.42f; /* the rest start at the logo's right edge */
         if (widths[i] <= 0)
             widths[i] = base_w;
         widths[i] = ui_approach(widths[i], on ? base_w * 1.5f : base_w, 0.25f);
         float w = widths[i];
+        if (k == 0)
+            x = lx - lsize * 0.32f - w - lean; /* grows to the left, away from the logo */
         uint32_t c = ui_hex(cols[i], 1);
         if (on)
             c = ui_mix(c, gfx_rgba(1, 1, 1, 1), 0.12f);
@@ -2701,10 +2703,13 @@ static void render_menu(void)
             ui_shear_rect(x, bar_y + bar_h - 6, w + lean, 6, 0, gfx_rgba(1, 1, 1, 0.85f));
 
         /* icon bobs on the beat when selected */
-        float icx = x + (w + lean) / 2, icy = bar_y + 54 - (on ? 6 * fabsf(sinf(t * 3.14159f * 1.2f)) : 0);
+        float icx = x + (w + lean) / 2, icy = bar_y + 50 - (on ? 6 * fabsf(sinf(t * 3.14159f * 1.2f)) : 0);
         uint32_t ic = gfx_rgba(1, 1, 1, 1);
         switch (i) {
-        case MENU_PLAY: ui_play_icon(icx, icy, 40, ic); break;
+        case MENU_PLAY:
+            arc(icx, icy, 19, 3, 0, 1, ic);
+            ui_play_icon(icx + 1, icy, 18, ic);
+            break;
         case MENU_MULTI:
             ui_disc(icx - 13, icy - 8, 9, ic);
             ui_disc(icx + 13, icy - 8, 9, ic);
@@ -2722,14 +2727,14 @@ static void render_menu(void)
             break;
         case MENU_SETTINGS: ui_gear_icon(icx, icy, 44, ic); break;
         }
-        draw_text(icx, bar_y + bar_h - 44, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, items[i]);
+        draw_text(icx, bar_y + bar_h - 38, 19, gfx_rgba(1, 1, 1, 0.95f), ALIGN_CENTRE, items[i]);
         x += w;
     }
 
     /* the logo, breathing; a flash ring on every beat */
     float ring = fmodf(t * 1.2f, 1.0f);
     arc(lx, ly, lsize * 0.5f + ring * 60, 4, 0, 1, gfx_rgba(1, 1, 1, 0.35f * (1 - ring)));
-    ui_disc(lx, ly, lsize * 0.5f + 8, gfx_rgba(1, 1, 1, 0.9f));
+    ui_disc(lx, ly, lsize * 0.5f + 14, gfx_rgba(1, 1, 1, 1));
     if (app.logo_tex) {
         gfx_bind(app.logo_tex);
         gfx_push(&(gfx_inst){lx, ly, lsize / 2, lsize / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX, {0, 0, 1, 1}});
@@ -2739,11 +2744,11 @@ static void render_menu(void)
     if (app.songs.count > 0) {
         const osu5_peek_info *in = &app.songs.items[app.sel].info;
         char buf[300];
-        snprintf(buf, sizeof(buf), "%.100s - %.100s", in->artist, in->title);
-        float tw = draw_text_width(22, buf) + 60;
-        ui_round_rect(GFX_W - tw - 20, 72, tw, 44, 10, gfx_rgba(0, 0, 0, 0.45f));
-        ui_play_icon(GFX_W - tw + 4, 94, 16, gfx_rgba(1, 1, 1, 0.9f));
-        draw_text(GFX_W - 40, 82, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
+        /* now playing, top right: title over artist */
+        snprintf(buf, sizeof(buf), "%.100s", in->title);
+        draw_text(GFX_W - 30, 68, 28, gfx_rgba(1, 1, 1, 0.95f), ALIGN_RIGHT, buf);
+        snprintf(buf, sizeof(buf), "%.100s", in->artist);
+        draw_text(GFX_W - 30, 102, 20, gfx_rgba(1, 1, 1, 0.75f), ALIGN_RIGHT, buf);
     }
     draw_text(GFX_W - 30, GFX_H - 50, 20, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, CADENCE_VERSION);
 
