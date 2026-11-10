@@ -9,6 +9,7 @@ typedef struct {
     char *text;
     size_t cap;
     int kx, ky; /* cursor; ky 4 is the wide bottom row */
+    int sys;    /* 1 while the system keyboard is up for this one */
 } kbd;
 
 enum { KBD_TYPING, KBD_DONE, KBD_CANCEL };
