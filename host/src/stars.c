@@ -11,7 +11,7 @@
 #define STARS_FILE "/data/cadence/stars.txt"
 #define SONGS_PREFIX "/data/cadence/Songs/"
 /* bump with the core's StarRating.Version so old numbers get thrown away */
-#define STARS_HEADER "osu5 stars 20260706"
+#define STARS_HEADER "osu5 stars 20261109"
 
 #define SLOTS 32768 /* power of two */
 #define QUEUE SLOTS

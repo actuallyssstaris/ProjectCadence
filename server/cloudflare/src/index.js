@@ -68,6 +68,35 @@ export async function userForSession(env, session) {
     .first();
 }
 
+const MIN_GAP = 5000;     // ms between two uploads from one account
+const MAX_SCORE = 4000000;  // 1M standardised, times a generous mod multiplier
+const MAX_PP = 3500;
+
+// the server can't replay a play, but it can turn away numbers no play produces
+function implausible(b, n) {
+  const score = n("score");
+  const acc = Number(b.acc);
+  const hits = n("n300") + n("n100") + n("n50") + n("miss");
+  if (score <= 0 || score > MAX_SCORE) return "score out of range";
+  if (!(acc >= 0 && acc <= 1)) return "accuracy out of range";
+  if (n("mode") > 3) return "bad mode";
+  if (n("rank") >= 8) return "failed plays aren't uploaded";
+  if (!(Number(b.pp) >= 0 && Number(b.pp) <= MAX_PP)) return "pp out of range";
+  if (hits > 20000) return "bad hit counts";
+  if (n("max_combo") > 60000) return "combo out of range";
+  // osu!: judgement counts and accuracy have to roughly agree (slider ticks and
+  // tails nudge accuracy, hence the slack). mania sends no Perfect count and
+  // catch counts droplets elsewhere, so they skip this.
+  if (n("mode") === 0) {
+    if (hits === 0) return "bad hit counts";
+    const from = (300 * n("n300") + 100 * n("n100") + 50 * n("n50")) / (300 * hits);
+    if (Math.abs(from - acc) > 0.15) return "accuracy doesn't match the judgements";
+  }
+  // a clean SS can't have misses or sloppy hits
+  if (n("mode") !== 2 && acc >= 1 && (n("miss") || n("n100") || n("n50"))) return "accuracy doesn't match the judgements";
+  return null;
+}
+
 async function accounts(request, env, url) {
   const body = request.method === "POST" ? await request.json().catch(() => ({})) : {};
 
@@ -99,6 +128,10 @@ async function accounts(request, env, url) {
       if (!/^[0-9a-f]{32}$/.test(md5)) return reply({ error: "bad map" }, 400);
       const n = (k) => Math.max(0, Math.floor(Number(body[k]) || 0));
       const score = n("score");
+      const bad = implausible(body, n);
+      if (bad) return reply({ error: bad }, 422);
+      const last = await env.DB.prepare("SELECT MAX(played) AS t FROM scores WHERE user_id = ?").bind(user.id).first();
+      if (last && last.t && Date.now() - last.t < MIN_GAP) return reply({ error: "slow down" }, 429);
       const old = await env.DB.prepare("SELECT score FROM scores WHERE user_id = ? AND map_md5 = ?").bind(user.id, md5).first();
       const best = !old || score > old.score;
       if (best) {

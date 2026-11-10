@@ -14,7 +14,7 @@ namespace Osu5.Native
     {
         static Beatmap? map;
         static IGame? player;
-        static float otherStars; // taiko / mania, which have no pp attributes
+        static Osu5.Stars.OtherAttributes? other; // taiko, catch, mania
         static readonly DrawList drawList = new DrawList();
         static string lastError = "";
         static Mods mods;
@@ -23,16 +23,34 @@ namespace Osu5.Native
 
         // stars of the loaded map with its mods, and pp for the score so far
         [UnmanagedCallersOnly(EntryPoint = "osu5_play_stars", CallConvs = new[] { typeof(CallConvCdecl) })]
-        public static float PlayStars() => attributes != null ? (float)attributes.Stars : otherStars;
+        public static float PlayStars() => attributes != null ? (float)attributes.Stars : other != null ? (float)other.Stars : 0;
 
         [UnmanagedCallersOnly(EntryPoint = "osu5_pp", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static float Pp()
         {
             try
             {
-                if (player == null || attributes == null)
+                if (player == null)
                     return 0;
                 var s = player.Score;
+                if (other != null)
+                    return (float)Osu5.Stars.OtherStars.Pp(other, mods, new Osu5.Stars.OtherStats
+                    {
+                        Accuracy = s.Accuracy,
+                        MaxCombo = s.MaxCombo,
+                        Perfect = s.Perfect,
+                        Great = s.Great,
+                        Good = s.Good,
+                        Ok = s.Ok,
+                        Meh = s.Meh,
+                        Miss = s.Miss,
+                        Droplets = s.LargeTickHits,
+                        DropletMisses = s.LargeTickMisses,
+                        TinyHits = s.SmallTickHits,
+                        TinyMisses = s.SmallTickMisses,
+                    });
+                if (attributes == null)
+                    return 0;
                 return (float)Osu5.Stars.Performance.Calculate(attributes, mods, new Osu5.Stars.PlayStats
                 {
                     Accuracy = s.Accuracy,
@@ -86,7 +104,10 @@ namespace Osu5.Native
                 string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
                 map = BeatmapDecoder.Decode(p, mods);
                 attributes = null;
-                otherStars = 0;
+                other = null;
+
+                if (map.Mode != 0)
+                    other = Osu5.Stars.OtherStars.Calculate(map, mods);
 
                 switch (map.Mode)
                 {
@@ -99,7 +120,6 @@ namespace Osu5.Native
                         player = new TaikoPlayer(map, mods);
                         return 0;
                     case 3:
-                        otherStars = (float)Osu5.Stars.ManiaStars.Calculate(map, mods);
                         player = new ManiaPlayer(map, mods);
                         return 0;
                     case 2:
@@ -141,7 +161,7 @@ namespace Osu5.Native
             }
         }
 
-        // Star rating of a map with these mods; -1 if it won't decode or isn't osu!standard.
+        // Star rating of a map with these mods; -1 if it won't decode.
         // Touches no shared state, so the host calls it from a worker thread.
         [UnmanagedCallersOnly(EntryPoint = "osu5_stars", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static float Stars(byte* path, int flags)
@@ -150,10 +170,8 @@ namespace Osu5.Native
             {
                 string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
                 var m = BeatmapDecoder.Decode(p, (Mods)flags);
-                if (m.Mode == 3)
-                    return (float)Osu5.Stars.ManiaStars.Calculate(m, (Mods)flags);
                 if (m.Mode != 0)
-                    return -1;
+                    return (float)(Osu5.Stars.OtherStars.Calculate(m, (Mods)flags)?.Stars ?? -1);
                 return (float)Osu5.Stars.StarRating.Calculate(m, (Mods)flags).Stars;
             }
             catch

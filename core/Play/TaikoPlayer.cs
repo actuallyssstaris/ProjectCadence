@@ -108,6 +108,18 @@ namespace Osu5.Play
             endTime = m.LastObjectEndTime;
         }
 
+        // dons and kats in time order (true = kat), for the star rating
+        public List<(double Time, bool Kat)> Hits()
+        {
+            var list = new List<(double, bool)>();
+            foreach (var n in notes)
+                if (n.Kind is Kind.Don or Kind.Kat)
+                    list.Add((n.Time, n.Kind == Kind.Kat));
+            return list;
+        }
+
+        public double GreatWindow => wGreat;
+
         public double StartTime
         {
             get

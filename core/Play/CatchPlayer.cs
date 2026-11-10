@@ -106,6 +106,18 @@ namespace Osu5.Play
             endTime = m.LastObjectEndTime;
         }
 
+        // fruit and droplets in time order, for the star rating
+        public List<(double Time, float X)> Palpable()
+        {
+            var list = new List<(double, float)>();
+            foreach (var t in things)
+                if (t.Kind is Kind.Fruit or Kind.Droplet)
+                    list.Add((t.Time, t.X));
+            return list;
+        }
+
+        public float HalfWidth => halfWidth;
+
         static HitResult maxFor(Kind k) => k switch
         {
             Kind.Fruit => HitResult.Great,
