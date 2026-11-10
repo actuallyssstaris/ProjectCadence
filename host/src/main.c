@@ -31,6 +31,7 @@
 #include "prefs.h"
 #include "update.h"
 #include "video.h"
+#include "ui.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -1229,17 +1230,21 @@ static void render_online(const song_entry *e)
 
 static void render_select(void)
 {
-    draw_background(0.75f);
+    draw_background(0.65f);
     char buf[300];
 
-    /* search and sort, top right */
+    /* filter box, top right: search field over the sort tabs */
+    ui_round_rect(GFX_W - 900, 14, 880, 110, 14, gfx_rgba(0.08f, 0.08f, 0.1f, 0.82f));
+    ui_round_rect(GFX_W - 880, 28, 840, 46, 10, gfx_rgba(1, 1, 1, app.searching ? 0.16f : 0.08f));
     if (app.filter[0] || app.searching)
-        snprintf(buf, sizeof(buf), "search: %s%s   sort: %s", app.filter, app.searching ? "_" : "", sort_label());
+        snprintf(buf, sizeof(buf), "%s%s", app.filter, app.searching ? "_" : "");
     else
-        snprintf(buf, sizeof(buf), "L1 search   R1 sort: %s", sort_label());
-    draw_rect(0, 0, GFX_W, 52, gfx_rgba(0, 0, 0, 0.6f));
-    draw_text(GFX_W - 30, 12, 26, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
-    draw_text(40, 12, 28, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_LEFT, "ProjectCadence");
+        snprintf(buf, sizeof(buf), "type to search  (L1)");
+    draw_text(GFX_W - 860, 38, 24, gfx_rgba(1, 1, 1, app.filter[0] || app.searching ? 1 : 0.45f), ALIGN_LEFT, buf);
+    snprintf(buf, sizeof(buf), "sort by  %s   (R1)", sort_label());
+    draw_text(GFX_W - 860, 86, 20, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, buf);
+    snprintf(buf, sizeof(buf), "%d maps", app.songs.count);
+    draw_text(GFX_W - 40, 86, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, buf);
 
     if (app.songs.count == 0 && app.all.count > 0) {
         snprintf(buf, sizeof(buf), "nothing matches \"%s\"", app.filter);
@@ -1289,7 +1294,7 @@ static void render_select(void)
         }
     }
 
-    const float row = 74;
+    const float row = 80;
     app.sel_scroll += (sel_row - app.sel_scroll) * 0.25f;
     if (fabsf(sel_row - app.sel_scroll) > 30)
         app.sel_scroll = (float)sel_row; /* big jumps: don't fly past hundreds of rows */
@@ -1298,15 +1303,21 @@ static void render_select(void)
         float y = GFX_H / 2 - row / 2 + (r - app.sel_scroll) * row;
         const song_entry *e = &app.songs.items[rows[r].index];
         const osu5_peek_info *in = &e->info;
+        /* the list bows away from the screen edge, further from the middle */
+        float off = (y + row / 2 - GFX_H / 2) / (GFX_H / 2);
+        float curve = off * off * 110;
 
         if (rows[r].kind == ROW_DIFF) {
             bool on = r == sel_row;
-            float x = on ? 940 : 990;
+            float x = (on ? 960 : 1000) + curve;
             float st = stars_get(e->file, 0);
-            draw_rect(x, y, GFX_W - x, row - 6, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0.08f, 0.1f, 0.18f, 0.8f));
+            uint32_t sc = st >= 0 ? star_colour(st, 1) : gfx_rgba(0.5f, 0.5f, 0.5f, 1);
+            if (on)
+                ui_round_rect(x - 4, y - 4, GFX_W - x + 30, row + 2, 16, ui_mix(sc, gfx_rgba(1, 1, 1, 1), 0.3f));
+            ui_round_rect(x, y, GFX_W - x + 30, row - 6, 12, on ? gfx_rgba(0.16f, 0.16f, 0.2f, 0.97f) : gfx_rgba(0.1f, 0.1f, 0.13f, 0.85f));
             /* the rating's colour down the left edge */
-            draw_rect(x, y, 8, row - 6, st >= 0 ? star_colour(st, 1) : gfx_rgba(0.5f, 0.5f, 0.5f, 1));
-            uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 0.95f);
+            ui_round_rect(x, y, 14, row - 6, 7, sc);
+            uint32_t tc = gfx_rgba(1, 1, 1, on ? 1 : 0.9f);
             float tx = x + 28;
             if (st >= 0)
                 tx += star_pill(tx, y + 10, 30, st) + 14;
@@ -1338,13 +1349,15 @@ static void render_select(void)
 
         /* a set: closed panel, or the header above the open one's difficulties */
         bool header = rows[r].kind == ROW_HEADER;
-        float x = header ? 900 : 960;
+        float x = (header ? 920 : 980) + curve;
         int n = set_end(rows[r].index) - rows[r].index;
         float th = row - 6, tw = th * 16 / 9;
-        draw_rect(x, y, GFX_W - x, th, header ? gfx_rgba(1, 0.8f, 0.35f, 0.92f) : gfx_rgba(0, 0, 0, 0.6f));
-        thumb_box(set_thumb(e), x, y, tw, th, header ? 1 : 0.75f);
+        if (header)
+            ui_round_rect(x - 4, y - 4, GFX_W - x + 30, th + 8, 16, ui_hex(UI_YELLOW, 0.9f));
+        ui_round_rect(x, y, GFX_W - x + 30, th, 12, gfx_rgba(0.07f, 0.07f, 0.09f, header ? 0.95f : 0.8f));
+        thumb_box(set_thumb(e), x + 6, y + 6, tw - 12, th - 12, header ? 1 : 0.7f);
         x += tw;
-        uint32_t tc = header ? gfx_rgba(0.15f, 0.1f, 0.02f, 1) : gfx_rgba(1, 1, 1, 0.95f);
+        uint32_t tc = gfx_rgba(1, 1, 1, header ? 1 : 0.9f);
         snprintf(buf, sizeof(buf), "%.90s", in->title);
         draw_text(x + 20, y + 8, 26, tc, ALIGN_LEFT, buf);
         if (e->video) {
@@ -1370,31 +1383,32 @@ static void render_select(void)
     }
 
     const osu5_peek_info *in = &app.songs.items[app.sel].info;
-    draw_rect(40, 60, 800, 260, gfx_rgba(0, 0, 0, 0.6f));
-    draw_text(60, 80, 34, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, in->title);
-    draw_text(60, 126, 26, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, in->artist);
-    snprintf(buf, sizeof(buf), "[%.90s] mapped by %.60s", in->version, in->creator);
-    draw_text(60, 166, 22, gfx_rgba(1, 1, 1, 0.75f), ALIGN_LEFT, buf);
+    /* the wedge: a leaning dark panel, top left, with the map's details */
+    ui_shear_rect(-60, 0, 960, 300, 50, gfx_rgba(0.05f, 0.05f, 0.07f, 0.88f));
+    draw_text(40, 26, 40, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, in->title);
+    draw_text(40, 78, 26, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, in->artist);
+    snprintf(buf, sizeof(buf), "%.90s   mapped by %.60s", in->version, in->creator);
+    draw_text(40, 122, 22, ui_hex(UI_YELLOW, 0.95f), ALIGN_LEFT, buf);
     const char *selfile = app.songs.items[app.sel].file;
     float st = stars_get(selfile, 0), mst = stars_mods(app.mods) ? stars_get(selfile, stars_mods(app.mods)) : st;
     /* rating (with mods when they change it), then the four numbers as bars */
-    float bx = 60;
+    float bx = 40;
     if (mst >= 0)
-        bx += star_pill(60, 204, 38, mst) + 20;
+        bx += star_pill(40, 170, 38, mst) + 20;
     else if (st >= 0)
-        bx += star_pill(60, 204, 38, st) + 20;
+        bx += star_pill(40, 170, 38, st) + 20;
     float bw = (820 - bx - 3 * 16) / 4;
-    stat_bar(bx, 204, bw, "CS", in->cs, 10);
-    stat_bar(bx + (bw + 16), 204, bw, "AR", in->ar, 10);
-    stat_bar(bx + (bw + 16) * 2, 204, bw, "OD", in->od, 10);
-    stat_bar(bx + (bw + 16) * 3, 204, bw, "HP", in->hp, 10);
+    stat_bar(bx, 170, bw, "CS", in->cs, 10);
+    stat_bar(bx + (bw + 16), 170, bw, "AR", in->ar, 10);
+    stat_bar(bx + (bw + 16) * 2, 170, bw, "OD", in->od, 10);
+    stat_bar(bx + (bw + 16) * 3, 170, bw, "HP", in->hp, 10);
 
     char tags[64];
     mod_tags(app.mods, tags, sizeof(tags));
     snprintf(buf, sizeof(buf), "%s%soffset %+dms", tags, tags[0] ? "   " : "", app.offset_ms);
-    draw_text(60, 262, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, buf);
+    draw_text(40, 236, 24, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, buf);
 
-    draw_rect(40, 340, 800, 70 + SHOWN_SCORES * 64, gfx_rgba(0, 0, 0, 0.5f));
+    ui_round_rect(40, 330, 800, 80 + SHOWN_SCORES * 64, 16, gfx_rgba(0.05f, 0.05f, 0.07f, 0.75f));
     if (app.board && (app.board_src == 0 || !online_enabled())) {
         render_global(&app.songs.items[app.sel]);
         goto scores_done;
@@ -1426,11 +1440,42 @@ static void render_select(void)
               gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, app.board_src && online_enabled() ? "L2 osu.ppy.sh" : "L2 global");
 scores_done:;
 
+    /* footer: back on the left, then the screen's actions as leaning tiles */
+    {
+        const float fy = GFX_H - 76, fh = 76, lean = 16;
+        draw_rect(0, fy, GFX_W, fh, gfx_rgba(0.08f, 0.08f, 0.1f, 0.9f));
+        ui_shear_rect(16, fy + 10, 260, fh - 18, lean, ui_hex(UI_PINK, 1));
+        ui_arrow_left(62, fy + fh / 2 - 4, 22, gfx_rgba(1, 1, 1, 1));
+        draw_text(150, fy + 16, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
+        draw_text(150, fy + 50, 14, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, "CIRCLE");
+
+        static const struct { const char *label, *button; uint32_t colour; } tiles[] = {
+            {"mods", "SQUARE", UI_GREEN}, {"get maps", "TRIANGLE", UI_BLUE}, {"skins", "TOUCHPAD", UI_PURPLE}, {"settings", "OPTIONS", UI_ORANGE},
+        };
+        float tx = 320;
+        for (int i = 0; i < 4; i++) {
+            ui_shear_rect(tx, fy + 4, 190, fh - 4, lean, gfx_rgba(0.18f, 0.18f, 0.22f, 0.95f));
+            ui_shear_rect(tx + 2, fy + fh - 8, 186 - lean, 6, 0, ui_hex(tiles[i].colour, 1));
+            draw_text(tx + 95, fy + 12, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, tiles[i].label);
+            draw_text(tx + 95, fy + 42, 15, gfx_rgba(1, 1, 1, 0.55f), ALIGN_CENTRE, tiles[i].button);
+            tx += 200;
+        }
+        draw_text(GFX_W - 260, fy + 26, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, "L2 board   R2 replay   X play");
+        /* our logo peeking in from the corner, like the menu's */
+        if (app.logo_tex) {
+            float s = 220;
+            ui_disc(GFX_W - 90, GFX_H - 40, s / 2 + 8, gfx_rgba(1, 1, 1, 0.9f));
+            gfx_bind(app.logo_tex);
+            gfx_push(&(gfx_inst){GFX_W - 90, GFX_H - 40, s / 2, s / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX, {0, 0, 1, 1}});
+            gfx_bind(0);
+        }
+    }
+
     mapdl_status dl;
     mapdl_progress(&dl);
     if (dl.current) {
         snprintf(buf, sizeof(buf), "downloading a map, %.1f MB%s", dl.bytes / 1048576.0, dl.queued ? ", more waiting" : "");
-        draw_text(40, GFX_H - 100, 22, gfx_rgba(0.5f, 0.85f, 1, 1), ALIGN_LEFT, buf);
+        draw_text(40, GFX_H - 112, 22, ui_hex(UI_BLUE, 1), ALIGN_LEFT, buf);
     }
 
 
@@ -1499,7 +1544,8 @@ static void render_mods(void)
 
 /* ---- settings ---- */
 
-enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_SENS, SET_DIM, SET_CURSOR, SET_STORYBOARD, SET_VIDEO, SET_WIZARD, SET_HELP, SET_ACCOUNT, SET_BOARD, SET_RESCAN, SET_COUNT };
+/* grouped the way the screen shows them */
+enum { SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, SET_SENS, SET_CURSOR, SET_HELP, SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_ACCOUNT, SET_BOARD, SET_RESCAN, SET_COUNT };
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
@@ -1571,43 +1617,112 @@ static void settings_frame(const pad_state *pad)
 
 static void render_settings(void)
 {
+    static const struct { int first; const char *name; } sections[] = {
+        {SET_MUSIC, "audio"}, {SET_SENS, "input"}, {SET_DIM, "visuals"}, {SET_ACCOUNT, "online"}, {SET_RESCAN, "maintenance"},
+    };
+    const int nsec = sizeof(sections) / sizeof(sections[0]);
+    int cur = 0;
+    for (int s = 0; s < nsec; s++)
+        if (app.set_sel >= sections[s].first)
+            cur = s;
+
     char val[64];
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.7f));
-    draw_text(160, 90, 52, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "settings");
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.45f));
+
+    /* sidebar of sections, then the panel the rows live on */
+    const float side_w = 220, panel_x = side_w, panel_w = 900;
+    draw_rect(0, 0, side_w, GFX_H, gfx_rgba(0.1f, 0.09f, 0.12f, 0.97f));
+    draw_rect(panel_x, 0, panel_w, GFX_H, gfx_rgba(0.16f, 0.14f, 0.2f, 0.97f));
+    for (int s = 0; s < nsec; s++) {
+        float y = 120 + s * 64;
+        bool on = s == cur;
+        if (on)
+            ui_round_rect(14, y - 6, 6, 44, 3, ui_hex(UI_PURPLE, 1));
+        draw_text(40, y, 26, gfx_rgba(1, 1, 1, on ? 1 : 0.55f), ALIGN_LEFT, sections[s].name);
+    }
+
+    /* rows with a header above each section; scrolled to keep the selection in view */
+    const float row_h = 58, head_h = 70;
+    float ys[SET_COUNT], y = 190;
+    for (int i = 0, s = 0; i < SET_COUNT; i++) {
+        if (s < nsec && i == sections[s].first) {
+            y += head_h;
+            s++;
+        }
+        ys[i] = y;
+        y += row_h;
+    }
+    static float scroll;
+    float want = ys[app.set_sel] - GFX_H * 0.45f;
+    if (want < 0) want = 0;
+    if (want > y - GFX_H + 120) want = fmaxf(0, y - GFX_H + 120);
+    scroll = ui_approach(scroll, want, 0.25f);
+
+    draw_text(panel_x + 50, 40 - scroll, 52, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "settings");
+    draw_text(panel_x + 52, 104 - scroll, 22, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "how ProjectCadence plays, sounds and looks");
+
+    for (int s = 0; s < nsec; s++)
+        draw_text(panel_x + 50, ys[sections[s].first] - head_h + 22 - scroll, 32, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, sections[s].name);
 
     for (int i = 0; i < SET_COUNT; i++) {
+        float ry = ys[i] - scroll;
+        if (ry < -row_h || ry > GFX_H)
+            continue;
         const char *name = "";
+        int kind = 0; /* 0 text, 1 toggle, 2 slider, 3 button */
+        float level = 0;
+        bool flag = false;
         val[0] = 0;
         switch (i) {
-        case SET_MUSIC: name = "music volume"; snprintf(val, sizeof(val), "%d%%", (int)lroundf(app.music_vol * 100)); break;
-        case SET_EFFECTS: name = "effects volume"; snprintf(val, sizeof(val), "%d%%", (int)lroundf(app.fx_vol * 100)); break;
+        case SET_MUSIC: name = "music volume"; kind = 2; level = app.music_vol; snprintf(val, sizeof(val), "%d%%", (int)lroundf(app.music_vol * 100)); break;
+        case SET_EFFECTS: name = "effects volume"; kind = 2; level = app.fx_vol; snprintf(val, sizeof(val), "%d%%", (int)lroundf(app.fx_vol * 100)); break;
         case SET_OFFSET: name = "audio offset"; snprintf(val, sizeof(val), "%+d ms", app.offset_ms); break;
         case SET_SENS: name = "left stick reach"; snprintf(val, sizeof(val), "%.2fx", app.sensitivity); break;
-        case SET_DIM: name = "background dim in play"; snprintf(val, sizeof(val), "%d%%", (int)lroundf(app.bg_dim * 100)); break;
+        case SET_DIM: name = "background dim in play"; kind = 2; level = app.bg_dim; snprintf(val, sizeof(val), "%d%%", (int)lroundf(app.bg_dim * 100)); break;
         case SET_CURSOR: name = "cursor size"; snprintf(val, sizeof(val), "%.1fx", app.cursor_scale); break;
-        case SET_STORYBOARD: name = "storyboards"; snprintf(val, sizeof(val), "%s", app.storyboards ? "on" : "off"); break;
-        case SET_VIDEO: name = "video backgrounds (mp4)"; snprintf(val, sizeof(val), "%s", app.videos ? "on" : "off"); break;
-        case SET_WIZARD: name = "find my offset"; snprintf(val, sizeof(val), "CROSS"); break;
-        case SET_HELP: name = "show the controls"; snprintf(val, sizeof(val), "CROSS"); break;
+        case SET_STORYBOARD: name = "storyboards"; kind = 1; flag = app.storyboards; break;
+        case SET_VIDEO: name = "video backgrounds (mp4)"; kind = 1; flag = app.videos; break;
+        case SET_WIZARD: name = "find my offset"; kind = 3; break;
+        case SET_HELP: name = "show the controls"; kind = 3; break;
         case SET_ACCOUNT:
             name = "ProjectCadence account";
             snprintf(val, sizeof(val), "%s", account_signed_in() ? account_name() : "sign in");
             break;
         case SET_BOARD:
-            name = "online leaderboard in song select";
+            name = "online leaderboard";
             snprintf(val, sizeof(val), "%s", !app.board_src ? "ProjectCadence"
-                     : online_enabled() ? "osu.ppy.sh (official)" : "osu.ppy.sh (needs osuapi.txt)");
+                     : online_enabled() ? "osu.ppy.sh" : "osu.ppy.sh (needs osuapi.txt)");
             break;
-        case SET_RESCAN: name = "rescan the Songs folder"; snprintf(val, sizeof(val), "CROSS"); break;
+        case SET_RESCAN: name = "rescan the Songs folder"; kind = 3; break;
         }
-        float y = 150 + i * 64;
         bool on = i == app.set_sel;
-        draw_rect(160, y, 1600, 56, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
-        uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : gfx_rgba(1, 1, 1, 1);
-        draw_text(190, y + 13, 28, tc, ALIGN_LEFT, name);
-        draw_text(1730, y + 13, 28, tc, ALIGN_RIGHT, val);
+        float x = panel_x + 40, w = panel_w - 80;
+        if (kind == 3) {
+            /* actions are full-width coloured buttons */
+            ui_round_rect(x, ry + 4, w, row_h - 10, 10, on ? ui_mix(ui_hex(UI_PURPLE, 1), gfx_rgba(1, 1, 1, 1), 0.2f) : ui_hex(UI_PURPLE, 0.85f));
+            draw_text(x + w / 2, ry + 15, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, name);
+            continue;
+        }
+        if (on)
+            ui_round_rect(x, ry, w, row_h - 4, 10, gfx_rgba(1, 1, 1, 0.1f));
+        draw_text(x + 20, ry + 14, 24, gfx_rgba(1, 1, 1, on ? 1 : 0.85f), ALIGN_LEFT, name);
+        float vx = x + w - 20;
+        if (kind == 1) {
+            uint32_t tc = flag ? ui_hex(UI_PURPLE, 1) : gfx_rgba(1, 1, 1, 0.12f);
+            ui_round_rect(vx - 64, ry + 13, 64, 28, 14, tc);
+            ui_disc(flag ? vx - 14 : vx - 50, ry + 27, 10, gfx_rgba(1, 1, 1, flag ? 1 : 0.6f));
+        } else if (kind == 2) {
+            float bw = 260;
+            ui_round_rect(vx - bw, ry + 24, bw, 8, 4, gfx_rgba(1, 1, 1, 0.15f));
+            ui_round_rect(vx - bw, ry + 24, bw * clampf(level, 0, 1), 8, 4, ui_hex(UI_PURPLE, 1));
+            ui_disc(vx - bw + bw * clampf(level, 0, 1), ry + 28, on ? 11 : 8, gfx_rgba(1, 1, 1, 1));
+            draw_text(vx - bw - 20, ry + 16, 20, gfx_rgba(1, 1, 1, 0.75f), ALIGN_RIGHT, val);
+        } else {
+            draw_text(vx, ry + 14, 24, on ? ui_hex(UI_YELLOW, 1) : gfx_rgba(1, 1, 1, 0.7f), ALIGN_RIGHT, val);
+        }
     }
 
+    /* hints for the selected row down the right */
     const char *hint = "";
     switch (app.set_sel) {
     case SET_OFFSET: hint = "positive if you hit late everywhere; L1/R1 in song select change it by 5 too"; break;
@@ -1615,9 +1730,12 @@ static void render_settings(void)
     case SET_RESCAN: hint = "after copying maps over FTP"; break;
     default: break;
     }
-    draw_text(160, 150 + SET_COUNT * 64 + 6, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, hint);
+    float hx = panel_x + panel_w + 50;
+    if (hint[0])
+        draw_text(hx, GFX_H - 160, 22, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, hint);
     if (app.status[0])
-        draw_text(160, 150 + SET_COUNT * 64 + 38, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, app.status);
+        draw_text(hx, GFX_H - 120, 24, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, app.status);
+    draw_text(GFX_W - 40, GFX_H - 60, 20, gfx_rgba(1, 1, 1, 0.55f), ALIGN_RIGHT, "LEFT / RIGHT change   CROSS pick   CIRCLE back");
 }
 
 /* ---- pause / fail / results ---- */
@@ -1635,14 +1753,18 @@ static void render_results(void)
     char buf[128];
 
     draw_background(0.7f);
-    draw_rect(260, 140, 1400, 800, gfx_rgba(0, 0, 0, 0.65f));
+    ui_shadow(260, 140, 1400, 800, 24);
+    ui_round_rect(260, 140, 1400, 800, 24, gfx_rgba(0.1f, 0.09f, 0.13f, 0.92f));
+    /* the left card holds the ring, like a score panel */
+    ui_round_rect(300, 240, 520, 660, 20, gfx_rgba(0.16f, 0.14f, 0.2f, 1));
+    ui_triangles(300, 240, 520, 660, gfx_rgba(0.2f, 0.17f, 0.26f, 0.5f), wall_ms(), 3, 14);
 
     char title[200];
     osu5_string(OSU5_STR_TITLE, title, sizeof(title));
     draw_text(GFX_W / 2, 170, 40, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, title);
 
     /* accuracy ring: hits split by judgement around the rank, accuracy as the inner arc */
-    float cx = 560, cy = 520, R = 230;
+    float cx = 560, cy = 540, R = 210;
     int total = h->great + h->ok + h->meh + h->miss;
     arc(cx, cy, R, 26, 0, 1, gfx_rgba(1, 1, 1, 0.08f));
     if (total > 0) {
@@ -2471,6 +2593,8 @@ static void render_help(void)
 /* ---- main menu ---- */
 
 enum { MENU_PLAY, MENU_MULTI, MENU_MAPS, MENU_SKINS, MENU_SETTINGS, MENU_COUNT };
+/* left to right on screen: settings sits on the logo's left */
+static const int menu_order[MENU_COUNT] = {MENU_SETTINGS, MENU_PLAY, MENU_MULTI, MENU_MAPS, MENU_SKINS};
 
 static void menu_enter(void)
 {
@@ -2487,7 +2611,11 @@ static void menu_enter(void)
 
 static void menu_frame(const pad_state *pad)
 {
-    app.menu_sel = (app.menu_sel + pad->nav_y + MENU_COUNT) % MENU_COUNT;
+    int pos = 0;
+    while (menu_order[pos] != app.menu_sel)
+        pos++;
+    pos = (pos + pad->nav_x + pad->nav_y + MENU_COUNT) % MENU_COUNT;
+    app.menu_sel = menu_order[pos];
 
     /* something playing behind the menu: whatever song select is on */
     if (app.songs.count > 0 && app.previewed != app.sel) {
@@ -2527,48 +2655,97 @@ static void menu_frame(const pad_state *pad)
 
 static void render_menu(void)
 {
-    draw_background(0.55f);
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.03f, 0.04f, 0.09f, 0.35f));
+    draw_background(0.45f);
+    double now = wall_ms();
+    float t = (float)(now / 1000.0);
 
-    /* the logo breathes, a little faster than resting */
-    float t = (float)(wall_ms() / 1000.0);
-    float pulse = 1 + 0.03f * sinf(t * 2 * 3.14159f * 1.2f);
-    float size = 420 * pulse, cx = 620, cy = GFX_H / 2;
-    arc(cx, cy, size * 0.62f, 6, 0, 1, gfx_rgba(1, 0.47f, 0.63f, 0.35f));
-    if (app.logo_tex) {
-        gfx_bind(app.logo_tex);
-        gfx_push(&(gfx_inst){cx, cy, size / 2, size / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX, {0, 0, 1, 1}});
-        gfx_bind(0);
+    /* toolbar along the top */
+    draw_rect(0, 0, GFX_W, 56, gfx_rgba(0.09f, 0.09f, 0.1f, 0.92f));
+    draw_text(28, 14, 26, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, "ProjectCadence");
+    {
+        char who[96];
+        const char *name = account_signed_in() ? account_name() : app.ps_name[0] ? app.ps_name : "guest";
+        int n = app.mp_on && app.mps.online > 0 ? app.mps.online
+              : mp_peek_online(app.mp_kind, app.mp_kind == MP_BANCHO ? app.mp_bancho : app.mp_rooms_url);
+        if (n >= 0)
+            snprintf(who, sizeof(who), "%s    %d online", name, n);
+        else
+            snprintf(who, sizeof(who), "%s", name);
+        draw_text(GFX_W - 28, 16, 22, gfx_rgba(1, 1, 1, 0.8f), ALIGN_RIGHT, who);
     }
-    draw_text(cx, cy + size / 2 + 50, 48, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "ProjectCadence");
+
+    /* the button strip through the middle, the logo sitting on its left end */
+    const float bar_h = 140, bar_y = GFX_H / 2 - bar_h / 2, lean = 28, base_w = 196;
+    float pulse = 1 + 0.025f * sinf(t * 2 * 3.14159f * 1.2f);
+    float lx = 640, ly = GFX_H / 2, lsize = 330 * pulse;
+    draw_rect(0, bar_y, GFX_W, bar_h, gfx_rgba(0.12f, 0.12f, 0.14f, 0.6f));
 
     static const char *items[MENU_COUNT] = {"play", "multiplayer", "get maps", "skins", "settings"};
-    for (int i = 0; i < MENU_COUNT; i++) {
+    static const uint32_t cols[MENU_COUNT] = {UI_PURPLE, UI_PURPLE_DARK, UI_LIME, UI_ORANGE, UI_GREY};
+    static float widths[MENU_COUNT];
+    float x = lx - base_w - lean;
+    for (int k = 0; k < MENU_COUNT; k++) {
+        int i = menu_order[k];
         bool on = i == app.menu_sel;
-        float x = on ? 1100 : 1140, y = 330 + i * 110;
-        draw_rect(x, y, GFX_W - x, 90, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0, 0, 0, 0.55f));
-        draw_rect(x, y, 10, 90, gfx_rgba(0.5f, 0.9f, 0.95f, on ? 1 : 0.5f));
-        draw_text(x + 50, y + 26, 40, on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, items[i]);
-        if (i == MENU_MULTI) {
-            /* who's around right now */
-            int n = app.mp_on && app.mps.online > 0 ? app.mps.online
-                  : mp_peek_online(app.mp_kind, app.mp_kind == MP_BANCHO ? app.mp_bancho : app.mp_rooms_url);
-            if (n >= 0) {
-                char cb[32];
-                snprintf(cb, sizeof(cb), "%d online", n);
-                draw_text(GFX_W - 60, y + 32, 26, on ? gfx_rgba(0.1f, 0.45f, 0.5f, 1) : gfx_rgba(0.5f, 0.9f, 0.95f, 1),
-                          ALIGN_RIGHT, cb);
-            }
+        if (k == 1)
+            x = lx + 110; /* the rest start past the logo */
+        if (widths[i] <= 0)
+            widths[i] = base_w;
+        widths[i] = ui_approach(widths[i], on ? base_w * 1.5f : base_w, 0.25f);
+        float w = widths[i];
+        uint32_t c = ui_hex(cols[i], 1);
+        if (on)
+            c = ui_mix(c, gfx_rgba(1, 1, 1, 1), 0.12f);
+        ui_shear_rect(x, bar_y, w + lean, bar_h, lean, c);
+        if (on)
+            ui_shear_rect(x, bar_y + bar_h - 6, w + lean, 6, 0, gfx_rgba(1, 1, 1, 0.85f));
+
+        /* icon bobs on the beat when selected */
+        float icx = x + (w + lean) / 2, icy = bar_y + 54 - (on ? 6 * fabsf(sinf(t * 3.14159f * 1.2f)) : 0);
+        uint32_t ic = gfx_rgba(1, 1, 1, 1);
+        switch (i) {
+        case MENU_PLAY: ui_play_icon(icx, icy, 40, ic); break;
+        case MENU_MULTI:
+            ui_disc(icx - 13, icy - 8, 9, ic);
+            ui_disc(icx + 13, icy - 8, 9, ic);
+            ui_round_rect(icx - 27, icy + 5, 26, 16, 7, ic);
+            ui_round_rect(icx + 1, icy + 5, 26, 16, 7, ic);
+            break;
+        case MENU_MAPS:
+            draw_rect(icx - 4, icy - 20, 8, 22, ic);
+            ui_arrow_down(icx, icy + 8, 26, ic);
+            draw_rect(icx - 18, icy + 18, 36, 5, ic);
+            break;
+        case MENU_SKINS:
+            arc(icx, icy, 16, 6, 0, 1, ic);
+            ui_disc(icx, icy, 6, ic);
+            break;
+        case MENU_SETTINGS: ui_gear_icon(icx, icy, 44, ic); break;
         }
+        draw_text(icx, bar_y + bar_h - 44, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, items[i]);
+        x += w;
+    }
+
+    /* the logo, breathing; a flash ring on every beat */
+    float ring = fmodf(t * 1.2f, 1.0f);
+    arc(lx, ly, lsize * 0.5f + ring * 60, 4, 0, 1, gfx_rgba(1, 1, 1, 0.35f * (1 - ring)));
+    ui_disc(lx, ly, lsize * 0.5f + 8, gfx_rgba(1, 1, 1, 0.9f));
+    if (app.logo_tex) {
+        gfx_bind(app.logo_tex);
+        gfx_push(&(gfx_inst){lx, ly, lsize / 2, lsize / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX, {0, 0, 1, 1}});
+        gfx_bind(0);
     }
 
     if (app.songs.count > 0) {
         const osu5_peek_info *in = &app.songs.items[app.sel].info;
         char buf[300];
-        snprintf(buf, sizeof(buf), "now playing: %.100s - %.100s", in->artist, in->title);
-        draw_text(GFX_W - 30, 20, 22, gfx_rgba(1, 1, 1, 0.75f), ALIGN_RIGHT, buf);
+        snprintf(buf, sizeof(buf), "%.100s - %.100s", in->artist, in->title);
+        float tw = draw_text_width(22, buf) + 60;
+        ui_round_rect(GFX_W - tw - 20, 72, tw, 44, 10, gfx_rgba(0, 0, 0, 0.45f));
+        ui_play_icon(GFX_W - tw + 4, 94, 16, gfx_rgba(1, 1, 1, 0.9f));
+        draw_text(GFX_W - 40, 82, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
     }
-    draw_text(GFX_W - 30, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, CADENCE_VERSION);
+    draw_text(GFX_W - 30, GFX_H - 50, 20, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, CADENCE_VERSION);
 
     /* update banner along the top */
     update_info up;
@@ -2602,6 +2779,7 @@ int main(void)
     if (!gfx_init())
         die("couldn't start Vulkan");
     draw_init();
+    ui_init();
     LOG("gfx up");
 
     if (!input_init(user))
