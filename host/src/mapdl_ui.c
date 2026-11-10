@@ -5,6 +5,7 @@
 #include "kbd.h"
 #include "mapdl.h"
 #include "sce.h"
+#include "ui.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -75,7 +76,7 @@ bool mapdl_ui_frame(const pad_state *pad)
     if (ui.res.state != 2 || ui.res.count == 0)
         return false;
 
-    ui.sel += pad->nav_y + pad->nav_x * 8;
+    ui.sel += pad->nav_x + pad->nav_y * 3; /* three cards a row */
     if (ui.sel < 0) ui.sel = 0;
     if (ui.sel >= ui.res.count) ui.sel = ui.res.count - 1;
 
@@ -96,11 +97,11 @@ void mapdl_ui_render(void)
     char buf[300];
     uint32_t white = gfx_rgba(1, 1, 1, 1), dim = gfx_rgba(1, 1, 1, 0.65f);
 
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.6f));
-    draw_text(120, 60, 52, white, ALIGN_LEFT, "get maps");
-
-    /* search box */
-    draw_rect(120, 140, 1100, 64, gfx_rgba(1, 1, 1, ui.typing ? 0.25f : 0.12f));
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.05f, 0.05f, 0.07f, 0.8f));
+    /* header band with the search field in it */
+    draw_rect(80, 30, GFX_W - 160, 190, gfx_rgba(0.12f, 0.12f, 0.16f, 0.95f));
+    draw_text(120, 50, 30, white, ALIGN_LEFT, "beatmap listing");
+    ui_round_rect(120, 140, 1100, 64, 12, gfx_rgba(0, 0, 0, ui.typing ? 0.55f : 0.4f));
     if (ui.query[0] || ui.typing)
         snprintf(buf, sizeof(buf), "%s%s", ui.query, ui.typing ? "_" : "");
     else
@@ -119,38 +120,53 @@ void mapdl_ui_render(void)
     if (st.msg[0])
         draw_text(GFX_W - 120, 110, 22, dim, ALIGN_RIGHT, st.msg);
 
-    const float top = 240, h = 80;
+    const float top = 240;
     if (ui.res.state == 1) {
         draw_text(120, top + 20, 30, dim, ALIGN_LEFT, "searching...");
     } else if (ui.res.state == 3 || (ui.res.state == 2 && ui.res.count == 0)) {
         draw_text(120, top + 20, 30, gfx_rgba(1, 0.6f, 0.5f, 1), ALIGN_LEFT, ui.res.msg);
     } else if (ui.res.state == 2) {
-        ui.scroll += (ui.sel - ui.scroll) * 0.25f;
-        float first = ui.scroll - 3;
+        /* cards three to a row, scrolled by row */
+        const float gx = 120, cw = 548, ch = 120, gap = 18;
+        int row = ui.sel / 3;
+        ui.scroll += (row - ui.scroll) * 0.25f;
+        float first = ui.scroll - 1;
         if (first < 0) first = 0;
         for (int i = 0; i < ui.res.count; i++) {
-            float y = top + (i - first) * h;
-            if (y < top - 1 || y > GFX_H - (ui.typing ? 640 : 230))
+            float x = gx + (i % 3) * (cw + gap), y = top + (i / 3 - first) * (ch + gap);
+            if (y < top - 1 || y > GFX_H - (ui.typing ? 640 : 250))
                 continue;
             const mapdl_set *s = &ui.res.sets[i];
             bool on = i == ui.sel && !ui.typing;
-            draw_rect(120, y, 1680, h - 8, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0, 0, 0, 0.5f));
-            uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : white;
-            uint32_t sc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 0.7f) : dim;
+            if (on)
+                ui_round_rect(x - 4, y - 4, cw + 8, ch + 8, 14, gfx_rgba(1, 1, 1, 0.9f));
+            ui_round_rect(x, y, cw, ch, 10, gfx_rgba(0.13f, 0.14f, 0.18f, 0.97f));
+            /* a coloured block where the cover sits, its colour from the star rating */
+            ui_round_rect(x, y, ch, ch, 10, gfx_rgba(0.22f, 0.24f, 0.32f, 1));
+            ui_triangles(x, y, ch, ch, gfx_rgba(0.3f, 0.32f, 0.42f, 0.6f), 0, (unsigned)s->id, 6);
 
-            snprintf(buf, sizeof(buf), "%.60s - %.80s", s->artist, s->title);
-            draw_text(140, y + 10, 26, tc, ALIGN_LEFT, buf);
-            snprintf(buf, sizeof(buf), "mapped by %.40s   %d %s, up to %.2f stars   %s", s->creator, s->diffs,
-                     s->diffs == 1 ? "difficulty" : "difficulties", s->stars, s->status);
-            draw_text(140, y + 44, 18, sc, ALIGN_LEFT, buf);
+            snprintf(buf, sizeof(buf), "%.40s", s->title);
+            draw_text(x + ch + 16, y + 10, 22, white, ALIGN_LEFT, buf);
+            snprintf(buf, sizeof(buf), "by %.40s", s->artist);
+            draw_text(x + ch + 16, y + 38, 16, dim, ALIGN_LEFT, buf);
+            snprintf(buf, sizeof(buf), "mapped by %.30s", s->creator);
+            draw_text(x + ch + 16, y + 60, 14, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, buf);
+
+            /* status pill, then the difficulty count and top rating */
+            float pw = draw_text_width(13, s->status) + 18;
+            ui_round_rect(x + ch + 16, y + 86, pw, 22, 11, ui_hex(UI_LIME, 1));
+            draw_text(x + ch + 16 + pw / 2, y + 89, 13, gfx_rgba(0.08f, 0.08f, 0.08f, 1), ALIGN_CENTRE, s->status);
+            snprintf(buf, sizeof(buf), "%d diff%s  up to %.2f*", s->diffs, s->diffs == 1 ? "" : "s", s->stars);
+            draw_text(x + ch + 28 + pw, y + 89, 14, dim, ALIGN_LEFT, buf);
             if (s->video) {
-                draw_rect(1500, y + 22, 120, 32, gfx_rgba(1, 0.47f, 0.63f, 0.95f));
-                draw_text(1560, y + 28, 20, gfx_rgba(0.1f, 0.05f, 0.08f, 1), ALIGN_CENTRE, "VIDEO");
+                ui_round_rect(x + cw - 76, y + 10, 64, 22, 11, ui_hex(UI_PINK, 1));
+                draw_text(x + cw - 44, y + 13, 13, white, ALIGN_CENTRE, "VIDEO");
             }
 
             int state = mapdl_state(s->id);
-            const char *label = state == 2 ? "installed" : state == 1 ? (st.current == s->id ? "downloading" : "queued") : "get";
-            draw_text(1780, y + 24, 24, tc, ALIGN_RIGHT, label);
+            const char *label = state == 2 ? "installed" : state == 1 ? (st.current == s->id ? "downloading" : "queued") : "";
+            if (label[0])
+                draw_text(x + cw - 14, y + 88, 15, ui_hex(state == 2 ? UI_LIME : UI_BLUE, 1), ALIGN_RIGHT, label);
         }
         snprintf(buf, sizeof(buf), "page %d", ui.page + 1);
         draw_text(GFX_W - 120, 170, 22, dim, ALIGN_RIGHT, buf);

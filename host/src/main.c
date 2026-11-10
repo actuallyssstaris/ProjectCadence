@@ -1487,16 +1487,40 @@ scores_done:;
 
 /* ---- mod select ---- */
 
+/* mod select is laid out in columns by kind; these are indices into mod_list */
+static const struct {
+    const char *title;
+    uint32_t colour;
+    int n, mods[8];
+} mod_cols[] = {
+    {"difficulty reduction", 0xB2E05C, 4, {0, 1, 2, 3}},
+    {"difficulty increase", 0xFF6666, 7, {4, 5, 6, 7, 8, 9, 10}},
+    {"automation", 0x66CCFF, 4, {12, 13, 14, 15}},
+    {"conversion", 0x8866EE, 1, {11}},
+};
+#define MOD_NCOLS (int)(sizeof(mod_cols) / sizeof(mod_cols[0]))
+
+static void mod_where(int sel, int *col, int *row)
+{
+    for (int c = 0; c < MOD_NCOLS; c++)
+        for (int r = 0; r < mod_cols[c].n; r++)
+            if (mod_cols[c].mods[r] == sel) {
+                *col = c;
+                *row = r;
+                return;
+            }
+    *col = *row = 0;
+}
+
 static void mods_frame(const pad_state *pad)
 {
-    /* a row each: easier, harder, harder still, help */
-    int rows = (MOD_COUNT + MOD_COLS - 1) / MOD_COLS;
-    int r = app.mod_sel / MOD_COLS, c = app.mod_sel % MOD_COLS;
-    r = (r + pad->nav_y + rows) % rows;
-    c = (c + pad->nav_x + MOD_COLS) % MOD_COLS;
-    app.mod_sel = r * MOD_COLS + c;
-    if (app.mod_sel >= MOD_COUNT)
-        app.mod_sel = MOD_COUNT - 1;
+    int c, r;
+    mod_where(app.mod_sel, &c, &r);
+    c = (c + pad->nav_x + MOD_NCOLS) % MOD_NCOLS;
+    if (r >= mod_cols[c].n)
+        r = mod_cols[c].n - 1;
+    r = (r + pad->nav_y + mod_cols[c].n) % mod_cols[c].n;
+    app.mod_sel = mod_cols[c].mods[r];
 
     if (pad->pressed & PAD_CROSS)
         toggle_mod(mod_list[app.mod_sel].bit);
@@ -1517,29 +1541,75 @@ static void mods_frame(const pad_state *pad)
 static void render_mods(void)
 {
     char buf[128];
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.7f));
-    draw_text(GFX_W / 2, 110, 52, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "mods");
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.04f, 0.05f, 0.04f, 0.8f));
 
-    /* one colour per row, so the kinds read at a glance */
-    static const float row_col[4][3] = {{0.5f, 0.9f, 0.5f}, {1, 0.45f, 0.45f}, {1, 0.75f, 0.3f}, {0.5f, 0.75f, 1}};
-    const float w = 400, h = 150, x0 = (GFX_W - MOD_COLS * w) / 2, y0 = 190;
-    for (int i = 0; i < MOD_COUNT; i++) {
-        float x = x0 + (i % MOD_COLS) * w, y = y0 + (i / MOD_COLS) * h;
-        const float *rc = row_col[(i / MOD_COLS) % 4];
-        bool on = app.mods & mod_list[i].bit, cur = i == app.mod_sel;
-        draw_rect(x + 10, y + 10, w - 20, h - 20,
-                  on ? gfx_rgba(rc[0], rc[1], rc[2], cur ? 1 : 0.85f) : gfx_rgba(1, 1, 1, cur ? 0.3f : 0.08f));
-        if (cur)
-            draw_rect(x + 10, y + h - 16, w - 20, 6, gfx_rgba(1, 1, 1, 0.9f));
-        uint32_t tc = on ? gfx_rgba(0.08f, 0.06f, 0.06f, 1) : gfx_rgba(1, 1, 1, 1);
-        draw_text(x + 30, y + 30, 38, on ? tc : gfx_rgba(rc[0], rc[1], rc[2], 1), ALIGN_LEFT, mod_list[i].tag);
-        draw_text(x + 110, y + 38, 26, tc, ALIGN_LEFT, mod_list[i].name);
-        draw_text(x + 30, y + 92, 16, tc, ALIGN_LEFT, mod_list[i].what);
+    /* banner across the top */
+    ui_round_rect(80, 60, GFX_W - 160, 90, 12, gfx_rgba(0.14f, 0.2f, 0.12f, 0.95f));
+    draw_text(130, 76, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "mod select");
+    draw_text(130, 112, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
+              "mods change how a map plays; some change the score you get, others are just for fun");
+
+    /* one leaning column per kind, a coloured header on each */
+    const float cw = 420, gap = 22, lean = 24, top = 190, hh = 52, rh = 84;
+    float x0 = (GFX_W - MOD_NCOLS * cw - (MOD_NCOLS - 1) * gap) / 2;
+    for (int c = 0; c < MOD_NCOLS; c++) {
+        float x = x0 + c * (cw + gap);
+        uint32_t col = mod_cols[c].colour;
+        ui_shear_rect(x, top, cw, hh, lean / 2, ui_hex(col, 1));
+        draw_text(x + 30, top + 13, 22, gfx_rgba(0.08f, 0.08f, 0.08f, 1), ALIGN_LEFT, mod_cols[c].title);
+        ui_round_rect(x, top + hh, cw, 700 - hh, 12, gfx_rgba(0.14f, 0.17f, 0.13f, 0.95f));
+
+        for (int r = 0; r < mod_cols[c].n; r++) {
+            int i = mod_cols[c].mods[r];
+            float y = top + hh + 14 + r * rh;
+            bool on = app.mods & mod_list[i].bit, cur = i == app.mod_sel;
+            float ix = x + 16;
+            uint32_t bg = on ? ui_hex(col, 1) : gfx_rgba(0.2f, 0.24f, 0.19f, 1);
+            if (cur)
+                ui_round_rect(ix - 4, y - 4, cw - 24, rh - 6, 12, gfx_rgba(1, 1, 1, 0.9f));
+            ui_round_rect(ix, y, cw - 32, rh - 14, 10, bg);
+            /* the tag sits in a darker square, the way the icons do */
+            ui_round_rect(ix + 8, y + 8, 56, rh - 30, 8, on ? gfx_rgba(0, 0, 0, 0.25f) : gfx_rgba(0, 0, 0, 0.3f));
+            uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.08f, 1) : gfx_rgba(1, 1, 1, 1);
+            draw_text(ix + 36, y + 22, 20, on ? tc : ui_hex(col, 1), ALIGN_CENTRE, mod_list[i].tag);
+            draw_text(ix + 80, y + 10, 22, tc, ALIGN_LEFT, mod_list[i].name);
+            draw_text(ix + 80, y + 40, 15, on ? gfx_rgba(0.1f, 0.1f, 0.1f, 0.85f) : gfx_rgba(1, 1, 1, 0.65f), ALIGN_LEFT,
+                      mod_list[i].what);
+        }
     }
 
-    int rows = (MOD_COUNT + MOD_COLS - 1) / MOD_COLS;
-    snprintf(buf, sizeof(buf), "score x%.2f", mod_multiplier(app.mods));
-    draw_text(GFX_W / 2, y0 + rows * h + 30, 34, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_CENTRE, buf);
+    /* footer: back and clear on the left, the map's numbers with these mods on the right */
+    const float fy = GFX_H - 96;
+    ui_shear_rect(20, fy, 300, 76, 18, ui_hex(UI_PINK, 1));
+    ui_arrow_left(80, fy + 38, 22, gfx_rgba(1, 1, 1, 1));
+    draw_text(190, fy + 18, 26, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
+    draw_text(190, fy + 50, 14, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, "CIRCLE");
+    ui_shear_rect(340, fy, 300, 76, 18, gfx_rgba(0.18f, 0.2f, 0.18f, 0.95f));
+    draw_text(490, fy + 18, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, "deselect all");
+    draw_text(490, fy + 50, 14, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "TRIANGLE");
+
+    float bx = GFX_W - 760;
+    ui_shear_rect(bx, fy, 520, 76, 18, gfx_rgba(0.12f, 0.14f, 0.12f, 0.95f));
+    if (app.songs.count > 0) {
+        const song_entry *e = &app.songs.items[app.sel];
+        float st = stars_get(e->file, stars_mods(app.mods));
+        if (st < 0)
+            st = stars_get(e->file, 0);
+        if (st >= 0)
+            star_pill(bx + 30, fy + 20, 36, st);
+        const osu5_peek_info *in = &e->info;
+        static const char *lab[4] = {"CS", "AR", "OD", "HP"};
+        float v[4] = {in->cs, in->ar, in->od, in->hp};
+        for (int k = 0; k < 4; k++) {
+            draw_text(bx + 230 + k * 70, fy + 12, 18, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, lab[k]);
+            snprintf(buf, sizeof(buf), "%.1f", v[k]);
+            draw_text(bx + 230 + k * 70, fy + 40, 18, gfx_rgba(1, 1, 1, 0.75f), ALIGN_CENTRE, buf);
+        }
+    }
+    ui_shear_rect(GFX_W - 230, fy, 210, 76, 18, gfx_rgba(0.12f, 0.14f, 0.12f, 0.95f));
+    snprintf(buf, sizeof(buf), "%.2fx", mod_multiplier(app.mods));
+    draw_text(GFX_W - 125, fy + 14, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "score");
+    draw_text(GFX_W - 125, fy + 38, 26, ui_hex(UI_YELLOW, 1), ALIGN_CENTRE, buf);
 }
 
 /* ---- settings ---- */
