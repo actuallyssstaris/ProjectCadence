@@ -49,6 +49,8 @@ void ui_header(const char *section, const char *title, uint32_t accent);
 void ui_footer(const char *hints, const char *back);
 /* a rounded label; returns its width */
 float ui_pill(float x, float y, float size, uint32_t bg, uint32_t fg, const char *s);
+/* "a · b", the second part in accent; returns the width */
+float ui_crumb(float x, float y, float size, const char *a, const char *b, uint32_t accent);
 
 float ui_approach(float cur, float target, float rate);
 

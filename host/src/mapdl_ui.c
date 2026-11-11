@@ -2,6 +2,7 @@
 #include "mapdl_ui.h"
 #include "draw.h"
 #include "gfx.h"
+#include "covers.h"
 #include "kbd.h"
 #include "mapdl.h"
 #include "sce.h"
@@ -108,6 +109,7 @@ static uint32_t status_colour(const char *s)
 
 void mapdl_ui_render(void)
 {
+    covers_frame();
     char buf[300];
     uint32_t white = gfx_rgba(1, 1, 1, 1), dim = gfx_rgba(1, 1, 1, 0.65f);
 
@@ -183,10 +185,21 @@ void mapdl_ui_render(void)
             if (on)
                 ui_round_rect(x - 3, y - 3, cw + 6, ch + 6, 13, gfx_rgba(1, 1, 1, 0.9f));
             ui_round_rect(x, y, cw, ch, 10, ui_hex(0x38424E, 1));
-            /* the cover goes here once we fetch them; until then a tint from the set id */
-            static const uint32_t tints[] = {UI_PURPLE, UI_PURPLE_DARK, UI_BLUE, UI_PINK, UI_ORANGE, UI_GREEN};
-            ui_round_rect(x, y, 102, ch, 10, ui_mix(ui_hex(0x2A3238, 1), ui_hex(tints[s->id % 6], 1), 0.3f));
-            ui_play_icon(x + 51, y + ch / 2, 30, gfx_rgba(1, 1, 1, on ? 0.9f : 0.3f));
+            int cover = covers_get(s->id);
+            if (cover) {
+                /* the cover again behind the text, faint, the way lazer's cards wash it in */
+                gfx_bind(cover);
+                gfx_push(&(gfx_inst){x + 102 + (cw - 112) / 2, y + ch / 2, (cw - 112) / 2, ch / 2 - 1, 0, gfx_next_z(),
+                                     gfx_rgba(1, 1, 1, 0.14f), GK_TEX, {0, 0.3f, 1, 0.7f}});
+                /* thumbnail on the left, cropped to the slot's shape */
+                gfx_push(&(gfx_inst){x + 51, y + ch / 2, 51, ch / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX,
+                                     {0.045f, 0, 0.955f, 1}});
+                gfx_bind(0);
+            } else {
+                ui_round_rect(x, y, 102, ch, 10, ui_hex(0x2A3238, 1));
+            }
+            if (on)
+                ui_play_icon(x + 51, y + ch / 2, 30, gfx_rgba(1, 1, 1, 0.9f));
 
             float tx = x + 116, tw = cw - 130 - (s->video ? 70 : 0);
             snprintf(buf, sizeof(buf), "%s", s->title);

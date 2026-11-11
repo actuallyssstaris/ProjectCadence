@@ -225,11 +225,7 @@ void ui_header(const char *section, const char *title, uint32_t accent)
 {
     draw_rect(0, 0, GFX_W, 96, gfx_rgba(0.15f, 0.15f, 0.19f, 1));
     ui_round_rect(40, 30, 8, 36, 4, accent);
-    float w = draw_text(66, 28, 32, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, section);
-    if (title && title[0]) {
-        float w2 = draw_text(66 + w, 28, 32, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "  ·  ");
-        draw_text(66 + w + w2, 28, 32, accent, ALIGN_LEFT, title);
-    }
+    ui_crumb(66, 28, 32, section, title, accent);
 }
 
 void ui_footer(const char *hints, const char *back)
@@ -254,4 +250,14 @@ float ui_pill(float x, float y, float size, uint32_t bg, uint32_t fg, const char
     ui_round_rect(x, y, w, h, h / 2, bg);
     draw_text(x + w / 2, y + size * 0.25f, size, fg, ALIGN_CENTRE, s);
     return w;
+}
+
+float ui_crumb(float x, float y, float size, const char *a, const char *b, uint32_t accent)
+{
+    /* the font has no middle dot, so the separator is drawn */
+    float w = draw_text(x, y, size, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, a);
+    if (!b || !b[0])
+        return w;
+    ui_disc(x + w + size * 0.55f, y + size * 0.62f, size * 0.09f, gfx_rgba(1, 1, 1, 0.7f));
+    return w + size * 1.1f + draw_text(x + w + size * 1.1f, y, size, accent, ALIGN_LEFT, b);
 }

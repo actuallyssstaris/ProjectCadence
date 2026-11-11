@@ -2404,199 +2404,295 @@ static void mp_board(float x, float y, float w, bool compact)
     }
 }
 
+/* a settings-style row: label left, value right, a lighter box and a purple
+ * bar on the left when it's the one selected (lazer's settings rows) */
+static void form_row(float x, float y, float w, const char *label, const char *value, bool on)
+{
+    ui_round_rect(x, y, w, 64, 8, on ? ui_hex(0x46444F, 1) : ui_hex(0x2C2A35, 0.96f));
+    if (on)
+        ui_round_rect(x, y + 12, 5, 40, 2.5f, ui_hex(0x7F5CEA, 1));
+    draw_text(x + 26, y + 19, 24, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, label);
+    if (value && value[0]) {
+        char v[200];
+        snprintf(v, sizeof(v), "%s", value);
+        ui_fit(v, 22, w * 0.6f);
+        draw_text(x + w - 26, y + 20, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_RIGHT, v);
+    }
+}
+
+/* lazer's full-width action button: purple, or another colour, text centred */
+static void form_button(float x, float y, float w, const char *label, uint32_t colour, bool on)
+{
+    uint32_t c = ui_hex(colour, 1);
+    if (on) {
+        c = ui_mix(c, gfx_rgba(1, 1, 1, 1), 0.18f);
+        ui_round_rect(x - 3, y - 3, w + 6, 64, 10, gfx_rgba(1, 1, 1, 0.3f));
+    }
+    ui_round_rect(x, y, w, 58, 8, c);
+    draw_text(x + w / 2, y + 16, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, label);
+}
+
 static void render_mp(void)
 {
     draw_background(0.75f);
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.03f, 0.04f, 0.09f, 0.55f));
+    draw_rect(0, 0, GFX_W, GFX_H, ui_plum(0.07f, 0.72f));
     const mp_state *s = &app.mps;
     bool bancho = app.mp_kind == MP_BANCHO;
     char buf[300];
-    draw_text(120, 70, 52, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "multiplayer");
 
     if (!app.mp_on || s->conn == MP_FAILED || s->conn == MP_OFF) {
-        const char *labels[5] = {"server", bancho ? "bancho address" : "room server", "name", "password", "connect"};
-        char vals[5][170];
+        /* connecting: a settings panel in the middle */
+        ui_crumb(40, 40, 30, "multiplayer", "connect", ui_hex(UI_YELLOW, 1));
+        const float px = 460, pw = 1000;
+        ui_round_rect(px, 130, pw, 640, 12, ui_hex(0x302E39, 0.97f));
+        draw_text(px + 40, 160, 34, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "server");
+        draw_text(px + 40, 204, 20, gfx_rgba(1, 1, 1, 0.55f), ALIGN_LEFT,
+                  bancho ? "your account on that server; the password stays on this console" : "rooms run by ProjectCadence, no account needed");
+        const char *labels[4] = {"server", bancho ? "bancho address" : "room server", "name", "password"};
+        char vals[4][170];
         snprintf(vals[0], sizeof(vals[0]), "%s", bancho ? "bancho server (bancho.py)" : "ProjectCadence rooms");
         snprintf(vals[1], sizeof(vals[1]), "%s", bancho ? (app.mp_bancho[0] ? app.mp_bancho : "e.g. example.com") : app.mp_rooms_url);
         snprintf(vals[2], sizeof(vals[2]), "%s", app.mp_user);
         size_t pl = strlen(app.mp_pass);
         memset(vals[3], '*', pl < 20 ? pl : 20);
         vals[3][pl < 20 ? pl : 20] = 0;
-        vals[4][0] = 0;
-        for (int i = 0; i < 5; i++) {
+        float y = 260;
+        for (int i = 0; i < 4; i++) {
             if (i == 3 && !bancho)
                 continue;
-            float y = 200 + i * 90;
-            bool on = i == app.mp_cfg;
-            draw_rect(120, y, 1680, 76, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
-            uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 1);
-            draw_text(150, y + 22, 30, tc, ALIGN_LEFT, labels[i]);
-            draw_text(1770, y + 22, 30, tc, ALIGN_RIGHT, vals[i]);
+            form_row(px + 30, y, pw - 60, labels[i], vals[i], i == app.mp_cfg);
+            y += 74;
         }
+        form_button(px + 30, y + 16, pw - 60, "connect", 0x6644CC, app.mp_cfg == 4);
         const char *err = s->error[0] ? s->error : app.status;
         if (err[0])
-            draw_text(120, 680, 26, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, err);
-        if (bancho)
-            draw_text(120, 730, 22, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT,
-                      "your account on that server; the password is kept on this console only");
+            draw_text(px + 40, y + 100, 22, ui_hex(0xFF6666, 1), ALIGN_LEFT, err);
+        ui_footer("CROSS change", "CIRCLE");
         if (app.mp_typing)
             kbd_render(&app.mp_kbd);
         return;
     }
 
     if (s->conn == MP_CONNECTING) {
-        draw_text(GFX_W / 2, 480, 40, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, "connecting...");
+        ui_crumb(40, 40, 30, "multiplayer", "connecting", ui_hex(UI_YELLOW, 1));
+        draw_text(GFX_W / 2, 500, 32, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "connecting...");
         return;
     }
 
     if (s->online > 0)
-        snprintf(buf, sizeof(buf), "%s as %s   -   %d online", bancho ? app.mp_bancho : "ProjectCadence rooms", app.mp_user,
-                 s->online);
+        snprintf(buf, sizeof(buf), "%s as %s  -  %d online", bancho ? app.mp_bancho : "ProjectCadence rooms", app.mp_user, s->online);
     else
         snprintf(buf, sizeof(buf), "%s as %s", bancho ? app.mp_bancho : "ProjectCadence rooms", app.mp_user);
-    draw_text(GFX_W - 120, 90, 24, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_RIGHT, buf);
+    draw_text(GFX_W - 40, 46, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, buf);
 
     if (!s->in_room) {
-        /* the lounge: heading and a create button, then one wide card per room */
-        draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.06f, 0.05f, 0.08f, 0.55f));
-        float hx = draw_text(40, 60, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "multiplayer  ·  ");
-        draw_text(40 + hx, 60, 30, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, "lounge");
-
-        const float cx = 225, cw = 1470, ch = 100, gap = 12;
+        /* the lounge: one wide card per room, create buttons top left */
+        ui_crumb(40, 40, 30, "multiplayer", "lounge", ui_hex(UI_YELLOW, 1));
+        const float cx = 225, cw = 1470, ch = 106, gap = 10;
         for (int b = 0; b < 2; b++) {
             bool on = app.mp_sel == b;
-            float bx = 40 + b * 300;
-            ui_round_rect(bx, 110, 280, 76, 10, on ? ui_mix(ui_hex(UI_PURPLE, 1), gfx_rgba(1, 1, 1, 1), 0.2f) : ui_hex(UI_PURPLE, 0.9f));
+            float bx = 40 + b * 290;
             if (on)
-                ui_round_rect(bx, 180, 280, 6, 3, gfx_rgba(1, 1, 1, 0.9f));
-            draw_text(bx + 140, 134, 22, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, b == 0 ? "create room" : "create private room");
+                ui_round_rect(bx - 3, 97, 276, 76, 10, gfx_rgba(1, 1, 1, 0.3f));
+            ui_round_rect(bx, 100, 270, 70, 8, on ? ui_mix(ui_hex(0x5E3FBA, 1), gfx_rgba(1, 1, 1, 1), 0.2f) : ui_hex(0x5E3FBA, 1));
+            draw_text(bx + 135, 122, 21, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, b == 0 ? "create room" : "create private room");
         }
 
-        /* keep the selected card on screen */
         static float scroll;
         float want = app.mp_sel >= 2 ? (app.mp_sel - 2) * (ch + gap) - 3 * (ch + gap) : 0;
         scroll = ui_approach(scroll, want < 0 ? 0 : want, 0.25f);
         for (int i = 0; i < s->nrooms; i++) {
             const mp_room_brief *r = &s->rooms[i];
-            float y = 220 + i * (ch + gap) - scroll;
-            if (y < 200 || y > GFX_H - 120)
+            float y = 200 + i * (ch + gap) - scroll;
+            if (y < 190 || y + ch > GFX_H - 90)
                 continue;
             bool on = app.mp_sel == i + 2;
-            uint32_t state = r->playing ? UI_PURPLE : r->locked ? UI_PINK : UI_GREEN;
+            uint32_t state = r->playing ? 0x8866EE : r->locked ? UI_PINK : 0xB3FF66;
             if (on)
-                ui_round_rect(cx - 4, y - 4, cw + 8, ch + 8, 14, gfx_rgba(1, 1, 1, 0.85f));
-            ui_round_rect(cx, y, cw, ch, 10, gfx_rgba(0.12f, 0.11f, 0.15f, 0.96f));
-            ui_triangles(cx + cw * 0.45f, y, cw * 0.55f, ch, gfx_rgba(0.18f, 0.16f, 0.22f, 0.5f), wall_ms(), (unsigned)i + 11, 8);
-            ui_round_rect(cx, y, 12, ch, 6, ui_hex(state, 1));
+                ui_round_rect(cx - 3, y - 3, cw + 6, ch + 6, 13, gfx_rgba(1, 1, 1, 0.85f));
+            ui_round_rect(cx, y, cw, ch, 10, ui_plum(0.16f, 0.97f));
+            ui_triangles(cx + cw * 0.5f, y, cw * 0.5f, ch, ui_plum(0.22f, 0.6f), wall_ms(), (unsigned)i + 11, 8);
+            ui_round_rect(cx, y, 10, ch, 5, ui_hex(state, 1));
 
-            /* status and kind pills */
-            const char *st = r->playing ? "in progress" : r->locked ? "open (private)" : "open";
-            float pw = draw_text_width(15, st) + 24;
-            ui_round_rect(cx + 30, y + 10, pw, 24, 12, ui_hex(state, 1));
-            draw_text(cx + 30 + pw / 2, y + 13, 15, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, st);
-            draw_text(cx + 30, y + 38, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, r->name);
+            const char *st = r->playing ? "playing" : r->locked ? "open (private)" : "open";
+            ui_pill(cx + 26, y + 10, 13, ui_hex(state, 1), ui_hex(0x222222, 1), st);
+            snprintf(buf, sizeof(buf), "%s", r->name);
+            ui_fit(buf, 24, cw * 0.5f);
+            draw_text(cx + 26, y + 36, 24, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
             if (r->map[0]) {
-                snprintf(buf, sizeof(buf), "currently playing  %.90s", r->map);
-                draw_text(cx + 30, y + 70, 17, ui_hex(UI_LIME, 1), ALIGN_LEFT, buf);
+                float w = draw_text(cx + 26, y + 70, 15, ui_hex(0xB3FF66, 1), ALIGN_LEFT, "currently playing ");
+                snprintf(buf, sizeof(buf), "%s", r->map);
+                ui_fit(buf, 15, cw * 0.6f - w);
+                draw_text(cx + 26 + w, y + 70, 15, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
             }
-            /* players, on the right */
+            /* players, on the right in a dark pill */
             snprintf(buf, sizeof(buf), "%d %s", r->players, r->players == 1 ? "player" : "players");
-            float ww = draw_text_width(18, buf) + 40;
-            ui_round_rect(cx + cw - ww - 24, y + ch / 2 - 20, ww, 40, 20, gfx_rgba(0, 0, 0, 0.5f));
-            draw_text(cx + cw - 24 - ww / 2, y + ch / 2 - 11, 18, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, buf);
+            float ww = draw_text_width(17, buf) + 44;
+            ui_round_rect(cx + cw - ww - 24, y + ch / 2 - 21, ww, 42, 21, gfx_rgba(0, 0, 0, 0.45f));
+            draw_text(cx + cw - 24 - ww / 2, y + ch / 2 - 11, 17, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, buf);
         }
         if (s->nrooms == 0)
-            draw_text(GFX_W / 2, 400, 28, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "no rooms open yet: make one");
+            draw_text(GFX_W / 2, 420, 26, gfx_rgba(1, 1, 1, 0.5f), ALIGN_CENTRE, "no rooms open yet: make one");
         if (s->error[0])
-            draw_text(cx, GFX_H - 150, 24, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, s->error);
-
-        /* back, bottom left */
-        ui_shear_rect(-30, GFX_H - 70, 230, 70, 18, ui_hex(UI_PINK, 1));
-        ui_arrow_left(40, GFX_H - 35, 22, gfx_rgba(1, 1, 1, 1));
-        draw_text(120, GFX_H - 50, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
+            draw_text(cx, GFX_H - 130, 22, ui_hex(0xFF6666, 1), ALIGN_LEFT, s->error);
+        ui_footer("CROSS join / create", "CIRCLE");
         return;
     }
 
-    /* the room */
-    draw_text(120, 150, 36, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, s->room_name);
-    bool have = mp_find_map(s) >= 0;
-    if (s->map_title[0])
-        snprintf(buf, sizeof(buf), "%.140s%s", s->map_title, have ? "" : "   (downloading...)");
-    else
-        snprintf(buf, sizeof(buf), "%s", s->i_host ? "pick a map with SQUARE" : "the host is picking a map");
-    draw_rect(120, 210, 1100, 70, gfx_rgba(0, 0, 0, 0.5f));
-    draw_text(140, 230, 28, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, buf);
-    char tags[64];
-    mod_tags(s->mods, tags, sizeof(tags));
-    if (tags[0])
-        draw_text(1200, 232, 26, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, tags);
+    /* the room, laid out like lazer's: participants, beatmap and chat in three
+     * columns, and the big ready button in the footer */
+    ui_crumb(40, 40, 30, "multiplayer", s->room_name, ui_hex(UI_YELLOW, 1));
+    const float top = 110, colh = GFX_H - 96 - top - 20;
+    int ready = 0;
+    for (int i = 0; i < s->nmembers; i++)
+        ready += s->members[i].ready;
 
+    /* participants */
+    const float lx = 40, lw = 560;
+    snprintf(buf, sizeof(buf), "participants (%d)", s->nmembers);
+    draw_text(lx, top, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, buf);
+    ui_round_rect(lx, top + 40, lw, colh - 40, 10, ui_plum(0.13f, 0.9f));
     if (s->state == MP_RESULTS) {
-        draw_text(120, 310, 30, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "last round");
-        mp_board(120, 350, 1100, false);
+        mp_board(lx + 10, top + 50, lw - 20, true);
     } else {
         for (int i = 0; i < s->nmembers; i++) {
             const mp_member *m = &s->members[i];
-            float y = 310 + i * 60;
-            draw_rect(120, y, 1100, 52, m->me ? gfx_rgba(0.5f, 0.9f, 0.95f, 0.2f) : gfx_rgba(0, 0, 0, 0.45f));
-            if (s->teams) /* the team's colour down the left */
-                draw_rect(120, y, 10, 52, m->team ? gfx_rgba(0.35f, 0.6f, 1, 1) : gfx_rgba(1, 0.35f, 0.35f, 1));
-            char mt[48] = "";
-            if (s->freemod && m->mods)
+            float y = top + 52 + i * 72;
+            bool mods = s->freemod && m->mods;
+            ui_round_rect(lx + 12, y, lw - 24, 64, 8, m->me ? ui_plum(0.26f, 1) : ui_plum(0.2f, 1));
+            if (s->teams)
+                ui_round_rect(lx + 12, y, 8, 64, 4, m->team ? ui_hex(0x4D8DFF, 1) : ui_hex(0xFF5A5A, 1));
+            /* an initial in a disc stands in for the avatar */
+            ui_disc(lx + 58, y + 32, 22, ui_plum(0.35f, 1));
+            char ini[2] = {m->name[0] >= 'a' && m->name[0] <= 'z' ? (char)(m->name[0] - 32) : m->name[0], 0};
+            draw_text(lx + 58, y + 19, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, ini);
+            float nw = draw_text(lx + 94, y + (mods ? 9 : 19), 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, m->name);
+            if (m->host)
+                ui_pill(lx + 104 + nw, y + (mods ? 10 : 20), 12, ui_hex(UI_YELLOW, 1), ui_hex(0x222222, 1), "host");
+            if (mods) {
+                char mt[48] = "";
                 mod_tags(m->mods, mt, sizeof(mt));
-            snprintf(buf, sizeof(buf), "%s%s%s%s", m->name, m->host ? "   (host)" : "", mt[0] ? "   " : "", mt);
-            draw_text(140, y + 12, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
-            const char *tag = s->state == MP_PLAYING ? (m->done ? "done" : "playing") : !m->has_map ? "no map yet" : m->ready ? "ready" : "";
-            draw_text(1200, y + 14, 24, m->ready ? gfx_rgba(0.5f, 1, 0.6f, 1) : gfx_rgba(1, 0.75f, 0.4f, 1), ALIGN_RIGHT, tag);
+                draw_text(lx + 94, y + 38, 15, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, mt);
+            }
+            const char *tag;
+            uint32_t tc;
+            if (s->state == MP_PLAYING) {
+                tag = m->done ? "results" : "playing";
+                tc = m->done ? 0x66CCFF : 0x8866EE;
+            } else if (!m->has_map) {
+                tag = "no map";
+                tc = 0xEEAA00;
+            } else if (m->ready) {
+                tag = "ready";
+                tc = 0x88B300;
+            } else {
+                tag = "idle";
+                tc = 0x555555;
+            }
+            float tw = draw_text_width(14, tag) + 17;
+            ui_pill(lx + lw - 30 - tw, y + 20, 14, ui_hex(tc, 1), gfx_rgba(1, 1, 1, 1), tag);
         }
     }
 
-    /* the room's rules, and what this player can do here */
-    snprintf(buf, sizeof(buf), "%s   %s", s->teams ? "teams: red vs blue" : "everyone for themselves",
-             s->freemod ? "free mods" : "host's mods");
-    draw_text(1280, 160, 24, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_LEFT, buf);
-    const char *acts[8];
-    int na = 0;
-    acts[na++] = app.mp_ready ? "CROSS  not ready" : "CROSS  ready";
-    if (s->i_host) {
-        acts[na++] = "SQUARE  pick the map";
-        acts[na++] = "TRIANGLE  start";
-        acts[na++] = s->teams ? "R2  no teams" : "R2  teams";
-        acts[na++] = s->freemod ? "L3  host's mods" : "L3  free mods";
-    } else if (s->freemod) {
-        acts[na++] = "SQUARE  your mods";
+    /* beatmap, mods and the room's rules */
+    const float mx = 640, mw = 600;
+    draw_text(mx, top, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "beatmap");
+    bool have = mp_find_map(s) >= 0;
+    ui_round_rect(mx, top + 40, mw, 120, 10, ui_plum(0.2f, 0.97f));
+    ui_round_rect(mx, top + 40, 120, 120, 10, ui_mix(ui_plum(0.25f, 1), ui_hex(0x6644CC, 1), 0.35f));
+    ui_play_icon(mx + 60, top + 100, 34, gfx_rgba(1, 1, 1, 0.5f));
+    if (s->map_title[0]) {
+        snprintf(buf, sizeof(buf), "%s", s->map_title);
+        ui_fit(buf, 22, mw - 150);
+        draw_text(mx + 140, top + 64, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+        if (!have)
+            ui_pill(mx + 140, top + 110, 13, ui_hex(UI_BLUE, 1), ui_hex(0x222222, 1), "downloading");
+    } else {
+        draw_text(mx + 140, top + 86, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT,
+                  s->i_host ? "pick a map with SQUARE" : "the host is picking a map");
     }
-    if (s->teams)
-        acts[na++] = "L2  switch team";
-    acts[na++] = "R1 type   L1 quick chat";
-    acts[na++] = "CIRCLE  leave";
-    float hy = 200;
-    draw_rect(1280, hy, 520, 16 + na * 40, gfx_rgba(0, 0, 0, 0.5f));
-    for (int i = 0; i < na; i++)
-        draw_text(1300, hy + 12 + i * 40, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, acts[i]);
+    draw_text(mx, top + 190, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, s->freemod ? "free mods" : "required mods");
+    char tags[64];
+    mod_tags(s->mods, tags, sizeof(tags));
+    if (tags[0]) {
+        /* one pill per tag */
+        float tx = mx;
+        for (char *t = tags; *t;) {
+            char one[8];
+            size_t k = 0;
+            while (*t && *t != ' ' && k < sizeof(one) - 1)
+                one[k++] = *t++;
+            one[k] = 0;
+            while (*t == ' ')
+                t++;
+            if (k)
+                tx += ui_pill(tx, top + 228, 16, ui_hex(0x8866EE, 1), gfx_rgba(1, 1, 1, 1), one) + 8;
+        }
+    } else {
+        draw_text(mx, top + 230, 18, gfx_rgba(1, 1, 1, 0.45f), ALIGN_LEFT, "none");
+    }
+    draw_text(mx, top + 290, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "room");
+    float rx = mx;
+    rx += ui_pill(rx, top + 328, 15, ui_plum(0.3f, 1), gfx_rgba(1, 1, 1, 1), s->teams ? "team versus" : "head to head") + 8;
+    ui_pill(rx, top + 328, 15, ui_plum(0.3f, 1), gfx_rgba(1, 1, 1, 1), s->freemod ? "free mods" : "host's mods");
 
     /* chat, newest at the bottom */
-    float cy = hy + 36 + na * 40, ch = GFX_H - 130 - cy;
-    draw_rect(1280, cy, 520, ch, gfx_rgba(0, 0, 0, 0.5f));
-    int lines = (int)(ch - 20) / 30;
+    const float cx = 1280, cw = 600;
+    draw_text(cx, top, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "chat");
+    float cy = top + 40, chh = colh - 40;
+    ui_round_rect(cx, cy, cw, chh, 10, ui_plum(0.13f, 0.9f));
+    ui_round_rect(cx + 12, cy + chh - 52, cw - 24, 40, 8, ui_plum(0.2f, 1));
+    draw_text(cx + 26, cy + chh - 44, 17, gfx_rgba(1, 1, 1, 0.45f), ALIGN_LEFT, "R1 type a message   L1 quick chat");
+    int lines = (int)(chh - 80) / 28;
     for (int i = 0; i < lines && i < s->nchat; i++) {
         int k = s->nchat - 1 - i;
-        float ly = cy + ch - 40 - i * 30;
-        if (s->chat[k].from[0])
-            snprintf(buf, sizeof(buf), "%.16s: %.60s", s->chat[k].from, s->chat[k].text);
-        else
-            snprintf(buf, sizeof(buf), "%.70s", s->chat[k].text);
-        draw_text(1295, ly, 18, s->chat[k].from[0] ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 0.85f, 0.4f, 0.9f), ALIGN_LEFT, buf);
+        float ly = cy + chh - 92 - i * 28;
+        if (s->chat[k].from[0]) {
+            float w = draw_text(cx + 20, ly, 17, ui_hex(0x8FC3E8, 1), ALIGN_LEFT, s->chat[k].from);
+            snprintf(buf, sizeof(buf), "%s", s->chat[k].text);
+            ui_fit(buf, 17, cw - 50 - w);
+            draw_text(cx + 30 + w, ly, 17, gfx_rgba(1, 1, 1, 0.92f), ALIGN_LEFT, buf);
+        } else {
+            snprintf(buf, sizeof(buf), "%s", s->chat[k].text);
+            ui_fit(buf, 17, cw - 40);
+            draw_text(cx + 20, ly, 17, ui_hex(UI_YELLOW, 0.85f), ALIGN_LEFT, buf);
+        }
+    }
+
+    /* footer: back, what this player can change, and the big ready button */
+    char hints[160];
+    if (s->i_host)
+        snprintf(hints, sizeof(hints), "SQUARE map   R2 %s   L3 %s%s", s->teams ? "no teams" : "teams",
+                 s->freemod ? "host's mods" : "free mods", s->teams ? "   L2 team" : "");
+    else
+        snprintf(hints, sizeof(hints), "%s%s", s->freemod ? "SQUARE your mods" : "", s->teams ? "   L2 team" : "");
+    ui_footer(hints, "CIRCLE");
+    {
+        bool all = ready == s->nmembers && s->nmembers > 0;
+        char label[64];
+        uint32_t c;
+        if (s->i_host && all) {
+            snprintf(label, sizeof(label), "start match  (TRIANGLE)");
+            c = 0x88B300;
+        } else if (app.mp_ready) {
+            snprintf(label, sizeof(label), "ready %d/%d  (CROSS to cancel)", ready, s->nmembers);
+            c = 0x88B300;
+        } else {
+            snprintf(label, sizeof(label), "ready  (CROSS)");
+            c = 0xFFCC22;
+        }
+        float bw = 560, bx = GFX_W - bw - 40, by = GFX_H - 70;
+        ui_shear_rect(bx, by, bw, 58, 14, ui_hex(c, 1));
+        draw_text(bx + bw / 2, by + 15, 24, c == 0xFFCC22 ? ui_hex(0x222222, 1) : gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, label);
     }
 
     if (app.mp_quick >= 0) {
-        draw_rect(700, 300, 520, 30 + QUICK_COUNT * 52, gfx_rgba(0.05f, 0.06f, 0.1f, 0.95f));
+        ui_round_rect(700, 300, 520, 30 + QUICK_COUNT * 52, 12, ui_plum(0.1f, 0.97f));
         for (int i = 0; i < QUICK_COUNT; i++) {
             float qy = 315 + i * 52;
             if (i == app.mp_quick)
-                draw_rect(710, qy - 4, 500, 46, gfx_rgba(1, 1, 1, 0.9f));
-            draw_text(730, qy + 6, 26, i == app.mp_quick ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 0.9f),
-                      ALIGN_LEFT, quick_lines[i]);
+                ui_round_rect(710, qy - 4, 500, 46, 8, ui_hex(0x7F5CEA, 1));
+            draw_text(730, qy + 6, 24, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, quick_lines[i]);
         }
     }
     if (app.mp_typing)
@@ -2605,11 +2701,11 @@ static void render_mp(void)
         double left = s->go_at - wall_ms();
         if (left > 0) {
             snprintf(buf, sizeof(buf), "starting in %.0f", ceil(left / 1000));
-            draw_text(GFX_W / 2, 900, 44, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, buf);
+            draw_text(GFX_W / 2, 880, 44, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, buf);
         }
     }
     if (s->error[0])
-        draw_text(120, GFX_H - 100, 24, gfx_rgba(1, 0.55f, 0.5f, 1), ALIGN_LEFT, s->error);
+        draw_text(40, GFX_H - 130, 22, ui_hex(0xFF6666, 1), ALIGN_LEFT, s->error);
 }
 
 /* ---- account: sign in or make one, for global scores and your name in rooms ---- */
@@ -2657,34 +2753,32 @@ static void render_account(void)
     char msg[128], buf[160];
     int st = account_state(msg, sizeof(msg));
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.7f));
-    draw_text(160, 90, 52, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "ProjectCadence account");
-    if (account_signed_in())
-        snprintf(buf, sizeof(buf), "signed in as %s: your best scores go to the global board", account_name());
-    else
-        snprintf(buf, sizeof(buf), "an account puts your scores on the global board and your name on you in rooms");
-    draw_text(160, 160, 24, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_LEFT, buf);
-
-    static const char *labels[ACC_ROWS] = {"name", "password", "sign in", "make a new account", "sign out"};
+    /* lazer's sign-in panel, centred: a heading, two fields and the buttons */
+    const float pw = 760, px = (GFX_W - pw) / 2, py = 170;
     int rows = account_signed_in() ? ACC_ROWS : ACC_ROWS - 1;
-    for (int i = 0; i < rows; i++) {
-        float y = 230 + i * 90;
-        bool on = i == app.acc_row;
-        draw_rect(160, y, 1600, 76, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(1, 1, 1, 0.08f));
-        uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.12f, 1) : gfx_rgba(1, 1, 1, 1);
-        draw_text(190, y + 22, 30, tc, ALIGN_LEFT, labels[i]);
-        if (i == ACC_NAME)
-            draw_text(1730, y + 22, 30, tc, ALIGN_RIGHT, app.acc_name);
-        if (i == ACC_PASS) {
-            char stars[24];
-            size_t n = strlen(app.acc_pass);
-            memset(stars, '*', n < 20 ? n : 20);
-            stars[n < 20 ? n : 20] = 0;
-            draw_text(1730, y + 22, 30, tc, ALIGN_RIGHT, stars);
-        }
-    }
+    ui_round_rect(px, py, pw, 250 + rows * 76, 14, ui_hex(0x302E39, 0.98f));
+    draw_text(GFX_W / 2, py + 34, 34, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, account_signed_in() ? "signed in" : "account");
+    if (account_signed_in())
+        snprintf(buf, sizeof(buf), "as %s: your best scores go to the global board", account_name());
+    else
+        snprintf(buf, sizeof(buf), "puts your scores on the global board and your name in rooms");
+    draw_text(GFX_W / 2, py + 84, 19, gfx_rgba(1, 1, 1, 0.55f), ALIGN_CENTRE, buf);
+
+    char stars[24];
+    size_t n = strlen(app.acc_pass);
+    memset(stars, '*', n < 20 ? n : 20);
+    stars[n < 20 ? n : 20] = 0;
+    float y = py + 140;
+    form_row(px + 40, y, pw - 80, "username", app.acc_name, app.acc_row == ACC_NAME);
+    form_row(px + 40, y + 76, pw - 80, "password", stars, app.acc_row == ACC_PASS);
+    form_button(px + 40, y + 170, pw - 80, "sign in", 0x6644CC, app.acc_row == ACC_SIGN_IN);
+    form_button(px + 40, y + 240, pw - 80, "make a new account", 0x555555, app.acc_row == ACC_CREATE);
+    if (rows == ACC_ROWS)
+        form_button(px + 40, y + 310, pw - 80, "sign out", 0xAA1B27, app.acc_row == ACC_SIGN_OUT);
+
     const char *line = st == ACC_BUSY ? "talking to the server..." : st == ACC_FAILED ? msg : st == ACC_OK ? "done" : "";
-    draw_text(160, 230 + rows * 90 + 20, 26, st == ACC_FAILED ? gfx_rgba(1, 0.55f, 0.5f, 1) : gfx_rgba(0.5f, 1, 0.6f, 1),
-              ALIGN_LEFT, line);
+    draw_text(GFX_W / 2, py + 250 + rows * 76 + 24, 22, st == ACC_FAILED ? ui_hex(0xFF6666, 1) : ui_hex(0xB3FF66, 1), ALIGN_CENTRE, line);
+    ui_footer("CROSS edit / choose", "CIRCLE");
     if (app.acc_typing)
         kbd_render(&app.mp_kbd);
 }
