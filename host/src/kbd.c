@@ -6,16 +6,12 @@
 #include "log.h"
 
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 
-/* ---- the system keyboard (ImeDialog), loaded by hand; ours is the fallback ---- */
+/* ---- the system keyboard (ImeDialog); ours is the fallback ---- */
 
-int sceKernelLoadStartModule(const char *path, size_t argc, const void *argv, uint32_t flags, void *opt, int *res);
-int sceKernelDlsym(int handle, const char *sym, void **addr);
 int sceUserServiceGetInitialUser(int32_t *user);
 int sceSysmoduleLoadModule(uint16_t id);
-const char *sceKernelGetFsSandboxRandomWord(void);
 
 typedef struct {
     int32_t user;
@@ -41,10 +37,14 @@ typedef struct {
 
 enum { IME_NONE, IME_RUNNING, IME_FINISHED };
 
-static int (*ime_init)(ime_param *, void *);
-static int (*ime_status)(void);
-static int (*ime_get_result)(ime_result *);
-static int (*ime_term)(void);
+int sceImeDialogInit(ime_param *, void *);
+int sceImeDialogGetStatus(void);
+int sceImeDialogGetResult(ime_result *);
+int sceImeDialogTerm(void);
+#define ime_init sceImeDialogInit
+#define ime_status sceImeDialogGetStatus
+#define ime_get_result sceImeDialogGetResult
+#define ime_term sceImeDialogTerm
 static int ime_state; /* 0 untried, 1 ready, -1 not available */
 static uint16_t ime_buf[256];
 
@@ -52,28 +52,11 @@ static bool ime_load(void)
 {
     if (ime_state)
         return ime_state > 0;
-    ime_state = -1;
-    /* inside the sandbox the system libs live under a per-boot random folder,
-     * so /system/common/lib comes back as not found */
-    sceSysmoduleLoadModule(0x0096); /* ImeDialog on PS4's numbering */
-    char sandboxed[96] = "";
-    const char *word = sceKernelGetFsSandboxRandomWord();
-    if (word)
-        snprintf(sandboxed, sizeof(sandboxed), "/%s/common/lib/libSceImeDialog.sprx", word);
-    const char *paths[] = {sandboxed, "/system/common/lib/libSceImeDialog.sprx", "libSceImeDialog.sprx"};
-    int h = -1, res;
-    for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]) && h < 0; i++)
-        if (paths[i][0])
-            h = sceKernelLoadStartModule(paths[i], 0, NULL, 0, NULL, &res);
-    if (h < 0) {
-        LOG("ime: no dialog module (0x%x, sandbox %s), using ours", h, word ? word : "?");
-        return false;
-    }
-    if (sceKernelDlsym(h, "sceImeDialogInit", (void **)&ime_init) || sceKernelDlsym(h, "sceImeDialogGetStatus", (void **)&ime_status) ||
-        sceKernelDlsym(h, "sceImeDialogGetResult", (void **)&ime_get_result) || sceKernelDlsym(h, "sceImeDialogTerm", (void **)&ime_term)) {
-        LOG("ime: symbols missing, using ours");
-        return false;
-    }
+    /* linked against the SDK stub, so the loader brings the module in with us;
+     * the sysmodule call is what PS4 titles needed before the first Init */
+    int r = sceSysmoduleLoadModule(0x0096);
+    if (r < 0)
+        LOG("ime: sysmodule load 0x%x, trying anyway", r);
     ime_state = 1;
     return true;
 }

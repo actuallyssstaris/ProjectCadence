@@ -1301,6 +1301,10 @@ static void render_select(void)
     int first = (int)app.sel_scroll - 8;
     for (int r = first < 0 ? 0 : first; r < nrows && r < app.sel_scroll + 9; r++) {
         float y = GFX_H / 2 - row / 2 + (r - app.sel_scroll) * row;
+        /* text draws over every box, so a row half under the footer or the
+         * filter box would show through: leave it out */
+        if (y + row - 6 > GFX_H - 76 || y < 130)
+            continue;
         const song_entry *e = &app.songs.items[rows[r].index];
         const osu5_peek_info *in = &e->info;
         /* the list bows away from the screen edge, further from the middle */
