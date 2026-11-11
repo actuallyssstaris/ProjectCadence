@@ -73,6 +73,7 @@ typedef enum {
     SCREEN_HELP,
     SCREEN_MP,
     SCREEN_ACCOUNT,
+    SCREEN_SETUP,
 } screen;
 
 static struct {
@@ -97,6 +98,7 @@ static struct {
     float bg_dim;         /* during play */
     float cursor_scale;
     bool storyboards;
+    bool simple_ui; /* the plain look from before the lazer restyle */
     bool videos;
     int map_offset;       /* per map, from offsets.txt */
     bool fav_only;
@@ -177,6 +179,8 @@ static void help_open(screen back);
 int sceUserServiceGetUserName(int32_t user, char *name, size_t size);
 static void mp_report(bool failed, bool done);
 static void menu_enter(void);
+static bool setup_active; /* the first-run setup is open underneath */
+static void setup_open(void);
 static void mp_board(float x, float y, float w, bool compact);
 static const char *map_md5(const char *file);
 
@@ -225,6 +229,7 @@ static void settings_load(void)
             else if (!strcmp(key, "mods")) app.mods = (int)v & ~OSU5_MOD_AUTO;
             else if (!strcmp(key, "sort")) app.sort = (int)v >= 0 && (int)v <= SORT_COUNT ? (int)v : 0;
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
+            else if (!strcmp(key, "simple_ui")) app.simple_ui = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
             else if (!strcmp(key, "onboarded")) app.onboarded = v != 0;
             else if (!strcmp(key, "boards")) app.board_src = v != 0;
@@ -239,9 +244,9 @@ static void settings_save(void)
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f)
         return;
-    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\n",
+    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
-            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src);
+            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui);
     fclose(f);
 }
 
@@ -1540,13 +1545,24 @@ static void mod_where(int sel, int *col, int *row)
 
 static void mods_frame(const pad_state *pad)
 {
-    int c, r;
-    mod_where(app.mod_sel, &c, &r);
-    c = (c + pad->nav_x + MOD_NCOLS) % MOD_NCOLS;
-    if (r >= mod_cols[c].n)
-        r = mod_cols[c].n - 1;
-    r = (r + pad->nav_y + mod_cols[c].n) % mod_cols[c].n;
-    app.mod_sel = mod_cols[c].mods[r];
+    if (app.simple_ui) {
+        /* the plain look lays the mods out four to a row in list order */
+        int rows = (MOD_COUNT + MOD_COLS - 1) / MOD_COLS;
+        int r = app.mod_sel / MOD_COLS, c = app.mod_sel % MOD_COLS;
+        r = (r + pad->nav_y + rows) % rows;
+        c = (c + pad->nav_x + MOD_COLS) % MOD_COLS;
+        app.mod_sel = r * MOD_COLS + c;
+        if (app.mod_sel >= MOD_COUNT)
+            app.mod_sel = MOD_COUNT - 1;
+    } else {
+        int c, r;
+        mod_where(app.mod_sel, &c, &r);
+        c = (c + pad->nav_x + MOD_NCOLS) % MOD_NCOLS;
+        if (r >= mod_cols[c].n)
+            r = mod_cols[c].n - 1;
+        r = (r + pad->nav_y + mod_cols[c].n) % mod_cols[c].n;
+        app.mod_sel = mod_cols[c].mods[r];
+    }
 
     if (pad->pressed & PAD_CROSS)
         toggle_mod(mod_list[app.mod_sel].bit);
@@ -1642,7 +1658,7 @@ static void render_mods(void)
 
 /* grouped the way the screen shows them */
 enum {
-    SET_HELP, SET_UPDATE,                       /* general */
+    SET_SETUP, SET_HELP, SET_UPDATE, SET_LOOK,  /* general */
     SET_SKIN,                                   /* skin */
     SET_SENS, SET_CURSOR,                       /* input */
     SET_DIM, SET_STORYBOARD, SET_VIDEO,         /* gameplay */
@@ -1683,6 +1699,18 @@ static void settings_frame(const pad_state *pad)
         if (pad->pressed & PAD_CROSS) {
             skin_ui_open(false);
             app.scr = SCREEN_SKINS;
+        }
+        break;
+    case SET_SETUP:
+        if (pad->pressed & PAD_CROSS) {
+            setup_open();
+            return;
+        }
+        break;
+    case SET_LOOK:
+        if (d || pad->pressed & PAD_CROSS) {
+            app.simple_ui = !app.simple_ui;
+            mapdl_ui_set_simple(app.simple_ui);
         }
         break;
     case SET_UPDATE:
@@ -1735,7 +1763,7 @@ static void settings_frame(const pad_state *pad)
 static void render_settings(void)
 {
     static const struct { int first; const char *name; } sections[] = {
-        {SET_HELP, "general"}, {SET_SKIN, "skin"}, {SET_SENS, "input"}, {SET_DIM, "gameplay"},
+        {SET_SETUP, "general"}, {SET_SKIN, "skin"}, {SET_SENS, "input"}, {SET_DIM, "gameplay"},
         {SET_MUSIC, "audio"}, {SET_ACCOUNT, "online"}, {SET_RESCAN, "maintenance"},
     };
     const int nsec = sizeof(sections) / sizeof(sections[0]);
@@ -1813,6 +1841,8 @@ static void render_settings(void)
             break;
         case SET_RESCAN: name = "rescan the Songs folder"; kind = 3; break;
         case SET_SKIN: name = "current skin"; snprintf(val, sizeof(val), "%.40s", skins_active()); break;
+        case SET_SETUP: name = "run setup wizard"; kind = 3; break;
+        case SET_LOOK: name = "interface"; snprintf(val, sizeof(val), "%s", app.simple_ui ? "simplified" : "lazer"); break;
         case SET_UPDATE: {
             update_info up;
             update_status(&up);
@@ -1916,104 +1946,178 @@ static void render_overlay(const char *title, const overlay_button *b, int n)
     draw_text(GFX_W / 2, iy + 60, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, line);
 }
 
+/* one cell of lazer's statistics grid: a dark label bar over the number */
+static void stat_cell(float x, float y, float w, const char *label, uint32_t lc, const char *value)
+{
+    ui_round_rect(x, y, w, 20, 10, gfx_rgba(0, 0, 0, 0.35f));
+    draw_text(x + w / 2, y + 2, 13, lc, ALIGN_CENTRE, label);
+    draw_text(x + w / 2, y + 24, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, value);
+}
+
 static void render_results(void)
 {
     const osu5_hud *h = &app.last_hud;
     char buf[128];
 
-    draw_background(0.7f);
-    ui_shadow(260, 140, 1400, 800, 24);
-    ui_round_rect(260, 140, 1400, 800, 24, gfx_rgba(0.1f, 0.09f, 0.13f, 0.92f));
-    /* the left card holds the ring, like a score panel */
-    ui_round_rect(300, 240, 520, 660, 20, gfx_rgba(0.16f, 0.14f, 0.2f, 1));
-    ui_triangles(300, 240, 520, 660, gfx_rgba(0.2f, 0.17f, 0.26f, 0.5f), wall_ms(), 3, 14);
+    draw_background(0.6f);
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.35f));
+
+    /* lazer's score card: player on top, then the panel with the ring */
+    const float pw = 475, px = (GFX_W - pw) / 2, cxm = GFX_W / 2;
+    ui_round_rect(px, 70, pw, 900, 20, ui_hex(0x3A3A3A, 0.96f));
+    ui_round_rect(cxm - 52, 40, 104, 104, 16, ui_hex(0x555555, 1));
+    {
+        const char *who = account_signed_in() ? account_name() : app.ps_name[0] ? app.ps_name : "guest";
+        char ini[2] = {who[0] >= 'a' && who[0] <= 'z' ? (char)(who[0] - 32) : who[0], 0};
+        draw_text(cxm, 66, 52, gfx_rgba(1, 1, 1, 0.85f), ALIGN_CENTRE, ini);
+        draw_text(cxm, 150, 18, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, app.watching ? "replay" : app.mods & OSU5_MOD_AUTO ? "auto" : who);
+    }
+    ui_round_rect(px, 180, pw, 790, 20, ui_hex(0x444444, 1));
 
     char title[200];
     osu5_string(OSU5_STR_TITLE, title, sizeof(title));
-    draw_text(GFX_W / 2, 170, 40, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, title);
+    ui_fit(title, 22, pw - 40);
+    draw_text(cxm, 200, 22, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, title);
+    if (app.playing) {
+        snprintf(buf, sizeof(buf), "%s", app.playing->info.artist);
+        ui_fit(buf, 15, pw - 40);
+        draw_text(cxm, 228, 15, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, buf);
+    }
 
-    /* accuracy ring: hits split by judgement around the rank, accuracy as the inner arc */
-    float cx = 560, cy = 540, R = 210;
-    int total = h->great + h->ok + h->meh + h->miss;
-    arc(cx, cy, R, 26, 0, 1, gfx_rgba(1, 1, 1, 0.08f));
-    if (total > 0) {
-        const int counts[4] = {h->great, h->ok, h->meh, h->miss};
-        const uint32_t cols[4] = {gfx_rgba(0.4f, 0.8f, 1, 1), gfx_rgba(0.5f, 1, 0.5f, 1), gfx_rgba(1, 0.85f, 0.35f, 1),
-                                  gfx_rgba(1, 0.35f, 0.35f, 1)};
-        float at = 0;
-        for (int i = 0; i < 4; i++) {
-            float span = (float)counts[i] / total;
-            arc(cx, cy, R, 26, at, at + span, cols[i]);
-            at += span;
+    /* the ring: accuracy as a thick band, the rank thresholds as a thin one inside */
+    float cy = 430, R = 150;
+    arc(cxm, cy, R, 30, 0, 1, gfx_rgba(0, 0, 0, 0.25f));
+    arc(cxm, cy, R, 30, 0, h->accuracy, ui_mix(ui_hex(0x66FFCC, 1), ui_hex(0x88B300, 1), 1 - h->accuracy));
+    static const struct { float from, to; uint32_t c; const char *tag; } bands[] = {
+        {0, 0.7f, 0xFF5A5A, "D"}, {0.7f, 0.8f, 0xFF8E5D, "C"}, {0.8f, 0.9f, 0xFFCC22, "B"},
+        {0.9f, 0.95f, 0x88DA20, "A"}, {0.95f, 0.995f, 0x02B5C3, "S"}, {0.995f, 1, 0xDE31AE, "SS"},
+    };
+    for (int i = 0; i < 6; i++) {
+        arc(cxm, cy, R - 34, 5, bands[i].from + 0.003f, bands[i].to - 0.003f, ui_hex(bands[i].c, 1));
+        /* the grade's tag just outside the ring, at the middle of its band */
+        float mid = (bands[i].from + bands[i].to) / 2 * 6.2831853f - 1.5707963f;
+        float tx = cxm + cosf(mid) * (R + 34), ty = cy + sinf(mid) * (R + 34);
+        float tw = draw_text_width(13, bands[i].tag) + 16;
+        ui_pill(tx - tw / 2, ty - 10, 13, ui_hex(bands[i].c, 1), ui_hex(0x222222, 1), bands[i].tag);
+    }
+    draw_rank(h->rank, cxm, cy, 170, false, 1);
+
+    snprintf(buf, sizeof(buf), "%lld", (long long)h->score);
+    {
+        /* grouped in threes with a gap, like lazer's counter */
+        char sp[48];
+        int n = (int)strlen(buf), o = 0;
+        for (int i = 0; i < n; i++) {
+            if (i && (n - i) % 3 == 0)
+                sp[o++] = ' ';
+            sp[o++] = buf[i];
+        }
+        sp[o] = 0;
+        draw_text(cxm, 620, 56, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, sp);
+    }
+
+    /* stars and mods, then the difficulty */
+    {
+        snprintf(buf, sizeof(buf), "%.2f*", osu5_play_stars());
+        char tags[64];
+        mod_tags(app.mods, tags, sizeof(tags));
+        float sw = draw_text_width(15, buf) + 18, tw = tags[0] ? draw_text_width(15, tags) + 18 : 0;
+        float x = cxm - (sw + (tw ? tw + 8 : 0)) / 2;
+        ui_pill(x, 690, 15, star_colour(osu5_play_stars(), 1), ui_hex(0x222222, 1), buf);
+        if (tags[0])
+            ui_pill(x + sw + 8, 690, 15, ui_hex(0x8866EE, 1), gfx_rgba(1, 1, 1, 1), tags);
+        if (app.playing) {
+            snprintf(buf, sizeof(buf), "%s", app.playing->info.version);
+            ui_fit(buf, 18, pw - 40);
+            draw_text(cxm, 724, 18, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, buf);
+            snprintf(buf, sizeof(buf), "mapped by %s", app.playing->info.creator);
+            ui_fit(buf, 13, pw - 40);
+            draw_text(cxm, 748, 13, gfx_rgba(1, 1, 1, 0.65f), ALIGN_CENTRE, buf);
         }
     }
-    arc(cx, cy, R - 34, 8, 0, h->accuracy, gfx_rgba(1, 1, 1, 0.9f));
-    draw_rank(h->rank, cx, cy, 240, false, 1);
 
-    float x = 900, y = 230;
-    snprintf(buf, sizeof(buf), "%08lld", (long long)h->score);
-    draw_text(x, y, 72, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "%.0fpp", app.last_pp);
-    draw_text(1620, y, 72, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, buf);
-    snprintf(buf, sizeof(buf), "%.2f%%   %dx   UR %.1f   %.2f*", h->accuracy * 100, h->max_combo, h->unstable_rate, osu5_play_stars());
-    draw_text(x, y + 100, 32, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "300 %d   100 %d   50 %d   miss %d", h->great, h->ok, h->meh, h->miss);
-    draw_text(x, y + 150, 28, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, buf);
-
-    char tags[64];
-    mod_tags(app.mods, tags, sizeof(tags));
-    if (tags[0])
-        draw_text(x, y + 200, 28, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, tags);
-    if (app.watching)
-        draw_text(x, y + 250, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "watched a replay");
-    else if (app.new_place == 0)
-        draw_text(x, y + 250, 32, gfx_rgba(0.5f, 1, 0.6f, 1), ALIGN_LEFT, "new personal best!");
-    else if (app.mods & OSU5_MOD_AUTO)
-        draw_text(x, y + 250, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "auto plays aren't saved");
-
-    /* hit offsets: where the taps landed against the beat */
-    static float errs[8192];
-    int ne = osu5_hit_errors(errs, 8192);
-    enum { BINS = 41 };
-    int bins[BINS] = {0}, top = 1;
-    float sum = 0;
-    for (int i = 0; i < ne; i++) {
-        int b = (int)lroundf(errs[i] / 5) + BINS / 2; /* 5 ms a bin, +-100 ms */
-        if (b >= 0 && b < BINS && ++bins[b] > top)
-            top = bins[b];
-        sum += errs[i];
+    /* the statistics grid */
+    {
+        float gx = px + 18, gw = pw - 36, y = 780;
+        float w3 = (gw - 16) / 3;
+        snprintf(buf, sizeof(buf), "%.2f%%", h->accuracy * 100);
+        stat_cell(gx, y, w3, "ACCURACY", gfx_rgba(1, 1, 1, 0.9f), buf);
+        snprintf(buf, sizeof(buf), "%dx", h->max_combo);
+        stat_cell(gx + w3 + 8, y, w3, "MAX COMBO", gfx_rgba(1, 1, 1, 0.9f), buf);
+        snprintf(buf, sizeof(buf), "%.0f", app.last_pp);
+        stat_cell(gx + 2 * (w3 + 8), y, w3, "PP", gfx_rgba(1, 1, 1, 0.55f), buf);
+        float w4 = (gw - 24) / 4;
+        const int counts[4] = {h->great, h->ok, h->meh, h->miss};
+        static const char *names[4] = {"GREAT", "OK", "MEH", "MISS"};
+        static const uint32_t cols[4] = {0x66CCFF, 0xB3D944, 0xFFCC22, 0xED1121};
+        for (int i = 0; i < 4; i++) {
+            snprintf(buf, sizeof(buf), "%d", counts[i]);
+            stat_cell(gx + i * (w4 + 8), y + 64, w4, names[i], ui_hex(cols[i], 1), buf);
+        }
+        const char *line = app.watching ? "watched a replay" : app.new_place == 0 ? "new personal best!" :
+                           app.mods & OSU5_MOD_AUTO ? "auto plays aren't saved" : "";
+        draw_text(cxm, y + 140, 15, app.new_place == 0 && !app.watching ? ui_hex(0xB3FF66, 1) : gfx_rgba(1, 1, 1, 0.6f),
+                  ALIGN_CENTRE, line);
     }
-    float gx = 900, gy = 560, gw = 340, gh = 150;
-    draw_rect(gx, gy, gw, gh, gfx_rgba(0, 0, 0, 0.35f));
-    draw_rect(gx + gw / 2 - 1, gy, 2, gh, gfx_rgba(1, 1, 1, 0.35f));
-    for (int b = 0; b < BINS; b++) {
-        float bh = (gh - 10) * bins[b] / top;
-        float off = fabsf((b - BINS / 2) * 5.0f);
-        uint32_t c = off < 20 ? gfx_rgba(0.4f, 0.8f, 1, 0.9f) : off < 50 ? gfx_rgba(0.5f, 1, 0.5f, 0.9f) : gfx_rgba(1, 0.85f, 0.35f, 0.9f);
-        draw_rect(gx + b * gw / BINS + 1, gy + gh - bh, gw / BINS - 2, bh, c);
-    }
-    snprintf(buf, sizeof(buf), "hits: %+.1f ms on average", ne ? sum / ne : 0);
-    draw_text(gx, gy + gh + 10, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
 
-    /* accuracy through the map */
-    float ax = 1280, aw = 340;
-    draw_rect(ax, gy, aw, gh, gfx_rgba(0, 0, 0, 0.35f));
-    float lo = 1;
-    for (int i = 0; i < app.acc_n; i++)
-        lo = fminf(lo, app.acc[i]);
-    lo = fminf(lo, 0.9f);
-    for (int i = 1; i < app.acc_n; i++) {
-        float x0 = ax + aw * (i - 1) / (ACC_SAMPLES - 1), x1 = ax + aw * i / (ACC_SAMPLES - 1);
-        float y0 = gy + gh - 5 - (gh - 10) * (app.acc[i - 1] - lo) / (1 - lo);
-        float y1 = gy + gh - 5 - (gh - 10) * (app.acc[i] - lo) / (1 - lo);
-        gfx_bind(0);
-        gfx_push(&(gfx_inst){x0, y0, 2, 2, 0, gfx_next_z(), gfx_rgba(1, 0.85f, 0.4f, 1), GK_CAPSULE, {x1, y1, 0, 0}});
+    /* the statistics side: where the hits landed and the accuracy through the map */
+    {
+        const float sx = 1260, sw = 600;
+        ui_round_rect(sx, 180, sw, 520, 20, ui_hex(0x3A3A3A, 0.92f));
+        draw_text(sx + 30, 200, 20, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "timing distribution");
+        static float errs[8192];
+        int ne = osu5_hit_errors(errs, 8192);
+        enum { BINS = 41 };
+        int bins[BINS] = {0}, top = 1;
+        float sum = 0;
+        for (int i = 0; i < ne; i++) {
+            int b = (int)lroundf(errs[i] / 5) + BINS / 2; /* 5 ms a bin, +-100 ms */
+            if (b >= 0 && b < BINS && ++bins[b] > top)
+                top = bins[b];
+            sum += errs[i];
+        }
+        float gx = sx + 30, gy = 240, gw = sw - 60, gh = 160;
+        draw_rect(gx + gw / 2 - 1, gy, 2, gh, gfx_rgba(1, 1, 1, 0.3f));
+        for (int b = 0; b < BINS; b++) {
+            float bh = (gh - 6) * bins[b] / top;
+            float off = fabsf((b - BINS / 2) * 5.0f);
+            uint32_t c = ui_hex(off < 20 ? 0x66CCFF : off < 50 ? 0xB3D944 : 0xFFCC22, 0.9f);
+            ui_round_rect(gx + b * gw / BINS + 1, gy + gh - bh, gw / BINS - 2, bh, 2, c);
+        }
+        snprintf(buf, sizeof(buf), "%+.1f ms average     UR %.1f", ne ? sum / ne : 0, h->unstable_rate);
+        draw_text(gx, gy + gh + 10, 17, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
+
+        float ay = gy + gh + 60, ah = 140;
+        draw_text(sx + 30, ay - 34, 20, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "accuracy");
+        float lo = 1;
+        for (int i = 0; i < app.acc_n; i++)
+            lo = fminf(lo, app.acc[i]);
+        lo = fminf(lo, 0.9f);
+        for (int i = 1; i < app.acc_n; i++) {
+            float x0 = gx + gw * (i - 1) / (ACC_SAMPLES - 1), x1 = gx + gw * i / (ACC_SAMPLES - 1);
+            float y0 = ay + ah - 5 - (ah - 10) * (app.acc[i - 1] - lo) / (1 - lo);
+            float y1 = ay + ah - 5 - (ah - 10) * (app.acc[i] - lo) / (1 - lo);
+            gfx_bind(0);
+            gfx_push(&(gfx_inst){x0, y0, 2, 2, 0, gfx_next_z(), ui_hex(UI_YELLOW, 1), GK_CAPSULE, {x1, y1, 0, 0}});
+        }
+        snprintf(buf, sizeof(buf), "%.0f%% to 100%%", lo * 100);
+        draw_text(gx + gw, ay - 32, 15, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, buf);
     }
-    snprintf(buf, sizeof(buf), "accuracy, %.0f%% to 100%%", lo * 100);
-    draw_text(ax, gy + gh + 10, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
 
     if (app.mp_playing)
-        mp_board(1680, 140, 230, true);
+        mp_board(60, 180, 500, true);
+
+    /* footer: back, the big retry button, and the replay one */
+    ui_footer(NULL, "CIRCLE");
+    if (!app.mp_playing) {
+        float bw = 520, bx = cxm - bw / 2, by = GFX_H - 66;
+        ui_round_rect(bx, by, bw, 50, 10, ui_hex(0x88B300, 1));
+        draw_text(cxm, by + 13, 22, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, app.watching ? "play it yourself  (CROSS)" : "retry  (CROSS)");
+        if (app.last_when && !app.watching) {
+            ui_round_rect(bx + bw + 14, by, 200, 50, 10, ui_hex(0x555555, 1));
+            draw_text(bx + bw + 114, by + 14, 20, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "replay  (SQUARE)");
+        }
+    }
 }
 
 /* ---- offset finder: tap along to a click, the average miss is the offset ---- */
@@ -2766,7 +2870,7 @@ static void account_frame(const pad_state *pad)
     if (account_state(NULL, 0) == ACC_OK && app.acc_pass[0])
         memset(app.acc_pass, 0, sizeof(app.acc_pass));
     if (pad->pressed & PAD_CIRCLE)
-        app.scr = SCREEN_SETTINGS;
+        app.scr = setup_active ? SCREEN_SETUP : SCREEN_SETTINGS;
 }
 
 static void render_account(void)
@@ -3154,6 +3258,197 @@ static void render_menu(void)
     }
 }
 
+/* ---- first-run setup, after lazer's: a step at a time in a centred panel,
+ * "next (step)" in the footer, back to go a step back ---- */
+
+enum { SETUP_WELCOME, SETUP_CONTROLS, SETUP_SKIN, SETUP_BEATMAPS, SETUP_BEHAVIOUR, SETUP_STEPS };
+static const char *const setup_names[SETUP_STEPS] = {"welcome", "controls", "skin", "beatmaps", "behaviour"};
+static int setup_step, setup_focus;
+
+
+/* the step's own buttons, before next */
+static int setup_actions(int step)
+{
+    switch (step) {
+    case SETUP_SKIN: return 1;
+    case SETUP_BEATMAPS: return 1;
+    case SETUP_BEHAVIOUR: return 3; /* lazer look, simplified look, account */
+    default: return 0;
+    }
+}
+
+static void setup_open(void)
+{
+    setup_step = 0;
+    setup_focus = 0;
+    setup_active = true;
+    app.scr = SCREEN_SETUP;
+}
+
+static void setup_finish(void)
+{
+    setup_active = false;
+    app.onboarded = true;
+    if (!skins_chosen())
+        skins_set_active("builtin");
+    settings_save();
+    menu_enter();
+}
+
+static void setup_frame(const pad_state *pad)
+{
+    int n = setup_actions(setup_step) + 1; /* + next */
+    setup_focus = (setup_focus + pad->nav_y + n) % n;
+    if (setup_step == SETUP_BEHAVIOUR && setup_focus < 2 && pad->nav_x)
+        setup_focus = !setup_focus;
+
+    if (pad->pressed & PAD_CIRCLE) {
+        if (setup_step > 0) {
+            setup_step--;
+            setup_focus = setup_actions(setup_step);
+        }
+        return;
+    }
+    if (!(pad->pressed & PAD_CROSS))
+        return;
+    if (setup_focus == n - 1) {
+        if (++setup_step >= SETUP_STEPS)
+            setup_finish();
+        else
+            setup_focus = 0;
+        return;
+    }
+    switch (setup_step) {
+    case SETUP_SKIN:
+        skin_ui_open(true);
+        app.scr = SCREEN_SKINS;
+        break;
+    case SETUP_BEATMAPS:
+        mapdl_ui_open();
+        app.scr = SCREEN_DOWNLOAD;
+        break;
+    case SETUP_BEHAVIOUR:
+        if (setup_focus < 2) {
+            app.simple_ui = setup_focus == 1;
+            mapdl_ui_set_simple(app.simple_ui);
+        } else {
+            app.acc_row = 0;
+            app.scr = SCREEN_ACCOUNT;
+        }
+        break;
+    }
+}
+
+static void setup_button(float x, float y, float w, const char *label, bool on, bool picked)
+{
+    uint32_t c = picked ? ui_hex(0x6644CC, 1) : ui_hex(0x2E2A3D, 1);
+    if (on) {
+        ui_round_rect(x - 3, y - 3, w + 6, 66, 11, gfx_rgba(1, 1, 1, 0.85f));
+        c = ui_mix(c, gfx_rgba(1, 1, 1, 1), 0.12f);
+    }
+    ui_round_rect(x, y, w, 60, 9, c);
+    draw_text(x + w / 2, y + 17, 23, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, label);
+}
+
+static void render_setup(void)
+{
+    char buf[200];
+    render_menu();
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.05f, 0.04f, 0.08f, 0.88f));
+
+    /* header: title and what it's for, like the overlay headers */
+    draw_rect(0, 0, GFX_W, 110, ui_hex(0x1E1A2B, 1));
+    ui_round_rect(60, 34, 8, 44, 4, ui_hex(0x8866EE, 1));
+    draw_text(86, 24, 34, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "first-run setup");
+    draw_text(86, 66, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "set up ProjectCadence to suit you");
+    /* where we are: a dot per step */
+    for (int i = 0; i < SETUP_STEPS; i++) {
+        float x = GFX_W - 80 - (SETUP_STEPS - 1 - i) * 150;
+        bool here = i == setup_step;
+        ui_round_rect(x - 130, 52, 130, 6, 3, i <= setup_step ? ui_hex(0x8866EE, 1) : gfx_rgba(1, 1, 1, 0.15f));
+        draw_text(x - 65, 66, 16, gfx_rgba(1, 1, 1, here ? 1 : 0.45f), ALIGN_CENTRE, setup_names[i]);
+    }
+
+    /* the step's panel */
+    const float pw = 1120, px = (GFX_W - pw) / 2, py = 150, ph = GFX_H - 96 - 30 - py;
+    ui_round_rect(px, py, pw, ph, 20, ui_hex(0x16131F, 0.98f));
+    float x = px + 60, y = py + 50, w = pw - 120;
+    uint32_t text = gfx_rgba(1, 1, 1, 0.85f), dim = gfx_rgba(1, 1, 1, 0.55f);
+    switch (setup_step) {
+    case SETUP_WELCOME:
+        draw_text(x, y, 44, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "welcome");
+        draw_text(x, y + 80, 24, text, ALIGN_LEFT, "Welcome to the first-run setup! It gets you playing in about a minute.");
+        draw_text(x, y + 120, 24, text, ALIGN_LEFT, "ProjectCadence plays osu! beatmaps on your PS5: circles, taiko, catch and mania.");
+        draw_text(x, y + 180, 22, dim, ALIGN_LEFT, "Everything here can be changed later in settings, where this guide lives too.");
+        if (app.logo_tex) {
+            float s = 260, lx = px + pw - 220, ly = py + ph - 200;
+            ui_disc(lx, ly, s / 2 + 10, gfx_rgba(1, 1, 1, 1));
+            gfx_bind(app.logo_tex);
+            gfx_push(&(gfx_inst){lx, ly, s / 2, s / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX, {0, 0, 1, 1}});
+            gfx_bind(0);
+        }
+        break;
+    case SETUP_CONTROLS: {
+        draw_text(x, y, 44, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "controls");
+        draw_text(x, y + 70, 22, dim, ALIGN_LEFT, "how a controller plays osu!; the full list is under settings, show the controls");
+        const struct help_page *p = &help_pages[0];
+        for (int i = 0; i < 14 && p->rows[i][0]; i++) {
+            float ry = y + 130 + i * 52;
+            ui_round_rect(x, ry, w, 44, 8, ui_hex(0x221E2E, 1));
+            ui_pill(x + 14, ry + 9, 15, ui_hex(0x8866EE, 1), gfx_rgba(1, 1, 1, 1), p->rows[i][0]);
+            draw_text(x + 330, ry + 10, 21, text, ALIGN_LEFT, p->rows[i][1]);
+        }
+        break;
+    }
+    case SETUP_SKIN:
+        draw_text(x, y, 44, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "skin");
+        draw_text(x, y + 80, 24, text, ALIGN_LEFT, "A skin is the look of the circles, the cursor, numbers and sounds.");
+        draw_text(x, y + 120, 22, dim, ALIGN_LEFT, "Pick one from the list, or stay with the plain built-in look.");
+        snprintf(buf, sizeof(buf), "current skin:  %s", skins_chosen() ? skins_active() : "none yet (built-in)");
+        draw_text(x, y + 200, 24, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+        setup_button(x, y + 260, w, "choose a skin", setup_focus == 0, false);
+        break;
+    case SETUP_BEATMAPS:
+        draw_text(x, y, 44, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "beatmaps");
+        draw_text(x, y + 80, 24, text, ALIGN_LEFT, "You'll need some beatmaps to play. They download straight to the console.");
+        draw_text(x, y + 120, 22, dim, ALIGN_LEFT, "Or copy .osz sets into /data/cadence/Songs over FTP and rescan in settings.");
+        snprintf(buf, sizeof(buf), "%d difficulties installed", app.songs.count);
+        draw_text(x, y + 200, 24, app.songs.count ? ui_hex(0xB3FF66, 1) : ui_hex(UI_YELLOW, 1), ALIGN_LEFT, buf);
+        setup_button(x, y + 260, w, "get beatmaps", setup_focus == 0, false);
+        break;
+    case SETUP_BEHAVIOUR: {
+        draw_text(x, y, 44, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "behaviour");
+        draw_text(x, y + 80, 24, text, ALIGN_LEFT, "Pick how the menus look. The new look follows osu!lazer;");
+        draw_text(x, y + 120, 24, text, ALIGN_LEFT, "simplified is the plain one, big lists and fewer moving parts.");
+        float hw = (w - 20) / 2;
+        setup_button(x, y + 200, hw, "new look", setup_focus == 0, !app.simple_ui);
+        setup_button(x + hw + 20, y + 200, hw, "simplified", setup_focus == 1, app.simple_ui);
+        draw_text(x, y + 310, 22, dim, ALIGN_LEFT,
+                  account_signed_in() ? "you're signed in, your best scores go on the global board"
+                                      : "an account puts your scores on the global board (optional)");
+        setup_button(x, y + 350, w, account_signed_in() ? "account" : "sign in or make an account", setup_focus == 2, false);
+        break;
+    }
+    }
+
+    /* footer: back and the leaning next button */
+    ui_footer(NULL, setup_step ? "CIRCLE" : NULL);
+    if (setup_step == SETUP_STEPS - 1)
+        snprintf(buf, sizeof(buf), "finish");
+    else if (setup_step == 0)
+        snprintf(buf, sizeof(buf), "get started");
+    else
+        snprintf(buf, sizeof(buf), "next (%s)", setup_names[setup_step + 1]);
+    bool on = setup_focus == setup_actions(setup_step);
+    float bw = 420, bx = GFX_W - bw - 50, by = GFX_H - 70;
+    if (on)
+        ui_shear_rect(bx - 4, by - 4, bw + 8, 66, 16, gfx_rgba(1, 1, 1, 0.85f));
+    ui_shear_rect(bx, by, bw, 58, 14, ui_hex(on ? 0x8866EE : 0x6644CC, 1));
+    draw_text(bx + bw / 2, by + 15, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, buf);
+}
+
+#include "classic.inc"
+
 int main(void)
 {
     log_open();
@@ -3182,6 +3477,7 @@ int main(void)
     LOG("gc check: %d collections", osu5_gc_check());
 
     settings_load();
+    mapdl_ui_set_simple(app.simple_ui);
     audio_music_volume(app.music_vol);
     scores_load();
     online_init();
@@ -3190,7 +3486,7 @@ int main(void)
     LOG("settings read");
     skin_apply(skins_active());
     LOG("skin %s", skins_active());
-    if (!skins_chosen()) {
+    if (!skins_chosen() && app.onboarded) {
         skin_ui_open(true);
         app.scr = SCREEN_SKINS;
     } else if (!strcmp(skins_active(), "default") && skins_default_outdated()) {
@@ -3204,7 +3500,7 @@ int main(void)
     if (app.scr == SCREEN_SELECT) {
         menu_enter();
         if (!app.onboarded)
-            help_open(SCREEN_MENU);
+            setup_open();
     }
 
     double last = wall_ms();
@@ -3283,8 +3579,8 @@ int main(void)
             break;
         case SCREEN_SKINS:
             if (skin_ui_frame(&pad)) {
-                app.scr = SCREEN_SELECT;
-                if (!app.onboarded) {
+                app.scr = setup_active ? SCREEN_SETUP : SCREEN_SELECT;
+                if (!app.onboarded && !setup_active) {
                     menu_enter();
                     help_open(SCREEN_MENU);
                 }
@@ -3298,13 +3594,16 @@ int main(void)
             break;
         case SCREEN_DOWNLOAD:
             if (mapdl_ui_frame(&pad))
-                app.scr = SCREEN_SELECT;
+                app.scr = setup_active ? SCREEN_SETUP : SCREEN_SELECT;
             break;
         case SCREEN_WIZARD:
             wizard_frame(&pad);
             break;
         case SCREEN_MENU:
-            menu_frame(&pad);
+            if (app.simple_ui)
+                menu_frame_classic(&pad);
+            else
+                menu_frame(&pad);
             break;
         case SCREEN_HELP:
             help_frame(&pad);
@@ -3315,19 +3614,24 @@ int main(void)
         case SCREEN_MP:
             mp_frame(&pad);
             break;
+        case SCREEN_SETUP:
+            setup_frame(&pad);
+            break;
         }
 
         gfx_begin(0.06f, 0.06f, 0.09f);
         switch (app.scr) {
         case SCREEN_SELECT:
-            render_select();
+            app.simple_ui ? render_select_classic() : render_select();
             break;
         case SCREEN_PLAY:
             render_play();
             break;
         case SCREEN_PAUSE:
             render_play();
-            {
+            if (app.simple_ui)
+                render_overlay_classic("paused", gfx_rgba(1, 1, 1, 1), "CROSS continue   TRIANGLE retry   CIRCLE quit");
+            else {
                 static const overlay_button pb[] = {
                     {"continue", "CROSS", 0x88B300}, {"retry", "TRIANGLE", 0xEEAA00}, {"quit", "CIRCLE", 0xAA1B27},
                 };
@@ -3343,23 +3647,31 @@ int main(void)
             render_play();
             {
                 static const overlay_button fb[] = {{"retry", "CROSS", 0xEEAA00}, {"quit", "CIRCLE", 0xAA1B27}};
-                render_overlay("failed", fb, 2);
+                if (app.simple_ui)
+                    render_overlay_classic("failed", gfx_rgba(1, 0.35f, 0.35f, 1), "CROSS retry   CIRCLE back");
+                else
+                    render_overlay("failed", fb, 2);
             }
             break;
         case SCREEN_RESULTS:
-            render_results();
+            app.simple_ui ? render_results_classic() : render_results();
             break;
         case SCREEN_SKINS:
             draw_background(0.7f);
             skin_ui_render();
             break;
         case SCREEN_MODS:
-            render_select();
-            render_mods();
+            if (app.simple_ui) {
+                render_select_classic();
+                render_mods_classic();
+            } else {
+                render_select();
+                render_mods();
+            }
             break;
         case SCREEN_SETTINGS:
             draw_background(0.7f);
-            render_settings();
+            app.simple_ui ? render_settings_classic() : render_settings();
             break;
         case SCREEN_DOWNLOAD:
             draw_background(0.7f);
@@ -3369,21 +3681,24 @@ int main(void)
             render_wizard();
             break;
         case SCREEN_MENU:
-            render_menu();
+            app.simple_ui ? render_menu_classic() : render_menu();
             break;
         case SCREEN_HELP:
             if (help_return == SCREEN_MENU)
-                render_menu();
+                app.simple_ui ? render_menu_classic() : render_menu();
             else
                 draw_background(0.7f);
             render_help();
             break;
         case SCREEN_ACCOUNT:
             draw_background(0.7f);
-            render_account();
+            app.simple_ui ? render_account_classic() : render_account();
             break;
         case SCREEN_MP:
-            render_mp();
+            app.simple_ui ? render_mp_classic() : render_mp();
+            break;
+        case SCREEN_SETUP:
+            render_setup();
             break;
         }
         gfx_end();
