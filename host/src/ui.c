@@ -205,3 +205,53 @@ void ui_search_icon(float cx, float cy, float size, uint32_t c)
     ui_disc(cx - size * 0.08f, cy - size * 0.08f, r * 0.62f, gfx_rgba(0.1f, 0.1f, 0.12f, 1));
     gfx_push(&(gfx_inst){cx + size * 0.22f, cy + size * 0.22f, size * 0.17f, size * 0.06f, 0.7853982f, gfx_next_z(), c, GK_RECT, {0}});
 }
+
+uint32_t ui_plum(float l, float a)
+{
+    /* lazer's plum scheme for multiplayer: hue 320, saturation 0.1 */
+    float s = 0.1f, h = 320.0f / 360.0f;
+    float q = l < 0.5f ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    float rgb[3];
+    for (int i = 0; i < 3; i++) {
+        float t = h + (1 - i) / 3.0f;
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        rgb[i] = t < 1 / 6.0f ? p + (q - p) * 6 * t : t < 0.5f ? q : t < 2 / 3.0f ? p + (q - p) * (2 / 3.0f - t) * 6 : p;
+    }
+    return gfx_rgba(rgb[0], rgb[1], rgb[2], a);
+}
+
+void ui_header(const char *section, const char *title, uint32_t accent)
+{
+    draw_rect(0, 0, GFX_W, 96, gfx_rgba(0.15f, 0.15f, 0.19f, 1));
+    ui_round_rect(40, 30, 8, 36, 4, accent);
+    float w = draw_text(66, 28, 32, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, section);
+    if (title && title[0]) {
+        float w2 = draw_text(66 + w, 28, 32, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "  ·  ");
+        draw_text(66 + w + w2, 28, 32, accent, ALIGN_LEFT, title);
+    }
+}
+
+void ui_footer(const char *hints, const char *back)
+{
+    const float fy = GFX_H - 76, fh = 76;
+    draw_rect(0, fy, GFX_W, fh, gfx_rgba(0.12f, 0.12f, 0.15f, 1));
+    float x = 16;
+    if (back) {
+        ui_shear_rect(16, fy + 10, 260, fh - 18, 16, ui_hex(UI_PINK, 1));
+        ui_arrow_left(62, fy + fh / 2 - 4, 22, gfx_rgba(1, 1, 1, 1));
+        draw_text(150, fy + 16, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
+        draw_text(150, fy + 50, 14, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, back);
+        x = 310;
+    }
+    if (hints)
+        draw_text(x + 10, fy + 26, 20, gfx_rgba(1, 1, 1, 0.65f), ALIGN_LEFT, hints);
+}
+
+float ui_pill(float x, float y, float size, uint32_t bg, uint32_t fg, const char *s)
+{
+    float w = draw_text_width(size, s) + size * 1.2f, h = size * 1.6f;
+    ui_round_rect(x, y, w, h, h / 2, bg);
+    draw_text(x + w / 2, y + size * 0.25f, size, fg, ALIGN_CENTRE, s);
+    return w;
+}

@@ -519,8 +519,11 @@ static void watch_replay(const song_entry *e, int64_t when)
     }
 }
 
+static int play_retries; /* shown on the pause screen, like lazer's "retry count" */
+
 static void back_to_select(void)
 {
+    play_retries = 0;
     audio_music_stop();
     audio_music_rate(1);
     audio_music_volume(app.music_vol);
@@ -1303,7 +1306,7 @@ static void render_select(void)
         float y = GFX_H / 2 - row / 2 + (r - app.sel_scroll) * row;
         /* text draws over every box, so a row half under the footer or the
          * filter box would show through: leave it out */
-        if (y + row - 6 > GFX_H - 76 || y < 130)
+        if (y + row - 6 > GFX_H - 84 || y < 130)
             continue;
         const song_entry *e = &app.songs.items[rows[r].index];
         const osu5_peek_info *in = &e->info;
@@ -1444,33 +1447,52 @@ static void render_select(void)
               gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, app.board_src && online_enabled() ? "L2 osu.ppy.sh" : "L2 global");
 scores_done:;
 
-    /* footer: back on the left, then the screen's actions as leaning tiles */
+    /* footer, lazer's measurements: an 84 tall strip, the wide pink back button,
+     * then dark tiles that stand a little proud of it with a colour stripe each */
     {
-        const float fy = GFX_H - 76, fh = 76, lean = 16;
-        draw_rect(0, fy, GFX_W, fh, gfx_rgba(0.08f, 0.08f, 0.1f, 0.9f));
-        ui_shear_rect(16, fy + 10, 260, fh - 18, lean, ui_hex(UI_PINK, 1));
-        ui_arrow_left(62, fy + fh / 2 - 4, 22, gfx_rgba(1, 1, 1, 1));
-        draw_text(150, fy + 16, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
-        draw_text(150, fy + 50, 14, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, "CIRCLE");
+        const float fh = 84, fy = GFX_H - fh, lean = 14;
+        draw_rect(0, fy + 14, GFX_W, fh - 14, gfx_rgba(0.12f, 0.12f, 0.14f, 0.95f));
+        ui_shear_rect(21, fy + 18, 330, 62, lean, ui_hex(0xDD4499, 1));
+        ui_arrow_left(130, fy + 49, 20, gfx_rgba(1, 1, 1, 1));
+        draw_text(196, fy + 34, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
 
         static const struct { const char *label, *button; uint32_t colour; } tiles[] = {
-            {"mods", "SQUARE", UI_GREEN}, {"get maps", "TRIANGLE", UI_BLUE}, {"skins", "TOUCHPAD", UI_PURPLE}, {"settings", "OPTIONS", UI_ORANGE},
+            {"mods", "SQUARE", 0xB2E05C}, {"get maps", "TRIANGLE", UI_BLUE}, {"skins", "TOUCHPAD", UI_ORANGE}, {"options", "OPTIONS", 0x8866EE},
         };
-        float tx = 320;
+        float tx = 400;
         for (int i = 0; i < 4; i++) {
-            ui_shear_rect(tx, fy + 4, 190, fh - 4, lean, gfx_rgba(0.18f, 0.18f, 0.22f, 0.95f));
-            ui_shear_rect(tx + 2, fy + fh - 8, 186 - lean, 6, 0, ui_hex(tiles[i].colour, 1));
-            draw_text(tx + 95, fy + 12, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, tiles[i].label);
-            draw_text(tx + 95, fy + 42, 15, gfx_rgba(1, 1, 1, 0.55f), ALIGN_CENTRE, tiles[i].button);
-            tx += 200;
+            ui_shear_rect(tx, fy, 150, fh, lean, gfx_rgba(0.22f, 0.22f, 0.26f, 0.97f));
+            ui_shear_rect(tx + 4, fy + fh - 6, 150 - 8 - lean / 2, 6, 0, ui_hex(tiles[i].colour, 1));
+            float cx = tx + 75;
+            uint32_t ic = ui_hex(tiles[i].colour, 1);
+            switch (i) {
+            case 0: /* two arrows passing, the mods glyph */
+                draw_rect(cx - 12, fy + 17, 22, 3, ic);
+                ui_play_icon(cx + 12, fy + 18.5f, 10, ic);
+                draw_rect(cx - 10, fy + 27, 22, 3, ic);
+                ui_arrow_left(cx - 12, fy + 28.5f, 10, ic);
+                break;
+            case 1:
+                draw_rect(cx - 2, fy + 10, 4, 12, ic);
+                ui_arrow_down(cx, fy + 25, 14, ic);
+                break;
+            case 2:
+                arc(cx, fy + 22, 9, 3, 0, 1, ic);
+                ui_disc(cx, fy + 22, 3.5f, ic);
+                break;
+            default: ui_gear_icon(cx, fy + 22, 24, ic); break;
+            }
+            draw_text(cx, fy + 40, 20, gfx_rgba(1, 1, 1, 0.95f), ALIGN_CENTRE, tiles[i].label);
+            draw_text(tx + 150 - lean - 8, fy + 6, 11, gfx_rgba(1, 1, 1, 0.4f), ALIGN_RIGHT, tiles[i].button);
+            tx += 156;
         }
-        draw_text(GFX_W - 260, fy + 26, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, "L2 board   R2 replay   X play");
+        draw_text(GFX_W - 330, fy + 36, 20, gfx_rgba(1, 1, 1, 0.55f), ALIGN_RIGHT, "L2 board   R2 replay   CROSS play");
         /* our logo peeking in from the corner, like the menu's */
         if (app.logo_tex) {
-            float s = 220;
-            ui_disc(GFX_W - 90, GFX_H - 40, s / 2 + 8, gfx_rgba(1, 1, 1, 0.9f));
+            float s = 230;
+            ui_disc(GFX_W - 100, GFX_H - 30, s / 2 + 10, gfx_rgba(1, 1, 1, 1));
             gfx_bind(app.logo_tex);
-            gfx_push(&(gfx_inst){GFX_W - 90, GFX_H - 40, s / 2, s / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX, {0, 0, 1, 1}});
+            gfx_push(&(gfx_inst){GFX_W - 100, GFX_H - 30, s / 2, s / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, 1), GK_TEX, {0, 0, 1, 1}});
             gfx_bind(0);
         }
     }
@@ -1852,22 +1874,46 @@ typedef struct {
     uint32_t colour;
 } overlay_button;
 
-static void render_overlay(const char *title, const char *info, const overlay_button *b, int n)
+/* lazer's pause and fail dialog: a spaced-out yellow title, full-width leaning
+ * buttons with triangles drifting in them, and the attempt's numbers underneath */
+static void render_overlay(const char *title, const overlay_button *b, int n)
 {
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.75f));
-    draw_text(GFX_W / 2, 250, 64, ui_hex(UI_YELLOW, 1), ALIGN_CENTRE, title);
-    if (info && info[0])
-        draw_text(GFX_W / 2, 340, 24, gfx_rgba(1, 1, 1, 0.85f), ALIGN_CENTRE, info);
-    const float w = 760, h = 96, x = (GFX_W - w) / 2;
-    float y = 420;
-    for (int i = 0; i < n; i++) {
-        ui_shear_rect(x, y, w, h - 4, 22, ui_hex(b[i].colour, 1));
-        /* a lighter band in the middle, the way the dialog buttons glow */
-        ui_shear_rect(x + w * 0.3f, y, w * 0.4f, h - 4, 22, gfx_rgba(1, 1, 1, 0.08f));
-        draw_text(GFX_W / 2, y + 22, 32, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, b[i].label);
-        draw_text(x + w - 50, y + 32, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_RIGHT, b[i].button);
-        y += h + 2;
+    bool failed = !strcmp(title, "failed");
+    draw_rect(0, 0, GFX_W, GFX_H, failed ? gfx_rgba(0.12f, 0, 0, 0.82f) : gfx_rgba(0, 0, 0, 0.75f));
+
+    /* letter by letter so it can breathe like the original's */
+    float tw = 0, gap = 14, size = 52;
+    char ch[2] = {0, 0};
+    for (const char *p = title; *p; p++) {
+        ch[0] = *p;
+        tw += draw_text_width(size, ch) + gap;
     }
+    float tx = (GFX_W - tw + gap) / 2;
+    for (const char *p = title; *p; p++) {
+        ch[0] = *p;
+        tx += draw_text(tx, 162, size, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, ch) + gap;
+    }
+
+    const float w = 1443, h = 111, lean = 19, x = (GFX_W - w) / 2;
+    float y = failed ? 300 : 369;
+    for (int i = 0; i < n; i++) {
+        uint32_t c = ui_hex(b[i].colour, 1);
+        ui_shear_rect(x, y, w, h, lean, c);
+        ui_triangles(x + 40, y, w - 80, h, ui_mix(c, gfx_rgba(1, 1, 1, 1), 0.18f), wall_ms(), (unsigned)i * 31 + 7, 22);
+        draw_text(GFX_W / 2, y + h / 2 - 17, 34, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, b[i].label);
+        draw_text(x + w - 60, y + h / 2 - 10, 18, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, b[i].button);
+        y += h + 4;
+    }
+
+    char line[64];
+    const osu5_hud *hd = &app.last_hud;
+    float iy = 860;
+    snprintf(line, sizeof(line), "retry count: %d", play_retries);
+    draw_text(GFX_W / 2, iy, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, line);
+    snprintf(line, sizeof(line), "progress: %d%%", (int)(hd->progress * 100));
+    draw_text(GFX_W / 2, iy + 30, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, line);
+    snprintf(line, sizeof(line), "accuracy: %.2f%%", hd->accuracy * 100);
+    draw_text(GFX_W / 2, iy + 60, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, line);
 }
 
 static void render_results(void)
@@ -2751,9 +2797,23 @@ static void render_help(void)
 
 /* ---- main menu ---- */
 
-enum { MENU_PLAY, MENU_MULTI, MENU_MAPS, MENU_SKINS, MENU_SETTINGS, MENU_COUNT };
-/* left to right on screen: settings sits on the logo's left */
-static const int menu_order[MENU_COUNT] = {MENU_SETTINGS, MENU_PLAY, MENU_MULTI, MENU_MAPS, MENU_SKINS};
+/* lazer's two rows: settings | play, skins, get maps, quit at the top, and play
+ * opening back | solo, multi. The first entry of each row sits left of the logo */
+enum { MB_SETTINGS, MB_PLAY, MB_SKINS, MB_MAPS, MB_QUIT, MB_BACK, MB_SOLO, MB_MULTI };
+static const int menu_top[] = {MB_SETTINGS, MB_PLAY, MB_SKINS, MB_MAPS, MB_QUIT};
+static const int menu_play[] = {MB_BACK, MB_SOLO, MB_MULTI};
+static int menu_level; /* 0 top, 1 play */
+int sceSystemServiceLoadExec(const char *path, char *const argv[]);
+
+static int menu_row(const int **ids)
+{
+    if (menu_level) {
+        *ids = menu_play;
+        return (int)(sizeof(menu_play) / sizeof(menu_play[0]));
+    }
+    *ids = menu_top;
+    return (int)(sizeof(menu_top) / sizeof(menu_top[0]));
+}
 
 static void menu_enter(void)
 {
@@ -2761,6 +2821,7 @@ static void menu_enter(void)
     if (!app.logo_tex) {
         int w, h, n;
         unsigned char *px = stbi_load("/app0/sce_sys/icon0.png", &w, &h, &n, 4);
+        app.menu_sel = 1; /* start on play, like lazer */
         if (px) {
             /* the icon is square; lazer's logo is round. Shrink the art into a
              * disc filled with the icon's own background so nothing gets cut */
@@ -2789,11 +2850,11 @@ static void menu_enter(void)
 
 static void menu_frame(const pad_state *pad)
 {
-    int pos = 0;
-    while (menu_order[pos] != app.menu_sel)
-        pos++;
-    pos = (pos + pad->nav_x + pad->nav_y + MENU_COUNT) % MENU_COUNT;
-    app.menu_sel = menu_order[pos];
+    {
+        const int *ids;
+        int n = menu_row(&ids);
+        app.menu_sel = (app.menu_sel + pad->nav_x + pad->nav_y + n) % n;
+    }
 
     /* something playing behind the menu: whatever song select is on */
     if (app.songs.count > 0 && app.previewed != app.sel) {
@@ -2820,14 +2881,24 @@ static void menu_frame(const pad_state *pad)
     if (pad->pressed & PAD_TRIANGLE && (up.state == UPDATE_AVAILABLE || up.state == UPDATE_FAILED))
         update_install();
 
+    const int *ids;
+    int n = menu_row(&ids);
+    if (pad->pressed & PAD_CIRCLE && menu_level) {
+        menu_level = 0;
+        app.menu_sel = 1;
+        return;
+    }
     if (!(pad->pressed & PAD_CROSS))
         return;
-    switch (app.menu_sel) {
-    case MENU_PLAY: app.scr = SCREEN_SELECT; break;
-    case MENU_MAPS: mapdl_ui_open(); app.scr = SCREEN_DOWNLOAD; break;
-    case MENU_SKINS: skin_ui_open(false); app.scr = SCREEN_SKINS; break;
-    case MENU_SETTINGS: app.set_sel = 0; app.scr = SCREEN_SETTINGS; break;
-    case MENU_MULTI: mp_open(); break;
+    switch (ids[app.menu_sel < n ? app.menu_sel : 0]) {
+    case MB_PLAY: menu_level = 1; app.menu_sel = 1; break;
+    case MB_BACK: menu_level = 0; app.menu_sel = 1; break;
+    case MB_SOLO: app.scr = SCREEN_SELECT; break;
+    case MB_MULTI: mp_open(); break;
+    case MB_MAPS: mapdl_ui_open(); app.scr = SCREEN_DOWNLOAD; break;
+    case MB_SKINS: skin_ui_open(false); app.scr = SCREEN_SKINS; break;
+    case MB_SETTINGS: app.set_sel = 0; app.scr = SCREEN_SETTINGS; break;
+    case MB_QUIT: settings_save(); sceSystemServiceLoadExec("exit", NULL); break;
     }
 }
 
@@ -2838,7 +2909,7 @@ static void render_menu(void)
     float t = (float)(now / 1000.0);
 
     /* toolbar along the top */
-    draw_rect(0, 0, GFX_W, 56, gfx_rgba(0.09f, 0.09f, 0.1f, 0.92f));
+    draw_rect(0, 0, GFX_W, 56, ui_hex(0x191919, 0.96f));
     draw_text(28, 14, 26, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, "ProjectCadence");
     {
         char who[96];
@@ -2852,62 +2923,80 @@ static void render_menu(void)
         draw_text(GFX_W - 28, 16, 22, gfx_rgba(1, 1, 1, 0.8f), ALIGN_RIGHT, who);
     }
 
-    /* the button strip through the middle, the logo sitting on its left end */
-    const float bar_h = 132, bar_y = GFX_H / 2 - bar_h / 2, lean = 25, base_w = 181;
+    /* the button strip through the middle, the logo sitting on its left end;
+     * sizes from lazer at 1080p: 133 tall, 181 wide, 25 of lean */
+    const float bar_h = 133, bar_y = GFX_H / 2 - bar_h / 2, lean = 25, base_w = 181;
     float pulse = 1 + 0.025f * sinf(t * 2 * 3.14159f * 1.2f);
-    float lx = 640, ly = GFX_H / 2, lsize = 330 * pulse;
-    draw_rect(0, bar_y, GFX_W, bar_h, gfx_rgba(0.2f, 0.2f, 0.2f, 0.82f));
+    float lx = 652, ly = GFX_H / 2, lsize = 284 * pulse;
+    draw_rect(0, bar_y, GFX_W, bar_h, ui_hex(0x323232, 0.92f));
 
-    static const char *items[MENU_COUNT] = {"play", "multiplayer", "get maps", "skins", "settings"};
-    static const uint32_t cols[MENU_COUNT] = {UI_PURPLE, UI_PURPLE_DARK, UI_LIME, UI_ORANGE, UI_GREY};
-    static float widths[MENU_COUNT];
-    float x = lx - lsize * 0.32f - base_w - lean; /* settings tucks just under the logo's edge */
-    for (int k = 0; k < MENU_COUNT; k++) {
-        int i = menu_order[k];
-        bool on = i == app.menu_sel;
-        if (k == 1)
-            x = lx + lsize * 0.42f; /* the rest start at the logo's right edge */
+    static const char *names[] = {"settings", "play", "skins", "get maps", "quit", "back", "solo", "multi"};
+    static const uint32_t cols[] = {UI_GREY, UI_PURPLE, UI_ORANGE, UI_LIME, 0xEE3399, 0x4A4AAB, 0x6644CC, 0x5E3FBA};
+    static float widths[8];
+    const int *ids;
+    int n = menu_row(&ids);
+    if (app.menu_sel >= n)
+        app.menu_sel = 1;
+    float x = 0;
+    for (int k = 0; k < n; k++) {
+        int i = ids[k];
+        bool on = k == app.menu_sel;
         if (widths[i] <= 0)
             widths[i] = base_w;
         widths[i] = ui_approach(widths[i], on ? base_w * 1.5f : base_w, 0.25f);
         float w = widths[i];
         if (k == 0)
-            x = lx - lsize * 0.32f - w - lean; /* grows to the left, away from the logo */
+            x = lx - lsize * 0.5f - w - 20; /* grows to the left, away from the logo */
+        else if (k == 1)
+            x = lx + lsize * 0.5f - 5; /* the rest start at the logo's right edge */
         uint32_t c = ui_hex(cols[i], 1);
         if (on)
             c = ui_mix(c, gfx_rgba(1, 1, 1, 1), 0.12f);
         ui_shear_rect(x, bar_y, w + lean, bar_h, lean, c);
-        if (on)
-            ui_shear_rect(x, bar_y + bar_h - 6, w + lean, 6, 0, gfx_rgba(1, 1, 1, 0.85f));
 
-        /* icon bobs on the beat when selected */
-        /* settings runs in under the logo, so centre its contents on the part you can see */
+        /* the left one runs in under the logo, so centre on the part you can see */
         float vis_r = k == 0 ? lx - lsize * 0.5f - 14 : x + w + lean;
-        float icx = (x + vis_r) / 2, icy = bar_y + 50 - (on ? 6 * fabsf(sinf(t * 3.14159f * 1.2f)) : 0);
+        float icx = (x + vis_r) / 2, icy = bar_y + bar_h * 0.44f - (on ? 5 * fabsf(sinf(t * 3.14159f * 1.2f)) : 0);
         uint32_t ic = gfx_rgba(1, 1, 1, 1);
         switch (i) {
-        case MENU_PLAY:
-            arc(icx, icy, 19, 3, 0, 1, ic);
+        case MB_PLAY:
+            arc(icx, icy, 20, 3, 0, 1, ic);
             ui_play_icon(icx + 1, icy, 18, ic);
             break;
-        case MENU_MULTI:
-            ui_disc(icx - 13, icy - 8, 9, ic);
-            ui_disc(icx + 13, icy - 8, 9, ic);
-            ui_round_rect(icx - 27, icy + 5, 26, 16, 7, ic);
-            ui_round_rect(icx + 1, icy + 5, 26, 16, 7, ic);
+        case MB_SOLO:
+            arc(icx, icy, 20, 3, 0, 1, ic);
+            ui_disc(icx, icy - 5, 6, ic);
+            ui_round_rect(icx - 10, icy + 4, 20, 9, 4, ic);
             break;
-        case MENU_MAPS:
+        case MB_MULTI:
+            arc(icx, icy, 20, 3, 0, 1, ic);
+            draw_rect(icx - 20, icy - 1.5f, 40, 3, ic);
+            arc(icx, icy, 9, 3, 0, 1, ic);
+            break;
+        case MB_MAPS:
             draw_rect(icx - 4, icy - 20, 8, 22, ic);
             ui_arrow_down(icx, icy + 8, 26, ic);
             draw_rect(icx - 18, icy + 18, 36, 5, ic);
             break;
-        case MENU_SKINS:
-            arc(icx, icy, 16, 6, 0, 1, ic);
-            ui_disc(icx, icy, 6, ic);
+        case MB_SKINS:
+            arc(icx, icy, 20, 3, 0, 1, ic);
+            ui_disc(icx, icy, 7, ic);
             break;
-        case MENU_SETTINGS: ui_gear_icon(icx, icy, 44, ic); break;
+        case MB_QUIT:
+        case MB_BACK:
+            arc(icx, icy, 20, 3, 0, 1, ic);
+            if (i == MB_BACK) {
+                ui_arrow_left(icx - 3, icy, 14, ic);
+                draw_rect(icx - 2, icy - 1.5f, 12, 3, ic);
+            } else {
+                gfx_bind(0);
+                gfx_push(&(gfx_inst){icx, icy, 10, 1.5f, 0.785f, gfx_next_z(), ic, GK_RECT, {0}});
+                gfx_push(&(gfx_inst){icx, icy, 10, 1.5f, -0.785f, gfx_next_z(), ic, GK_RECT, {0}});
+            }
+            break;
+        case MB_SETTINGS: ui_gear_icon(icx, icy, 44, ic); break;
         }
-        draw_text(icx, bar_y + bar_h - 38, 19, gfx_rgba(1, 1, 1, 0.95f), ALIGN_CENTRE, items[i]);
+        draw_text(icx, bar_y + bar_h - 40, 20, gfx_rgba(1, 1, 1, 0.95f), ALIGN_CENTRE, names[i]);
         x += w;
     }
 
@@ -3043,6 +3132,7 @@ int main(void)
             } else if (pad.pressed & PAD_CIRCLE) {
                 back_to_select();
             } else if (pad.pressed & PAD_TRIANGLE && !app.mp_playing) {
+                play_retries++;
                 start_song(app.playing);
             }
             break;
@@ -3051,7 +3141,10 @@ int main(void)
             double k = (wall_ms() - app.fail_time) / 1500.0;
             audio_music_volume(app.music_vol * (float)fmax(0, 1 - k));
             if (k > 1) audio_music_stop();
-            if (pad.pressed & PAD_CROSS && !app.mp_playing) start_song(app.playing);
+            if (pad.pressed & PAD_CROSS && !app.mp_playing) {
+                play_retries++;
+                start_song(app.playing);
+            }
             else if (pad.pressed & (PAD_CIRCLE | PAD_CROSS)) back_to_select();
             break;
         }
@@ -3121,21 +3214,21 @@ int main(void)
             render_play();
             {
                 static const overlay_button pb[] = {
-                    {"continue", "CROSS", 0x88B300}, {"retry", "TRIANGLE", 0xD99D00}, {"quit", "CIRCLE", 0xAA1B27},
+                    {"continue", "CROSS", 0x88B300}, {"retry", "TRIANGLE", 0xEEAA00}, {"quit", "CIRCLE", 0xAA1B27},
                 };
-                render_overlay("paused", "", pb, 3);
+                render_overlay("pause", pb, 3);
             }
             {
                 char ob[64];
                 snprintf(ob, sizeof(ob), "map offset %+d ms   (LEFT/RIGHT)", app.map_offset);
-                draw_text(GFX_W / 2, 640, 26, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_CENTRE, ob);
+                draw_text(GFX_W / 2, 770, 22, gfx_rgba(1, 1, 1, 0.55f), ALIGN_CENTRE, ob);
             }
             break;
         case SCREEN_FAILED:
             render_play();
             {
-                static const overlay_button fb[] = {{"retry", "CROSS", 0xD99D00}, {"quit", "CIRCLE", 0xAA1B27}};
-                render_overlay("failed", "", fb, 2);
+                static const overlay_button fb[] = {{"retry", "CROSS", 0xEEAA00}, {"quit", "CIRCLE", 0xAA1B27}};
+                render_overlay("failed", fb, 2);
             }
             break;
         case SCREEN_RESULTS:

@@ -41,6 +41,14 @@ void ui_disc(float cx, float cy, float r, uint32_t c);
 /* cuts s down with "..." until it fits; s needs 4 bytes spare */
 void ui_fit(char *s, float size, float max_w);
 void ui_search_icon(float cx, float cy, float size, uint32_t c);
+/* lazer's plum (multiplayer) colours at lightness l */
+uint32_t ui_plum(float l, float a);
+/* the band across the top: "section  ·  title" */
+void ui_header(const char *section, const char *title, uint32_t accent);
+/* the strip along the bottom, with the pink back button when back names its key */
+void ui_footer(const char *hints, const char *back);
+/* a rounded label; returns its width */
+float ui_pill(float x, float y, float size, uint32_t bg, uint32_t fg, const char *s);
 
 float ui_approach(float cur, float target, float rate);
 
