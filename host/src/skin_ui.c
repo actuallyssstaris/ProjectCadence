@@ -7,6 +7,7 @@
 #include "skin.h"
 #include "skin_img.h"
 #include "skins.h"
+#include "ui.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -192,18 +193,22 @@ bool skin_ui_frame(const pad_state *pad)
 void skin_ui_render(void)
 {
     char buf[256];
-    uint32_t white = gfx_rgba(1, 1, 1, 1), dim = gfx_rgba(1, 1, 1, 0.65f);
+    uint32_t white = gfx_rgba(1, 1, 1, 1), dim = gfx_rgba(1, 1, 1, 0.6f);
     const skin_remote *rs;
     int nr = skins_remote(&rs);
 
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.55f));
-    draw_text(120, 70, 52, white, ALIGN_LEFT, ui.first_run ? "welcome! pick a skin to start" : "skins");
-    draw_text(120, 140, 24, dim, ALIGN_LEFT,
-              ui.first_run ? "you can change it later from song select (press the touchpad)" : "the one you pick is used right away");
-    snprintf(buf, sizeof(buf), "%d / %d", ui.sel + 1, ui.nrows);
-    draw_text(1220, 140, 24, dim, ALIGN_RIGHT, buf);
+    /* lazer keeps skins in its settings panel: the same purple-grey sheet here,
+     * one rounded row per skin with its state as a pill */
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.6f));
+    const float px = 360, pw = GFX_W - 720;
+    draw_rect(px, 0, pw, GFX_H, ui_hex(0x2C2A35, 0.98f));
+    draw_text(px + 50, 40, 40, white, ALIGN_LEFT, ui.first_run ? "pick a skin" : "skin");
+    draw_text(px + 50, 96, 19, dim, ALIGN_LEFT,
+              ui.first_run ? "you can change it later from settings or song select (touchpad)" : "the one you pick is used right away");
+    snprintf(buf, sizeof(buf), "current: %s", skins_active());
+    ui_pill(px + pw - 50 - draw_text_width(15, buf) - 18, 50, 15, ui_hex(0x6644CC, 1), white, buf);
 
-    const float top = 210, h = 86;
+    const float top = 150, h = 84;
     ui.scroll += (ui.sel - ui.scroll) * 0.25f;
     if (ui.sel - ui.scroll > 30 || ui.scroll - ui.sel > 30)
         ui.scroll = (float)ui.sel;
@@ -212,66 +217,74 @@ void skin_ui_render(void)
         first = 0;
     for (int i = (int)first; i < ui.nrows; i++) {
         float y = top + (i - first) * h;
-        if (y > GFX_H - 380)
+        if (y + h > GFX_H - 200)
             break;
         if (y < top - 1)
             continue;
         const row *r = &ui.rows[i];
         bool on = i == ui.sel;
-        draw_rect(120, y, 1100, h - 10, on ? gfx_rgba(1, 1, 1, 0.92f) : gfx_rgba(0, 0, 0, 0.5f));
-        uint32_t tc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 1) : white;
-        uint32_t sc = on ? gfx_rgba(0.1f, 0.1f, 0.15f, 0.7f) : dim;
+        float x = px + 40, w = pw - 80;
+        if (on)
+            ui_round_rect(x - 3, y - 3, w + 6, h - 4, 11, gfx_rgba(1, 1, 1, 0.85f));
+        ui_round_rect(x, y, w, h - 10, 9, on ? ui_hex(0x46444F, 1) : ui_hex(0x23212B, 1));
 
-        const char *state = !strcmp(r->id, skins_active()) ? "in use" : installed(r) ? "installed" : "download";
-
+        bool active = !strcmp(r->id, skins_active());
+        const char *state = active ? "in use" : installed(r) ? "installed" : "download";
+        uint32_t sc = active ? ui_hex(0xB3FF66, 1) : installed(r) ? ui_hex(0x66CCFF, 1) : ui_hex(0x555555, 1);
+        const char *name = "", *sub = "";
+        char subbuf[160];
         switch (r->kind) {
         case ROW_CATALOG: {
             const skin_entry *e = &skin_catalog[r->index];
-            draw_text(145, y + 12, 28, tc, ALIGN_LEFT, e->name);
-            snprintf(buf, sizeof(buf), "by %s - %s", e->author, e->licence);
-            draw_text(145, y + 48, 18, sc, ALIGN_LEFT, buf);
+            name = e->name;
+            snprintf(subbuf, sizeof(subbuf), "by %s  -  %s", e->author, e->licence);
+            sub = subbuf;
             break;
         }
         case ROW_REMOTE:
             if (r->index < nr) {
-                draw_text(145, y + 12, 28, tc, ALIGN_LEFT, rs[r->index].name);
-                snprintf(buf, sizeof(buf), "by %.50s - via o!rdr, used in %d renders", rs[r->index].author, rs[r->index].used);
-                draw_text(145, y + 48, 18, sc, ALIGN_LEFT, buf);
+                name = rs[r->index].name;
+                snprintf(subbuf, sizeof(subbuf), "by %.50s  -  via o!rdr, used in %d renders", rs[r->index].author, rs[r->index].used);
+                sub = subbuf;
             }
             break;
         case ROW_BUILTIN:
-            draw_text(145, y + 12, 28, tc, ALIGN_LEFT, "built-in look");
-            draw_text(145, y + 48, 18, sc, ALIGN_LEFT, "no download, plain shapes");
+            name = "built-in look";
+            sub = "no download, plain shapes";
             break;
         default:
-            draw_text(145, y + 12, 28, tc, ALIGN_LEFT, r->id);
-            draw_text(145, y + 48, 18, sc, ALIGN_LEFT, "added by you");
+            name = r->id;
+            sub = "added by you";
             break;
         }
-        draw_text(1195, y + 26, 24, tc, ALIGN_RIGHT, state);
+        snprintf(buf, sizeof(buf), "%s", name);
+        ui_fit(buf, 24, w - 220);
+        draw_text(x + 24, y + 10, 24, white, ALIGN_LEFT, buf);
+        draw_text(x + 24, y + 42, 16, dim, ALIGN_LEFT, sub);
+        float tw = draw_text_width(15, state) + 18;
+        ui_pill(x + w - 24 - tw, y + 24, 15, sc, ui_hex(0x222222, 1), state);
     }
 
+    float ny = GFX_H - 190;
     if (ui.job.state == 1) {
         snprintf(buf, sizeof(buf), "%.80s: %s %.1f MB", row_name(&ui.job_row), ui.job.msg, ui.job.bytes / 1048576.0);
         if (ui.job.total > 1)
             snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), " (%d/%d files)", ui.job.done, ui.job.total);
-        draw_text(120, GFX_H - 280, 28, white, ALIGN_LEFT, buf);
+        draw_text(px + 50, ny, 22, ui_hex(0x66CCFF, 1), ALIGN_LEFT, buf);
     } else if (ui.note[0]) {
-        draw_text(120, GFX_H - 280, 28, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, ui.note);
+        draw_text(px + 50, ny, 22, ui_hex(0xFFCC22, 1), ALIGN_LEFT, ui.note);
     } else if (ui.remote_state == 1) {
-        draw_text(120, GFX_H - 280, 24, dim, ALIGN_LEFT, "getting the o!rdr skin list...");
+        draw_text(px + 50, ny, 20, dim, ALIGN_LEFT, "getting the o!rdr skin list...");
     } else if (ui.remote_state == 3) {
-        draw_text(120, GFX_H - 280, 24, dim, ALIGN_LEFT, "couldn't get the o!rdr skin list (offline?)");
+        draw_text(px + 50, ny, 20, dim, ALIGN_LEFT, "couldn't get the o!rdr skin list (offline?)");
     }
-
     const row *cur = &ui.rows[ui.sel];
     if (cur->kind == ROW_CATALOG && cur->index == 0)
-        draw_text(120, GFX_H - 236, 20, dim, ALIGN_LEFT, "osu! classic skin by ppy, CC BY-NC 4.0, fetched from github.com/ppy/osu-resources");
+        draw_text(px + 50, ny + 34, 16, dim, ALIGN_LEFT, "osu! classic skin by ppy, CC BY-NC 4.0, fetched from github.com/ppy/osu-resources");
     else if (cur->kind == ROW_REMOTE)
-        draw_text(120, GFX_H - 236, 20, dim, ALIGN_LEFT, "skins from o!rdr (ordr.issou.best), made and shared by their authors");
+        draw_text(px + 50, ny + 34, 16, dim, ALIGN_LEFT, "skins from o!rdr (ordr.issou.best), made and shared by their authors");
+    draw_text(px + 50, ny + 60, 16, dim, ALIGN_LEFT, "or unzip any .osk into /data/cadence/skins/<name>/ over FTP and it shows up here");
 
-    draw_text(120, GFX_H - 168, 22, dim, ALIGN_LEFT, "or unzip any .osk into /data/cadence/skins/<name>/ over FTP and it shows up here");
-    draw_text(120, GFX_H - 110, 26, white, ALIGN_LEFT,
-              ui.first_run ? "CROSS pick   L1/R1 page   CIRCLE skip (built-in look)"
-                           : "CROSS use / download   TRIANGLE re-download   L1/R1 page   CIRCLE back");
+    ui_footer(ui.first_run ? "CROSS pick   L1/R1 page" : "CROSS use / download   TRIANGLE re-download   L1/R1 page",
+              ui.first_run ? "CIRCLE skip" : "CIRCLE");
 }

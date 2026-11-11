@@ -3,7 +3,9 @@ using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Collections.Generic;
 using Osu5.Beatmaps;
+using Osu5.Objects;
 using Osu5.Play;
 
 namespace Osu5.Native
@@ -361,6 +363,52 @@ namespace Osu5.Native
                 writeString(m.Metadata.Creator, info->Creator, 64);
                 writeString(m.Metadata.AudioFile, info->Audio, 128);
                 writeString(m.Metadata.BackgroundFile, info->Background, 128);
+                return 0;
+            }
+            catch (Exception e)
+            {
+                lastError = e.Message;
+                return -1;
+            }
+        }
+
+        // what song select's details show: circles, sliders, spinners, length in ms
+        // and the bpm that holds for most of the map, the way lazer picks it
+        [UnmanagedCallersOnly(EntryPoint = "osu5_map_stats", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static int MapStats(byte* path, int* out5)
+        {
+            try
+            {
+                string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
+                var m = BeatmapDecoder.Decode(p);
+                int circles = 0, sliders = 0, spinners = 0;
+                foreach (var h in m.HitObjects)
+                {
+                    if (h is Slider) sliders++;
+                    else if (h is Spinner) spinners++;
+                    else circles++;
+                }
+
+                double end = m.LastObjectEndTime, length = end - m.FirstObjectTime;
+                var timing = m.ControlPoints.Timing;
+                var spans = new Dictionary<long, double>();
+                for (int i = 0; i < timing.Count; i++)
+                {
+                    double from = i == 0 ? 0 : timing[i].Time;
+                    double to = i + 1 < timing.Count ? timing[i + 1].Time : end;
+                    if (to <= from || timing[i].BeatLength <= 0) continue;
+                    long key = (long)Math.Round(timing[i].BeatLength * 1000);
+                    spans[key] = spans.GetValueOrDefault(key) + (to - from);
+                }
+                double beat = 0, best = -1;
+                foreach (var kv in spans)
+                    if (kv.Value > best) { best = kv.Value; beat = kv.Key / 1000.0; }
+
+                out5[0] = circles;
+                out5[1] = sliders;
+                out5[2] = spinners;
+                out5[3] = (int)Math.Max(0, length);
+                out5[4] = beat > 0 ? (int)Math.Round(60000 / beat) : 0;
                 return 0;
             }
             catch (Exception e)

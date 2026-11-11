@@ -150,6 +150,8 @@ int osu5_poll_sound(osu5_sound *ev);
 int osu5_string(int id, char *buf, int len);
 void osu5_difficulty(float *out4);
 int osu5_peek(const char *path, osu5_peek_info *info);
+/* circles, sliders, spinners, length (ms), main bpm; a full parse, so not per frame */
+int osu5_map_stats(const char *path, int out5[5]);
 
 #ifdef __cplusplus
 }

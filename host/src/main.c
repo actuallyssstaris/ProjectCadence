@@ -1320,105 +1320,174 @@ static void render_select(void)
         float curve = off * off * 110;
 
         if (rows[r].kind == ROW_DIFF) {
+            /* lazer's difficulty panel: tinted with its star colour, brighter when picked */
             bool on = r == sel_row;
             float x = (on ? 960 : 1000) + curve;
             float st = stars_get(e->file, 0);
             uint32_t sc = st >= 0 ? star_colour(st, 1) : gfx_rgba(0.5f, 0.5f, 0.5f, 1);
             if (on)
-                ui_round_rect(x - 4, y - 4, GFX_W - x + 30, row + 2, 16, ui_mix(sc, gfx_rgba(1, 1, 1, 1), 0.3f));
-            ui_round_rect(x, y, GFX_W - x + 30, row - 6, 12, on ? gfx_rgba(0.16f, 0.16f, 0.2f, 0.97f) : gfx_rgba(0.1f, 0.1f, 0.13f, 0.85f));
-            /* the rating's colour down the left edge */
-            ui_round_rect(x, y, 14, row - 6, 7, sc);
+                ui_round_rect(x - 3, y - 3, GFX_W - x + 30, row, 14, gfx_rgba(1, 1, 1, 0.9f));
+            ui_round_rect(x, y, GFX_W - x + 30, row - 6, 12, ui_mix(ui_hex(0x222222, 0.95f), sc, on ? 0.55f : 0.22f));
+            ui_disc(x + 22, y + (row - 6) / 2, 8, gfx_rgba(1, 1, 1, on ? 0.95f : 0.6f));
             uint32_t tc = gfx_rgba(1, 1, 1, on ? 1 : 0.9f);
-            float tx = x + 28;
-            if (st >= 0)
-                tx += star_pill(tx, y + 10, 30, st) + 14;
+            float tx = x + 44;
             if (in->mode != 0) {
-                /* which game this difficulty is */
                 char tag[16];
                 if (in->mode == 3)
                     snprintf(tag, sizeof(tag), "%dK", (int)lroundf(in->cs));
                 else
-                    snprintf(tag, sizeof(tag), "%s", in->mode == 1 ? "TAIKO" : "CATCH");
-                float tw = draw_text_width(16, tag) + 20;
-                uint32_t tagc = in->mode == 1 ? gfx_rgba(0.92f, 0.3f, 0.3f, 1) : in->mode == 2 ? gfx_rgba(0.3f, 0.75f, 0.45f, 1)
-                                                                               : gfx_rgba(0.6f, 0.45f, 1, 1);
-                draw_rect(tx, y + 12, tw, 26, tagc);
-                draw_text(tx + tw / 2, y + 17, 16, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, tag);
-                tx += tw + 12;
+                    snprintf(tag, sizeof(tag), "%s", in->mode == 1 ? "taiko" : "catch");
+                tx += ui_pill(tx, y + 10, 14, gfx_rgba(0, 0, 0, 0.4f), gfx_rgba(1, 1, 1, 0.9f), tag) + 10;
             }
-            snprintf(buf, sizeof(buf), "%.80s", in->version);
-            draw_text(tx, y + 14, 24, tc, ALIGN_LEFT, buf);
-            if (in->mode == 3)
-                snprintf(buf, sizeof(buf), "%d keys  OD %.1f  HP %.1f", (int)lroundf(in->cs), in->od, in->hp);
-            else if (in->mode == 1)
-                snprintf(buf, sizeof(buf), "OD %.1f  HP %.1f", in->od, in->hp);
-            else
-                snprintf(buf, sizeof(buf), "CS %.1f  AR %.1f  OD %.1f  HP %.1f", in->cs, in->ar, in->od, in->hp);
-            draw_text(x + 28, y + 46, 16, tc, ALIGN_LEFT, buf);
+            float nw = draw_text(tx, y + 10, 22, tc, ALIGN_LEFT, in->version);
+            snprintf(buf, sizeof(buf), "mapped by %.40s", in->creator);
+            draw_text(tx + nw + 10, y + 14, 16, gfx_rgba(1, 1, 1, 0.65f), ALIGN_LEFT, buf);
+            float px = x + 44;
+            if (st >= 0)
+                px += star_pill(px, y + 40, 24, st) + 10;
+            /* a star per whole point, like the panel's star row */
+            int whole = st >= 0 ? (int)st : 0;
+            for (int k = 0; k < 10; k++)
+                ui_disc(px + 8 + k * 16, y + 52, 4.5f, k < whole ? gfx_rgba(1, 1, 1, 0.85f) : gfx_rgba(1, 1, 1, 0.18f));
             continue;
         }
 
-        /* a set: closed panel, or the header above the open one's difficulties */
+        /* a set: lazer's panel with its background as the cover, fading to dark */
         bool header = rows[r].kind == ROW_HEADER;
         float x = (header ? 920 : 980) + curve;
         int n = set_end(rows[r].index) - rows[r].index;
-        float th = row - 6, tw = th * 16 / 9;
+        float th = row - 6, pw = GFX_W - x + 30;
         if (header)
-            ui_round_rect(x - 4, y - 4, GFX_W - x + 30, th + 8, 16, ui_hex(UI_YELLOW, 0.9f));
-        ui_round_rect(x, y, GFX_W - x + 30, th, 12, gfx_rgba(0.07f, 0.07f, 0.09f, header ? 0.95f : 0.8f));
-        thumb_box(set_thumb(e), x + 6, y + 6, tw - 12, th - 12, header ? 1 : 0.7f);
-        x += tw;
-        uint32_t tc = gfx_rgba(1, 1, 1, header ? 1 : 0.9f);
+            ui_round_rect(x - 3, y - 3, pw, th + 6, 14, gfx_rgba(1, 1, 1, 0.85f));
+        ui_round_rect(x, y, pw, th, 12, ui_hex(0x1A1A1A, 0.95f));
+        int tex = set_thumb(e);
+        if (tex) {
+            float cw = pw * 0.55f;
+            gfx_bind(tex);
+            gfx_push(&(gfx_inst){x + cw / 2, y + th / 2, cw / 2, th / 2, 0, gfx_next_z(), gfx_rgba(1, 1, 1, header ? 0.9f : 0.6f), GK_TEX,
+                                 {0, 0.25f, 1, 0.75f}});
+            gfx_bind(0);
+            for (int k = 0; k < 8; k++) /* the fade, in bands */
+                draw_rect(x + cw * (0.3f + k * 0.0875f), y, cw * 0.0875f + 1, th, ui_hex(0x1A1A1A, 0.12f + k * 0.11f));
+        }
+        uint32_t tc = gfx_rgba(1, 1, 1, header ? 1 : 0.92f);
         snprintf(buf, sizeof(buf), "%.90s", in->title);
-        draw_text(x + 20, y + 8, 26, tc, ALIGN_LEFT, buf);
-        if (e->video) {
-            draw_rect(GFX_W - 120, y + 10, 96, 26, gfx_rgba(1, 0.47f, 0.63f, 0.95f));
-            draw_text(GFX_W - 72, y + 15, 16, gfx_rgba(0.1f, 0.05f, 0.08f, 1), ALIGN_CENTRE, "VIDEO");
-        }
-        /* star range of the set, once every difficulty in it is rated */
-        float lo = 1e9f, hi = -1;
-        for (int i = rows[r].index; i < rows[r].index + n; i++) {
+        draw_text(x + 24, y + 6, 24, tc, ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%.60s", in->artist);
+        draw_text(x + 24, y + 34, 16, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, buf);
+        if (e->video)
+            ui_pill(GFX_W - 110, y + 8, 12, ui_hex(UI_PINK, 1), gfx_rgba(1, 1, 1, 1), "VIDEO");
+        /* a dot per difficulty in its star colour, once they're rated */
+        float dx = x + 24;
+        for (int i = rows[r].index; i < rows[r].index + n && i < rows[r].index + 16; i++) {
             float st = stars_get(app.songs.items[i].file, 0);
-            if (st < 0) {
-                hi = -1;
-                break;
-            }
-            lo = fminf(lo, st);
-            hi = fmaxf(hi, st);
+            ui_round_rect(dx, y + 56, 8, 14, 4, st >= 0 ? star_colour(st, 1) : gfx_rgba(1, 1, 1, 0.3f));
+            dx += 11;
         }
-        char range[32] = "";
-        if (hi >= 0)
-            snprintf(range, sizeof(range), n > 1 ? "  //  %.1f-%.1f*" : "  //  %.2f*", lo, hi);
-        snprintf(buf, sizeof(buf), "%.60s  //  %.40s  //  %d %s%s", in->artist, in->creator, n, n == 1 ? "difficulty" : "difficulties", range);
-        draw_text(x + 20, y + 42, 18, tc, ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%d %s  //  %.40s", n, n == 1 ? "difficulty" : "difficulties", in->creator);
+        draw_text(dx + 8, y + 54, 15, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, buf);
     }
 
     const osu5_peek_info *in = &app.songs.items[app.sel].info;
-    /* the wedge: a leaning dark panel, top left, with the map's details */
-    ui_shear_rect(-60, 0, 960, 300, 50, gfx_rgba(0.05f, 0.05f, 0.07f, 0.88f));
-    draw_text(40, 26, 40, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, in->title);
-    draw_text(40, 78, 26, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, in->artist);
-    snprintf(buf, sizeof(buf), "%.90s   mapped by %.60s", in->version, in->creator);
-    draw_text(40, 122, 22, ui_hex(UI_YELLOW, 0.95f), ALIGN_LEFT, buf);
     const char *selfile = app.songs.items[app.sel].file;
+    /* the wedge, lazer's: title and artist, the map's numbers in pills, the
+     * difficulty under its star pill, then a column per stat with a bar on top */
+    ui_shear_rect(-60, 0, 995, 318, 46, ui_hex(0x1C1C1C, 0.86f));
+    {
+        static const char *modes[4] = {"osu!", "taiko", "catch", "mania"};
+        ui_pill(28, 16, 13, ui_hex(0x555555, 1), gfx_rgba(1, 1, 1, 0.9f), modes[in->mode & 3]);
+    }
+    snprintf(buf, sizeof(buf), "%s", in->title);
+    ui_fit(buf, 36, 860);
+    draw_text(28, 44, 36, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+    snprintf(buf, sizeof(buf), "%s", in->artist);
+    ui_fit(buf, 19, 860);
+    draw_text(28, 90, 19, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, buf);
+
+    /* length, bpm and object counts need the whole map read, so only once the
+     * selection has sat still for a moment */
+    static char stats_for[512];
+    static int stats[5] = {-1};
+    static double still_since;
+    static int last_sel = -1;
+    if (app.sel != last_sel) {
+        last_sel = app.sel;
+        still_since = wall_ms();
+    }
+    if (strcmp(stats_for, selfile) && wall_ms() - still_since > 250) {
+        snprintf(stats_for, sizeof(stats_for), "%s", selfile);
+        if (osu5_map_stats(selfile, stats) != 0)
+            stats[0] = -1;
+    }
+    bool have_stats = !strcmp(stats_for, selfile) && stats[0] >= 0;
+    {
+        float px = 28, py = 124;
+        char pill[48];
+        if (have_stats) {
+            int sec = stats[3] / 1000;
+            snprintf(pill, sizeof(pill), "length  %d:%02d", sec / 60, sec % 60);
+            px += ui_pill(px, py, 16, gfx_rgba(0, 0, 0, 0.45f), gfx_rgba(1, 1, 1, 0.9f), pill) + 8;
+            snprintf(pill, sizeof(pill), "bpm  %d", stats[4]);
+            px += ui_pill(px, py, 16, gfx_rgba(0, 0, 0, 0.45f), gfx_rgba(1, 1, 1, 0.9f), pill) + 8;
+        }
+        bool fav = fav_is(app.songs.items[app.sel].dir);
+        px += ui_pill(px, py, 16, fav ? ui_hex(UI_PINK, 1) : gfx_rgba(0, 0, 0, 0.45f), gfx_rgba(1, 1, 1, 0.9f),
+                      fav ? "favourite" : "not favourite  (L3)") + 8;
+        snprintf(pill, sizeof(pill), "%d %s", app.nscores, app.nscores == 1 ? "score" : "scores");
+        px += ui_pill(px, py, 16, gfx_rgba(0, 0, 0, 0.45f), gfx_rgba(1, 1, 1, 0.9f), pill) + 8;
+        snprintf(pill, sizeof(pill), "offset %+dms", app.offset_ms);
+        ui_pill(px, py, 16, gfx_rgba(0, 0, 0, 0.45f), ui_hex(UI_YELLOW, 1), pill);
+    }
+
     float st = stars_get(selfile, 0), mst = stars_mods(app.mods) ? stars_get(selfile, stars_mods(app.mods)) : st;
-    /* rating (with mods when they change it), then the four numbers as bars */
-    float bx = 40;
-    if (mst >= 0)
-        bx += star_pill(40, 170, 38, mst) + 20;
-    else if (st >= 0)
-        bx += star_pill(40, 170, 38, st) + 20;
-    float bw = (820 - bx - 3 * 16) / 4;
-    stat_bar(bx, 170, bw, "CS", in->cs, 10);
-    stat_bar(bx + (bw + 16), 170, bw, "AR", in->ar, 10);
-    stat_bar(bx + (bw + 16) * 2, 170, bw, "OD", in->od, 10);
-    stat_bar(bx + (bw + 16) * 3, 170, bw, "HP", in->hp, 10);
+    float shown = mst >= 0 ? mst : st;
+    uint32_t dcol = shown >= 0 ? star_colour(shown, 1) : ui_hex(0xAAAAAA, 1);
+    {
+        float x = 28;
+        if (shown >= 0)
+            x += star_pill(28, 172, 30, shown) + 12;
+        snprintf(buf, sizeof(buf), "%s", in->version);
+        ui_fit(buf, 20, 420);
+        x += draw_text(x, 176, 20, dcol, ALIGN_LEFT, buf) + 8;
+        x += draw_text(x, 178, 17, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "mapped by ") ;
+        snprintf(buf, sizeof(buf), "%s", in->creator);
+        ui_fit(buf, 17, 880 - x);
+        draw_text(x, 178, 17, dcol, ALIGN_LEFT, buf);
+    }
+
+    /* stat columns: object counts on the left, the four settings on the right */
+    {
+        char v[24];
+        struct { const char *label; float value, max; bool count; } cols[7] = {
+            {"circles", (float)stats[0], 0, true}, {"sliders", (float)stats[1], 0, true}, {"spinners", (float)stats[2], 0, true},
+            {in->mode == 3 ? "keys" : "circle size", in->cs, 10, false}, {"approach rate", in->ar, 10, false},
+            {"accuracy", in->od, 10, false}, {"hp drain", in->hp, 10, false},
+        };
+        int total = have_stats ? stats[0] + stats[1] + stats[2] : 0;
+        for (int i = 0; i < 7; i++) {
+            float cw = 112, x = 28 + i * (cw + 8) + (i >= 3 ? 30 : 0), y = 226;
+            if (in->mode == 1 && (i == 3 || i == 4))
+                continue; /* taiko has no circle size or approach */
+            float k = cols[i].count ? (total ? cols[i].value / total : 0) : cols[i].value / cols[i].max;
+            if (k > 1) k = 1;
+            if (k < 0) k = 0;
+            ui_round_rect(x, y, cw, 5, 2.5f, gfx_rgba(1, 1, 1, 0.12f));
+            ui_round_rect(x, y, fmaxf(cw * k, 5), 5, 2.5f, dcol);
+            draw_text(x, y + 12, 15, gfx_rgba(1, 1, 1, 0.75f), ALIGN_LEFT, cols[i].label);
+            if (cols[i].count)
+                snprintf(v, sizeof(v), "%s", have_stats ? "" : "-");
+            if (cols[i].count && have_stats)
+                snprintf(v, sizeof(v), "%d", (int)cols[i].value);
+            else if (!cols[i].count)
+                snprintf(v, sizeof(v), "%g", roundf(cols[i].value * 10) / 10);
+            draw_text(x, y + 34, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, v);
+        }
+    }
 
     char tags[64];
     mod_tags(app.mods, tags, sizeof(tags));
-    snprintf(buf, sizeof(buf), "%s%soffset %+dms", tags, tags[0] ? "   " : "", app.offset_ms);
-    draw_text(40, 236, 24, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, buf);
+    if (tags[0])
+        ui_pill(760, 16, 13, ui_hex(0x8866EE, 1), gfx_rgba(1, 1, 1, 1), tags);
 
     ui_round_rect(40, 330, 800, 80 + SHOWN_SCORES * 64, 16, gfx_rgba(0.05f, 0.05f, 0.07f, 0.75f));
     if (app.board && (app.board_src == 0 || !online_enabled())) {
@@ -1583,75 +1652,88 @@ static void mods_frame(const pad_state *pad)
 static void render_mods(void)
 {
     char buf[128];
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.04f, 0.05f, 0.04f, 0.8f));
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.03f, 0.04f, 0.03f, 0.82f));
 
-    /* banner across the top */
-    ui_round_rect(80, 60, GFX_W - 160, 90, 12, gfx_rgba(0.14f, 0.2f, 0.12f, 0.95f));
-    draw_text(130, 76, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "mod select");
-    draw_text(130, 112, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
+    /* banner across the top, colours off lazer's green scheme */
+    ui_round_rect(92, 55, GFX_W - 184, 92, 12, ui_hex(0x2F472F, 0.97f));
+    draw_text(150, 72, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "mod select");
+    draw_text(150, 108, 17, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
               "mods change how a map plays; some change the score you get, others are just for fun");
 
-    /* one leaning column per kind, a coloured header on each */
-    const float cw = 420, gap = 22, lean = 24, top = 190, hh = 52, rh = 84;
-    float x0 = (GFX_W - MOD_NCOLS * cw - (MOD_NCOLS - 1) * gap) / 2;
+    /* leaning columns: everything slides left the lower it sits, like lazer's */
+    const float k = 0.16f, cw = 420, gap = 16, top = 200, hh = 56, bottom = 930, rh = 62;
+    float x0 = (GFX_W - MOD_NCOLS * cw - (MOD_NCOLS - 1) * gap) / 2 + 60;
     for (int c = 0; c < MOD_NCOLS; c++) {
         float x = x0 + c * (cw + gap);
         uint32_t col = mod_cols[c].colour;
-        ui_shear_rect(x, top, cw, hh, lean / 2, ui_hex(col, 1));
-        draw_text(x + 30, top + 13, 22, gfx_rgba(0.08f, 0.08f, 0.08f, 1), ALIGN_LEFT, mod_cols[c].title);
-        ui_round_rect(x, top + hh, cw, 700 - hh, 12, gfx_rgba(0.14f, 0.17f, 0.13f, 0.95f));
+        float bh = bottom - top;
+        ui_shear_rect(x - k * bh, top, cw + k * bh, bh, k * bh, ui_hex(0x2D372E, 0.97f));
+        ui_shear_rect(x - k * hh, top, cw + k * hh, hh, k * hh, ui_hex(col, 1));
+        /* "difficulty reduction": first word plain, the rest bold-ish, dark on the colour */
+        const char *t = mod_cols[c].title, *sp = strchr(t, ' ');
+        char first[32];
+        snprintf(first, sizeof(first), "%.*s", sp ? (int)(sp - t) : (int)strlen(t), t);
+        float w = draw_text(x + 18, top + 14, 23, ui_hex(0x1A1A1A, 0.75f), ALIGN_LEFT, first);
+        if (sp)
+            draw_text(x + 18 + w, top + 14, 23, ui_hex(0x111111, 1), ALIGN_LEFT, sp);
 
         for (int r = 0; r < mod_cols[c].n; r++) {
             int i = mod_cols[c].mods[r];
-            float y = top + hh + 14 + r * rh;
+            float y = top + hh + 12 + r * (rh + 8);
+            float ix = x + 14 - k * (y + rh - top);
             bool on = app.mods & mod_list[i].bit, cur = i == app.mod_sel;
-            float ix = x + 16;
-            uint32_t bg = on ? ui_hex(col, 1) : gfx_rgba(0.2f, 0.24f, 0.19f, 1);
+            uint32_t bg = on ? ui_hex(col, 1) : ui_hex(0x455346, 1);
             if (cur)
-                ui_round_rect(ix - 4, y - 4, cw - 24, rh - 6, 12, gfx_rgba(1, 1, 1, 0.9f));
-            ui_round_rect(ix, y, cw - 32, rh - 14, 10, bg);
-            /* the tag sits in a darker square, the way the icons do */
-            ui_round_rect(ix + 8, y + 8, 56, rh - 30, 8, on ? gfx_rgba(0, 0, 0, 0.25f) : gfx_rgba(0, 0, 0, 0.3f));
-            uint32_t tc = on ? gfx_rgba(0.08f, 0.08f, 0.08f, 1) : gfx_rgba(1, 1, 1, 1);
-            draw_text(ix + 36, y + 22, 20, on ? tc : ui_hex(col, 1), ALIGN_CENTRE, mod_list[i].tag);
-            draw_text(ix + 80, y + 10, 22, tc, ALIGN_LEFT, mod_list[i].name);
-            draw_text(ix + 80, y + 40, 15, on ? gfx_rgba(0.1f, 0.1f, 0.1f, 0.85f) : gfx_rgba(1, 1, 1, 0.65f), ALIGN_LEFT,
-                      mod_list[i].what);
+                ui_shear_rect(ix - 4, y - 4, cw - 20 + k * rh + 8, rh + 8, k * (rh + 8), gfx_rgba(1, 1, 1, 0.9f));
+            ui_shear_rect(ix, y, cw - 20 + k * rh, rh, k * rh, bg);
+            /* the icon block on the left, darker */
+            ui_shear_rect(ix, y, 70 + k * rh, rh, k * rh, on ? gfx_rgba(0, 0, 0, 0.18f) : ui_hex(0x3C4D3B, 1));
+            uint32_t tc = on ? ui_hex(0x111111, 1) : gfx_rgba(1, 1, 1, 1);
+            draw_text(ix + 40 + k * rh / 2, y + 19, 19, on ? tc : ui_hex(col, 1), ALIGN_CENTRE, mod_list[i].tag);
+            draw_text(ix + 92 + k * rh / 2, y + 7, 21, tc, ALIGN_LEFT, mod_list[i].name);
+            snprintf(buf, sizeof(buf), "%s", mod_list[i].what);
+            ui_fit(buf, 14, cw - 120);
+            draw_text(ix + 92 + k * rh / 2, y + 35, 14, on ? ui_hex(0x111111, 0.8f) : gfx_rgba(1, 1, 1, 0.65f), ALIGN_LEFT, buf);
         }
     }
 
-    /* footer: back and clear on the left, the map's numbers with these mods on the right */
-    const float fy = GFX_H - 96;
-    ui_shear_rect(20, fy, 300, 76, 18, ui_hex(UI_PINK, 1));
-    ui_arrow_left(80, fy + 38, 22, gfx_rgba(1, 1, 1, 1));
-    draw_text(190, fy + 18, 26, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
-    draw_text(190, fy + 50, 14, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, "CIRCLE");
-    ui_shear_rect(340, fy, 300, 76, 18, gfx_rgba(0.18f, 0.2f, 0.18f, 0.95f));
-    draw_text(490, fy + 18, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, "deselect all");
-    draw_text(490, fy + 50, 14, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "TRIANGLE");
+    /* the footer, solid so song select's doesn't show through */
+    const float fh = 84, fy = GFX_H - fh, lean = 14;
+    draw_rect(0, fy, GFX_W, fh, ui_hex(0x131812, 1));
+    ui_shear_rect(21, fy + 12, 330, 62, lean, ui_hex(0xDD4499, 1));
+    ui_arrow_left(130, fy + 43, 20, gfx_rgba(1, 1, 1, 1));
+    draw_text(196, fy + 28, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
+    /* the mods tile, lit since we're in it */
+    ui_shear_rect(400, fy - 6, 150, fh + 6, lean, ui_hex(0xB2E05C, 1));
+    draw_rect(463, fy + 12, 22, 3, ui_hex(0x222222, 1));
+    draw_rect(465, fy + 22, 22, 3, ui_hex(0x222222, 1));
+    draw_text(475, fy + 36, 20, ui_hex(0x222222, 1), ALIGN_CENTRE, "mods");
+    ui_shear_rect(570, fy + 12, 300, 62, lean, ui_hex(0x2D372E, 1));
+    draw_text(720, fy + 22, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, "deselect all");
+    draw_text(720, fy + 50, 12, gfx_rgba(1, 1, 1, 0.5f), ALIGN_CENTRE, "TRIANGLE");
 
-    float bx = GFX_W - 760;
-    ui_shear_rect(bx, fy, 520, 76, 18, gfx_rgba(0.12f, 0.14f, 0.12f, 0.95f));
+    float bx = GFX_W - 860;
+    ui_shear_rect(bx, fy + 12, 560, 62, lean, ui_hex(0x2D372E, 1));
     if (app.songs.count > 0) {
         const song_entry *e = &app.songs.items[app.sel];
         float st = stars_get(e->file, stars_mods(app.mods));
         if (st < 0)
             st = stars_get(e->file, 0);
         if (st >= 0)
-            star_pill(bx + 30, fy + 20, 36, st);
+            star_pill(bx + 30, fy + 28, 30, st);
         const osu5_peek_info *in = &e->info;
         static const char *lab[4] = {"CS", "AR", "OD", "HP"};
         float v[4] = {in->cs, in->ar, in->od, in->hp};
-        for (int k = 0; k < 4; k++) {
-            draw_text(bx + 230 + k * 70, fy + 12, 18, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, lab[k]);
-            snprintf(buf, sizeof(buf), "%.1f", v[k]);
-            draw_text(bx + 230 + k * 70, fy + 40, 18, gfx_rgba(1, 1, 1, 0.75f), ALIGN_CENTRE, buf);
+        for (int q = 0; q < 4; q++) {
+            draw_text(bx + 260 + q * 72, fy + 18, 18, gfx_rgba(1, 1, 1, 0.95f), ALIGN_CENTRE, lab[q]);
+            snprintf(buf, sizeof(buf), "%.1f", v[q]);
+            draw_text(bx + 260 + q * 72, fy + 44, 18, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, buf);
         }
     }
-    ui_shear_rect(GFX_W - 230, fy, 210, 76, 18, gfx_rgba(0.12f, 0.14f, 0.12f, 0.95f));
+    ui_shear_rect(GFX_W - 280, fy + 12, 250, 62, lean, ui_hex(0x2D372E, 1));
     snprintf(buf, sizeof(buf), "%.2fx", mod_multiplier(app.mods));
-    draw_text(GFX_W - 125, fy + 14, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "score");
-    draw_text(GFX_W - 125, fy + 38, 26, ui_hex(UI_YELLOW, 1), ALIGN_CENTRE, buf);
+    draw_text(GFX_W - 220, fy + 30, 20, gfx_rgba(1, 1, 1, 0.75f), ALIGN_CENTRE, "score");
+    draw_text(GFX_W - 110, fy + 28, 26, ui_hex(UI_YELLOW, 1), ALIGN_CENTRE, buf);
 }
 
 /* ---- settings ---- */
@@ -2997,21 +3079,36 @@ static void help_frame(const pad_state *pad)
 static void render_help(void)
 {
     const struct help_page *p = &help_pages[app.help_page < HELP_PAGES ? app.help_page : HELP_PAGES - 1];
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.03f, 0.04f, 0.09f, 0.85f));
-    draw_text(GFX_W / 2, 90, 30, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_CENTRE, app.onboarded ? "controls" : "welcome to ProjectCadence");
-    draw_text(GFX_W / 2, 140, 56, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, p->title);
-    for (int i = 0; i < 14 && p->rows[i][0]; i++) {
-        float y = 250 + i * 50;
-        draw_rect(360, y - 6, 1200, 44, gfx_rgba(1, 1, 1, i % 2 ? 0.04f : 0.08f));
-        draw_text(900, y, 26, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, p->rows[i][0]);
-        draw_text(940, y, 26, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, p->rows[i][1]);
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.05f, 0.04f, 0.08f, 0.85f));
+    /* the header and panel the setup wizard uses */
+    draw_rect(0, 0, GFX_W, 110, ui_hex(0x1E1A2B, 1));
+    ui_round_rect(60, 34, 8, 44, 4, ui_hex(0x8866EE, 1));
+    draw_text(86, 24, 34, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "controls");
+    draw_text(86, 66, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "what each button does on a controller");
+    for (int i = 0; i < HELP_PAGES; i++) {
+        float x = GFX_W - 80 - (HELP_PAGES - 1 - i) * 190;
+        ui_round_rect(x - 170, 52, 170, 6, 3, i <= app.help_page ? ui_hex(0x8866EE, 1) : gfx_rgba(1, 1, 1, 0.15f));
+        draw_text(x - 85, 66, 15, gfx_rgba(1, 1, 1, i == app.help_page ? 1 : 0.45f), ALIGN_CENTRE, help_pages[i].title);
     }
-    /* page dots, and how to move on */
-    for (int i = 0; i < HELP_PAGES; i++)
-        draw_rect(GFX_W / 2 - HELP_PAGES * 20 + i * 40 + 8, GFX_H - 120, 24, 8,
-                  gfx_rgba(1, 1, 1, i == app.help_page ? 0.95f : 0.25f));
-    draw_text(GFX_W / 2, GFX_H - 90, 24, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE,
-              app.help_page == HELP_PAGES - 1 ? "CROSS done" : "CROSS next   CIRCLE skip");
+
+    const float pw = 1120, px = (GFX_W - pw) / 2, py = 150;
+    ui_round_rect(px, py, pw, GFX_H - 96 - 30 - py, 20, ui_hex(0x16131F, 0.98f));
+    draw_text(px + 60, py + 40, 40, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, p->title);
+    for (int i = 0; i < 14 && p->rows[i][0]; i++) {
+        float y = py + 110 + i * 50;
+        ui_round_rect(px + 60, y, pw - 120, 42, 8, ui_hex(0x221E2E, 1));
+        ui_pill(px + 74, y + 8, 15, ui_hex(0x8866EE, 1), gfx_rgba(1, 1, 1, 1), p->rows[i][0]);
+        draw_text(px + 470, y + 9, 21, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, p->rows[i][1]);
+    }
+
+    ui_footer("LEFT / RIGHT page", NULL);
+    const char *next = app.help_page == HELP_PAGES - 1 ? "done" : "next";
+    float bw = 360, bx = GFX_W - bw - 50, by = GFX_H - 70;
+    ui_shear_rect(bx, by, bw, 58, 14, ui_hex(0x6644CC, 1));
+    char lab[48];
+    snprintf(lab, sizeof(lab), "%s  (CROSS)", next);
+    draw_text(bx + bw / 2, by + 15, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, lab);
+    draw_text(330, GFX_H - 50, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "CIRCLE skip");
 }
 
 /* ---- main menu ---- */
@@ -3127,19 +3224,60 @@ static void render_menu(void)
     double now = wall_ms();
     float t = (float)(now / 1000.0);
 
-    /* toolbar along the top */
+    /* toolbar along the top, lazer's: settings and home, then the four modes
+     * with the current map's lit, the player on the right */
     draw_rect(0, 0, GFX_W, 56, ui_hex(0x191919, 0.96f));
-    draw_text(28, 14, 26, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, "ProjectCadence");
+    ui_gear_icon(40, 28, 30, gfx_rgba(1, 1, 1, 0.85f));
+    /* home: a roof over a box */
+    {
+        uint32_t hc = gfx_rgba(1, 1, 1, 0.85f);
+        gfx_bind(0);
+        gfx_push(&(gfx_inst){111, 22, 10, 1.6f, -0.7f, gfx_next_z(), hc, GK_RECT, {0}});
+        gfx_push(&(gfx_inst){125, 22, 10, 1.6f, 0.7f, gfx_next_z(), hc, GK_RECT, {0}});
+        draw_rect(108, 26, 2.5f, 13, hc);
+        draw_rect(126, 26, 2.5f, 13, hc);
+        draw_rect(108, 37, 20.5f, 2.5f, hc);
+    }
+    {
+        int mode = app.songs.count > 0 ? app.songs.items[app.sel].info.mode & 3 : 0;
+        ui_round_rect(160, 0, 230, 56, 0, ui_hex(0x222222, 1));
+        for (int m = 0; m < 4; m++) {
+            float cx = 190 + m * 56, cy = 26;
+            bool on = m == mode;
+            uint32_t c = on ? ui_hex(0x66FFCC, 1) : gfx_rgba(1, 1, 1, 0.8f);
+            arc(cx, cy, 14, 2.5f, 0, 1, c);
+            switch (m) {
+            case 0: ui_disc(cx, cy, 6, c); break;
+            case 1: draw_rect(cx - 1, cy - 9, 2.5f, 18, c); arc(cx, cy, 7, 2.5f, 0, 1, c); break;
+            case 2:
+                ui_disc(cx - 5, cy - 4, 2.5f, c);
+                ui_disc(cx + 5, cy - 4, 2.5f, c);
+                ui_disc(cx, cy + 5, 2.5f, c);
+                break;
+            default:
+                for (int b = -1; b <= 1; b++)
+                    draw_rect(cx + b * 6 - 1.2f, cy - 8 + (b == 0 ? 4 : 0), 2.5f, b == 0 ? 12 : 16, c);
+                break;
+            }
+            if (on)
+                ui_round_rect(cx - 12, 50, 24, 4, 2, gfx_rgba(1, 1, 1, 0.95f));
+        }
+    }
     {
         char who[96];
         const char *name = account_signed_in() ? account_name() : app.ps_name[0] ? app.ps_name : "guest";
         int n = app.mp_on && app.mps.online > 0 ? app.mps.online
               : mp_peek_online(app.mp_kind, app.mp_kind == MP_BANCHO ? app.mp_bancho : app.mp_rooms_url);
-        if (n >= 0)
-            snprintf(who, sizeof(who), "%s    %d online", name, n);
-        else
-            snprintf(who, sizeof(who), "%s", name);
-        draw_text(GFX_W - 28, 16, 22, gfx_rgba(1, 1, 1, 0.8f), ALIGN_RIGHT, who);
+        float rx = GFX_W - 28;
+        if (n >= 0) {
+            snprintf(who, sizeof(who), "%d online", n);
+            rx -= draw_text(rx, 18, 18, gfx_rgba(1, 1, 1, 0.55f), ALIGN_RIGHT, who) + 24;
+        }
+        /* avatar square with the initial, then the name, like the toolbar's user button */
+        ui_round_rect(rx - 40, 8, 40, 40, 6, ui_hex(0x555555, 1));
+        char ini[2] = {name[0] >= 'a' && name[0] <= 'z' ? (char)(name[0] - 32) : name[0], 0};
+        draw_text(rx - 20, 15, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, ini);
+        draw_text(rx - 52, 16, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, name);
     }
 
     /* the button strip through the middle, the logo sitting on its left end;
@@ -3236,7 +3374,7 @@ static void render_menu(void)
         char buf[300];
         /* now playing, top right: title over artist */
         snprintf(buf, sizeof(buf), "%.100s", in->title);
-        draw_text(GFX_W - 30, 68, 28, gfx_rgba(1, 1, 1, 0.95f), ALIGN_RIGHT, buf);
+        draw_text(GFX_W - 30, 72, 28, gfx_rgba(1, 1, 1, 0.95f), ALIGN_RIGHT, buf);
         snprintf(buf, sizeof(buf), "%.100s", in->artist);
         draw_text(GFX_W - 30, 102, 20, gfx_rgba(1, 1, 1, 0.75f), ALIGN_RIGHT, buf);
     }
