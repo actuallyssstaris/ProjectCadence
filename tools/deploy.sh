@@ -16,8 +16,10 @@ put_tree() {
 }
 
 put_tree "$root/dist/PPSA70727" "data/homebrew/PPSA70727"
-# home screen icon
-put_tree "$root/dist/PPSA70727/sce_sys" "user/appmeta/PPSA70727"
+# the home screen icon lives outside /data, so only on request: PS5_ICON=1
+if [[ ${PS5_ICON:-0} == 1 ]]; then
+    put_tree "$root/dist/PPSA70727/sce_sys" "user/appmeta/PPSA70727"
+fi
 echo "title uploaded"
 
 if [[ $# -gt 0 ]]; then
