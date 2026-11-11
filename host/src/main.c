@@ -2758,7 +2758,26 @@ static void menu_enter(void)
         int w, h, n;
         unsigned char *px = stbi_load("/app0/sce_sys/icon0.png", &w, &h, &n, 4);
         if (px) {
-            app.logo_tex = gfx_texture(w, h, px);
+            /* the icon is square; lazer's logo is round. Shrink the art into a
+             * disc filled with the icon's own background so nothing gets cut */
+            int N = w < h ? w : h;
+            unsigned char *out = malloc((size_t)N * N * 4);
+            if (out) {
+                const unsigned char *bg = px + (2 * w + 2) * 4;
+                for (int y = 0; y < N; y++) {
+                    for (int x = 0; x < N; x++) {
+                        float u = (x + 0.5f) / N - 0.5f, v = (y + 0.5f) / N - 0.5f;
+                        float edge = (0.5f - sqrtf(u * u + v * v)) * N;
+                        int sx = (int)((u / 0.84f + 0.5f) * w), sy = (int)((v / 0.84f + 0.5f) * h);
+                        const unsigned char *src = sx >= 0 && sy >= 0 && sx < w && sy < h ? px + (sy * w + sx) * 4 : bg;
+                        unsigned char *d = out + (y * N + x) * 4;
+                        memcpy(d, src, 3);
+                        d[3] = (unsigned char)(fminf(fmaxf(edge + 0.5f, 0), 1) * src[3]);
+                    }
+                }
+                app.logo_tex = gfx_texture(N, N, out);
+                free(out);
+            }
             stbi_image_free(px);
         }
     }
@@ -2858,7 +2877,9 @@ static void render_menu(void)
             ui_shear_rect(x, bar_y + bar_h - 6, w + lean, 6, 0, gfx_rgba(1, 1, 1, 0.85f));
 
         /* icon bobs on the beat when selected */
-        float icx = x + (w + lean) / 2, icy = bar_y + 50 - (on ? 6 * fabsf(sinf(t * 3.14159f * 1.2f)) : 0);
+        /* settings runs in under the logo, so centre its contents on the part you can see */
+        float vis_r = k == 0 ? lx - lsize * 0.5f - 14 : x + w + lean;
+        float icx = (x + vis_r) / 2, icy = bar_y + 50 - (on ? 6 * fabsf(sinf(t * 3.14159f * 1.2f)) : 0);
         uint32_t ic = gfx_rgba(1, 1, 1, 1);
         switch (i) {
         case MENU_PLAY:
@@ -2889,6 +2910,8 @@ static void render_menu(void)
     /* the logo, breathing; a flash ring on every beat */
     float ring = fmodf(t * 1.2f, 1.0f);
     arc(lx, ly, lsize * 0.5f + ring * 60, 4, 0, 1, gfx_rgba(1, 1, 1, 0.35f * (1 - ring)));
+    for (int i = 3; i >= 1; i--)
+        ui_disc(lx, ly + 6, lsize * 0.5f + 14 + i * 8, gfx_rgba(0, 0, 0, 0.08f));
     ui_disc(lx, ly, lsize * 0.5f + 14, gfx_rgba(1, 1, 1, 1));
     if (app.logo_tex) {
         gfx_bind(app.logo_tex);

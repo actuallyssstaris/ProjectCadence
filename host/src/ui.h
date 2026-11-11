@@ -38,6 +38,10 @@ void ui_arrow_left(float cx, float cy, float size, uint32_t c);
 void ui_disc(float cx, float cy, float r, uint32_t c);
 
 /* time-based easing for screen-to-screen motion */
+/* cuts s down with "..." until it fits; s needs 4 bytes spare */
+void ui_fit(char *s, float size, float max_w);
+void ui_search_icon(float cx, float cy, float size, uint32_t c);
+
 float ui_approach(float cur, float target, float rate);
 
 #endif

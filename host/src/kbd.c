@@ -6,6 +6,7 @@
 #include "log.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 /* ---- the system keyboard (ImeDialog), loaded by hand; ours is the fallback ---- */
@@ -13,6 +14,8 @@
 int sceKernelLoadStartModule(const char *path, size_t argc, const void *argv, uint32_t flags, void *opt, int *res);
 int sceKernelDlsym(int handle, const char *sym, void **addr);
 int sceUserServiceGetInitialUser(int32_t *user);
+int sceSysmoduleLoadModule(uint16_t id);
+const char *sceKernelGetFsSandboxRandomWord(void);
 
 typedef struct {
     int32_t user;
@@ -50,13 +53,20 @@ static bool ime_load(void)
     if (ime_state)
         return ime_state > 0;
     ime_state = -1;
-    static const char *paths[] = {"/system/common/lib/libSceImeDialog.native.sprx", "/system/common/lib/libSceImeDialog.sprx",
-                                  "libSceImeDialog.sprx"};
+    /* inside the sandbox the system libs live under a per-boot random folder,
+     * so /system/common/lib comes back as not found */
+    sceSysmoduleLoadModule(0x0096); /* ImeDialog on PS4's numbering */
+    char sandboxed[96] = "";
+    const char *word = sceKernelGetFsSandboxRandomWord();
+    if (word)
+        snprintf(sandboxed, sizeof(sandboxed), "/%s/common/lib/libSceImeDialog.sprx", word);
+    const char *paths[] = {sandboxed, "/system/common/lib/libSceImeDialog.sprx", "libSceImeDialog.sprx"};
     int h = -1, res;
     for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]) && h < 0; i++)
-        h = sceKernelLoadStartModule(paths[i], 0, NULL, 0, NULL, &res);
+        if (paths[i][0])
+            h = sceKernelLoadStartModule(paths[i], 0, NULL, 0, NULL, &res);
     if (h < 0) {
-        LOG("ime: no dialog module (0x%x), using ours", h);
+        LOG("ime: no dialog module (0x%x, sandbox %s), using ours", h, word ? word : "?");
         return false;
     }
     if (sceKernelDlsym(h, "sceImeDialogInit", (void **)&ime_init) || sceKernelDlsym(h, "sceImeDialogGetStatus", (void **)&ime_status) ||

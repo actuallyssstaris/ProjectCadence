@@ -97,16 +97,21 @@ void mapdl_ui_render(void)
     char buf[300];
     uint32_t white = gfx_rgba(1, 1, 1, 1), dim = gfx_rgba(1, 1, 1, 0.65f);
 
-    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.05f, 0.05f, 0.07f, 0.8f));
-    /* header band with the search field in it */
-    draw_rect(80, 30, GFX_W - 160, 190, gfx_rgba(0.12f, 0.12f, 0.16f, 0.95f));
-    draw_text(120, 50, 30, white, ALIGN_LEFT, "beatmap listing");
-    ui_round_rect(120, 140, 1100, 64, 12, gfx_rgba(0, 0, 0, ui.typing ? 0.55f : 0.4f));
+    /* lazer's overlay: a dark full-width sheet, the header strip, then the search box */
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.09f, 0.09f, 0.11f, 0.96f));
+    draw_rect(0, 0, GFX_W, 96, gfx_rgba(0.15f, 0.15f, 0.19f, 1));
+    ui_arrow_down(120, 48, 30, ui_hex(UI_LIME, 1));
+    draw_text(150, 30, 32, white, ALIGN_LEFT, "beatmap listing");
+    draw_rect(0, 96, GFX_W, 120, gfx_rgba(0.12f, 0.12f, 0.15f, 1));
+    ui_round_rect(120, 124, 1240, 64, 8, gfx_rgba(0.06f, 0.06f, 0.08f, 1));
+    if (ui.typing)
+        ui_round_rect(120, 184, 1240, 4, 2, ui_hex(UI_YELLOW, 1));
     if (ui.query[0] || ui.typing)
         snprintf(buf, sizeof(buf), "%s%s", ui.query, ui.typing ? "_" : "");
     else
-        snprintf(buf, sizeof(buf), "newest ranked maps (TRIANGLE to search)");
-    draw_text(140, 156, 32, ui.query[0] || ui.typing ? white : dim, ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "type in keywords...");
+    draw_text(144, 141, 28, ui.query[0] || ui.typing ? white : gfx_rgba(1, 1, 1, 0.4f), ALIGN_LEFT, buf);
+    ui_search_icon(1325, 156, 34, gfx_rgba(1, 1, 1, 0.75f));
 
     /* download progress, top right */
     mapdl_status st;
@@ -115,10 +120,13 @@ void mapdl_ui_render(void)
         snprintf(buf, sizeof(buf), "downloading %.1f MB", st.bytes / 1048576.0);
         if (st.queued)
             snprintf(buf + strlen(buf), sizeof(buf) - strlen(buf), ", %d waiting", st.queued);
-        draw_text(GFX_W - 120, 70, 26, gfx_rgba(0.5f, 0.85f, 1, 1), ALIGN_RIGHT, buf);
+        draw_text(GFX_W - 120, 34, 24, ui_hex(UI_BLUE, 1), ALIGN_RIGHT, buf);
     }
-    if (st.msg[0])
-        draw_text(GFX_W - 120, 110, 22, dim, ALIGN_RIGHT, st.msg);
+    if (st.msg[0]) {
+        snprintf(buf, sizeof(buf), "%s", st.msg);
+        ui_fit(buf, 20, 420);
+        draw_text(GFX_W - 120, 124, 20, dim, ALIGN_RIGHT, buf);
+    }
 
     const float top = 240;
     if (ui.res.state == 1) {
@@ -134,23 +142,29 @@ void mapdl_ui_render(void)
         if (first < 0) first = 0;
         for (int i = 0; i < ui.res.count; i++) {
             float x = gx + (i % 3) * (cw + gap), y = top + (i / 3 - first) * (ch + gap);
-            if (y < top - 1 || y > GFX_H - (ui.typing ? 640 : 250))
+            if (y < top - 1 || y > GFX_H - (ui.typing ? 640 : 270))
                 continue;
             const mapdl_set *s = &ui.res.sets[i];
             bool on = i == ui.sel && !ui.typing;
+            ui_shadow(x, y, cw, ch, 10);
             if (on)
-                ui_round_rect(x - 4, y - 4, cw + 8, ch + 8, 14, gfx_rgba(1, 1, 1, 0.9f));
-            ui_round_rect(x, y, cw, ch, 10, gfx_rgba(0.13f, 0.14f, 0.18f, 0.97f));
-            /* a coloured block where the cover sits, its colour from the star rating */
-            ui_round_rect(x, y, ch, ch, 10, gfx_rgba(0.22f, 0.24f, 0.32f, 1));
-            ui_triangles(x, y, ch, ch, gfx_rgba(0.3f, 0.32f, 0.42f, 0.6f), 0, (unsigned)s->id, 6);
+                ui_round_rect(x - 3, y - 3, cw + 6, ch + 6, 13, gfx_rgba(1, 1, 1, 0.85f));
+            ui_round_rect(x, y, cw, ch, 10, gfx_rgba(0.17f, 0.17f, 0.21f, 1));
+            /* the cover goes here once we fetch them; until then a tint from the set id */
+            static const uint32_t tints[] = {UI_PURPLE, UI_PURPLE_DARK, UI_BLUE, UI_PINK, UI_ORANGE, UI_GREEN};
+            ui_round_rect(x, y, ch, ch, 10, ui_mix(gfx_rgba(0.2f, 0.2f, 0.25f, 1), ui_hex(tints[s->id % 6], 1), 0.25f));
+            ui_play_icon(x + ch / 2, y + ch / 2, 34, gfx_rgba(1, 1, 1, on ? 0.9f : 0.35f));
 
-            snprintf(buf, sizeof(buf), "%.40s", s->title);
-            draw_text(x + ch + 16, y + 10, 22, white, ALIGN_LEFT, buf);
-            snprintf(buf, sizeof(buf), "by %.40s", s->artist);
-            draw_text(x + ch + 16, y + 38, 16, dim, ALIGN_LEFT, buf);
-            snprintf(buf, sizeof(buf), "mapped by %.30s", s->creator);
-            draw_text(x + ch + 16, y + 60, 14, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, buf);
+            float tx = x + ch + 16, tw = cw - ch - 30 - (s->video ? 76 : 0);
+            snprintf(buf, sizeof(buf), "%s", s->title);
+            ui_fit(buf, 22, tw);
+            draw_text(tx, y + 10, 22, white, ALIGN_LEFT, buf);
+            snprintf(buf, sizeof(buf), "by %s", s->artist);
+            ui_fit(buf, 16, cw - ch - 30);
+            draw_text(tx, y + 38, 16, dim, ALIGN_LEFT, buf);
+            snprintf(buf, sizeof(buf), "mapped by %s", s->creator);
+            ui_fit(buf, 14, cw - ch - 30);
+            draw_text(tx, y + 60, 14, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, buf);
 
             /* status pill, then the difficulty count and top rating */
             float pw = draw_text_width(13, s->status) + 18;
@@ -169,15 +183,17 @@ void mapdl_ui_render(void)
                 draw_text(x + cw - 14, y + 88, 15, ui_hex(state == 2 ? UI_LIME : UI_BLUE, 1), ALIGN_RIGHT, label);
         }
         snprintf(buf, sizeof(buf), "page %d", ui.page + 1);
-        draw_text(GFX_W - 120, 170, 22, dim, ALIGN_RIGHT, buf);
+        draw_text(GFX_W - 120, 158, 22, dim, ALIGN_RIGHT, buf);
     }
 
+    /* footer strip, like the song select's */
+    draw_rect(0, GFX_H - 90, GFX_W, 90, gfx_rgba(0.12f, 0.12f, 0.15f, 1));
     if (ui.note[0])
-        draw_text(120, GFX_H - 150, 24, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_LEFT, ui.note);
-    draw_text(120, GFX_H - 110, 22, dim, ALIGN_LEFT, "maps come from catboy.best, a public mirror of osu.ppy.sh");
+        draw_text(120, GFX_H - 130, 22, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, ui.note);
+    draw_text(GFX_W - 120, GFX_H - 56, 18, gfx_rgba(1, 1, 1, 0.4f), ALIGN_RIGHT, "maps from catboy.best, a mirror of osu.ppy.sh");
 
     if (ui.typing)
         kbd_render(&ui.keys);
     else
-        draw_text(120, GFX_H - 70, 26, white, ALIGN_LEFT, "CROSS download   TRIANGLE search   L1/R1 page   CIRCLE back");
+        draw_text(120, GFX_H - 58, 22, dim, ALIGN_LEFT, "CROSS download   TRIANGLE search   L1/R1 page   CIRCLE back");
 }

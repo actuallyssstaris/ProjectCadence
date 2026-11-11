@@ -1,4 +1,5 @@
 #include "ui.h"
+#include "draw.h"
 #include "gfx.h"
 
 #include <math.h>
@@ -117,15 +118,18 @@ void ui_triangles(float x, float y, float w, float h, uint32_t base, double time
         unsigned s = seed * 7919u + (unsigned)i * 104729u;
         float px = rnd(&s), size = 0.25f + rnd(&s) * 0.75f, speed = 0.02f + rnd(&s) * 0.03f, start = rnd(&s);
         float shade = 0.85f + rnd(&s) * 0.3f;
-        float sz = size * fminf(w, h) * 0.45f + 20;
-        /* rise from below the box to above it, smaller ones slower */
-        float span = h + sz * 2;
-        float k = fmodf(start + (float)(time_ms / 1000.0) * speed * (0.5f + size), 1.0f);
-        float cy = y + h + sz - k * span, cx = x + px * w;
-        if (cy - sz > y + h || cy + sz < y)
+        /* there's no clipping, so each one stays whole inside the box and fades
+         * in at the bottom and out at the top instead of crossing the edge */
+        float sz = fminf(size * fminf(w, h) * 0.45f + 20, fminf(w, h) * 0.35f), hh = sz * 0.866f;
+        float travel = h - 2 * hh;
+        if (travel <= 0 || w < 2 * sz)
             continue;
-        uint32_t c = ui_mix(base, shade > 1 ? gfx_rgba(1, 1, 1, ((base >> 24) & 0xFF) / 255.0f) : gfx_rgba(0, 0, 0, ((base >> 24) & 0xFF) / 255.0f),
-                            fabsf(shade - 1) * 0.6f);
+        float k = fmodf(start + (float)(time_ms / 1000.0) * speed * (0.5f + size), 1.0f);
+        float cy = y + h - hh - k * travel, cx = x + sz + px * (w - 2 * sz);
+        float a = ((base >> 24) & 0xFF) / 255.0f;
+        uint32_t c = ui_mix(base, shade > 1 ? gfx_rgba(1, 1, 1, a) : gfx_rgba(0, 0, 0, a), fabsf(shade - 1) * 0.6f);
+        uint32_t fade = (uint32_t)(((c >> 24) & 0xFF) * sinf(k * 3.1415927f));
+        c = (c & 0x00FFFFFF) | (fade << 24);
         gfx_push(&(gfx_inst){cx, cy, sz, sz * 0.866f, 0, gfx_next_z(), c, GK_TEX, {0, 0, 1, 1}});
     }
     gfx_bind(0);
@@ -174,4 +178,30 @@ void ui_arrow_left(float cx, float cy, float size, uint32_t c)
     gfx_bind(tri_up);
     gfx_push(&(gfx_inst){cx, cy, size / 2, size * 0.43f, -1.5707963f, gfx_next_z(), c, GK_TEX, {0, 0, 1, 1}});
     gfx_bind(0);
+}
+
+void ui_fit(char *s, float size, float max_w)
+{
+    if (draw_text_width(size, s) <= max_w)
+        return;
+    size_t n = strlen(s);
+    while (n > 0) {
+        do
+            n--;
+        while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80);
+        s[n] = 0;
+        if (draw_text_width(size, s) + draw_text_width(size, "...") <= max_w)
+            break;
+    }
+    while (n > 0 && s[n - 1] == ' ')
+        s[--n] = 0;
+    strcat(s, "...");
+}
+
+void ui_search_icon(float cx, float cy, float size, uint32_t c)
+{
+    float r = size * 0.3f;
+    ui_disc(cx - size * 0.08f, cy - size * 0.08f, r, c);
+    ui_disc(cx - size * 0.08f, cy - size * 0.08f, r * 0.62f, gfx_rgba(0.1f, 0.1f, 0.12f, 1));
+    gfx_push(&(gfx_inst){cx + size * 0.22f, cy + size * 0.22f, size * 0.17f, size * 0.06f, 0.7853982f, gfx_next_z(), c, GK_RECT, {0}});
 }
