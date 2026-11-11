@@ -2542,13 +2542,34 @@ static void render_mp(void)
     /* the room, laid out like lazer's: participants, beatmap and chat in three
      * columns, and the big ready button in the footer */
     ui_crumb(40, 40, 30, "multiplayer", s->room_name, ui_hex(UI_YELLOW, 1));
-    const float top = 110, colh = GFX_H - 96 - top - 20;
+    /* the room's own card across the top, same as its lounge card */
+    {
+        const mp_member *host = NULL;
+        for (int i = 0; i < s->nmembers; i++)
+            if (s->members[i].host)
+                host = &s->members[i];
+        uint32_t state = s->state == MP_PLAYING ? 0x8866EE : 0xB3FF66;
+        ui_round_rect(40, 96, GFX_W - 80, 112, 10, ui_plum(0.16f, 0.97f));
+        ui_triangles(GFX_W / 2, 96, GFX_W / 2 - 40, 112, ui_plum(0.22f, 0.6f), wall_ms(), 5, 10);
+        ui_round_rect(40, 96, 10, 112, 5, ui_hex(state, 1));
+        ui_pill(66, 108, 13, ui_hex(state, 1), ui_hex(0x222222, 1), s->state == MP_PLAYING ? "playing" : "open");
+        draw_text(66, 134, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, s->room_name);
+        if (host) {
+            float w = draw_text(66, 170, 16, gfx_rgba(1, 1, 1, 0.55f), ALIGN_LEFT, "hosted by ");
+            draw_text(66 + w, 170, 16, ui_hex(0x8FC3E8, 1), ALIGN_LEFT, host->name);
+        }
+        snprintf(buf, sizeof(buf), "%d %s", s->nmembers, s->nmembers == 1 ? "player" : "players");
+        float ww = draw_text_width(17, buf) + 44;
+        ui_round_rect(GFX_W - 64 - ww, 131, ww, 42, 21, gfx_rgba(0, 0, 0, 0.45f));
+        draw_text(GFX_W - 64 - ww / 2, 141, 17, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, buf);
+    }
+    const float top = 226, colh = GFX_H - 96 - top - 10;
     int ready = 0;
     for (int i = 0; i < s->nmembers; i++)
         ready += s->members[i].ready;
 
     /* participants */
-    const float lx = 40, lw = 560;
+    const float lx = 40, lw = 600;
     snprintf(buf, sizeof(buf), "participants (%d)", s->nmembers);
     draw_text(lx, top, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, buf);
     ui_round_rect(lx, top + 40, lw, colh - 40, 10, ui_plum(0.13f, 0.9f));
@@ -2595,8 +2616,8 @@ static void render_mp(void)
     }
 
     /* beatmap, mods and the room's rules */
-    const float mx = 640, mw = 600;
-    draw_text(mx, top, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "beatmap");
+    const float mx = 660, mw = 600;
+    draw_text(mx, top, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, "beatmap queue");
     bool have = mp_find_map(s) >= 0;
     ui_round_rect(mx, top + 40, mw, 120, 10, ui_plum(0.2f, 0.97f));
     ui_round_rect(mx, top + 40, 120, 120, 10, ui_mix(ui_plum(0.25f, 1), ui_hex(0x6644CC, 1), 0.35f));
@@ -2611,7 +2632,7 @@ static void render_mp(void)
         draw_text(mx + 140, top + 86, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT,
                   s->i_host ? "pick a map with SQUARE" : "the host is picking a map");
     }
-    draw_text(mx, top + 190, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, s->freemod ? "free mods" : "required mods");
+    draw_text(mx, top + 190, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, s->freemod ? "extra mods (free)" : "extra mods");
     char tags[64];
     mod_tags(s->mods, tags, sizeof(tags));
     if (tags[0]) {
