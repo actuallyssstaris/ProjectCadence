@@ -135,7 +135,8 @@ async function account() {
     '<p><a class="u" href="#/u/' + encodeURIComponent(me.name) + '">your profile</a></p><button class="plain" id="out">sign out</button></div>';
   if (me.admin) {
     html += '<div class="card"><h3 style="margin-top:0">admin</h3><form id="cmd"><input name="c" placeholder="!restrict name   !silence name 10   !approve name   !unrestrict name">' +
-      '<button>run</button></form><div class="muted" id="said"></div><h3>scores waiting for a look</h3><div id="held" class="muted">loading...</div></div>';
+      '<button>run</button></form><div class="muted" id="said"></div><h3>scores waiting for a look</h3><div id="held" class="muted">loading...</div></div>' +
+      '<div class="card"><h3 style="margin-top:0">problem reports <a class="u muted" href="#" id="rtoggle" style="font-size:13px">show closed</a></h3><div id="reports" class="muted">loading...</div></div>';
   }
   app.innerHTML = html;
   document.getElementById("out").onclick = () => { setSession(""); header(); account(); };
@@ -155,6 +156,31 @@ async function account() {
     for (const b of box.querySelectorAll("button")) b.onclick = () => run("!approve " + b.dataset.n);
   };
   held();
+  let showClosed = 0;
+  const reports = async () => {
+    const d = await get("/api/admin/reports?closed=" + showClosed + "&session=" + encodeURIComponent(session()));
+    const box = document.getElementById("reports");
+    if (!d.reports || !d.reports.length) { box.textContent = showClosed ? "no closed reports" : "nothing open"; return; }
+    box.innerHTML = d.reports.map((r) => '<div class="card" style="background:var(--row);margin:6px 0;padding:10px"><b>#' + r.id + "</b> " +
+      esc(r.player || "someone") + ' <span class="muted">' + esc(r.version) + " · " + new Date(r.created).toLocaleString() + (r.crashed ? " · crashed" : "") +
+      '</span><div>' + esc(r.text) + '</div><button class="plain" data-open="' + r.id + '">read</button> <button class="plain" data-close="' + r.id + '">' +
+      (showClosed ? "reopen" : "close") + '</button><pre style="white-space:pre-wrap;display:none;max-height:420px;overflow:auto;font-size:12px" id="rep' + r.id + '"></pre></div>').join("");
+    for (const b of box.querySelectorAll("[data-open]")) b.onclick = async () => {
+      const pre = document.getElementById("rep" + b.dataset.open);
+      if (pre.style.display === "block") { pre.style.display = "none"; return; }
+      const r = await get("/api/admin/report?id=" + b.dataset.open + "&session=" + encodeURIComponent(session()));
+      const nl = String.fromCharCode(10);
+      pre.textContent = ["what they said:", r.text, "", "about the console:", r.info, "", "this run's log:", r.log]
+        .concat(r.prev_log ? ["", "the run before:", r.prev_log] : []).join(nl);
+      pre.style.display = "block";
+    };
+    for (const b of box.querySelectorAll("[data-close]")) b.onclick = async () => {
+      await post("/api/admin/report/close", { session: session(), id: Number(b.dataset.close), open: !!showClosed });
+      reports();
+    };
+  };
+  document.getElementById("rtoggle").onclick = (e) => { e.preventDefault(); showClosed = 1 - showClosed; e.target.textContent = showClosed ? "show open" : "show closed"; reports(); };
+  reports();
 }
 
 /* a stream overlay for OBS: #/overlay/<room id>, transparent, refreshes itself */

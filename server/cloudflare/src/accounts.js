@@ -232,6 +232,39 @@ export async function accounts(request, env, url) {
       const said = await adminCommand(env, me, String(body.command || ""));
       return reply({ said: said || "not a command" });
     }
+    case "/api/reports": {
+      // from the game's "report a problem"; anyone can send, a few an hour per address
+      const ip = request.headers.get("cf-connecting-ip") || "";
+      const recent = await env.DB.prepare("SELECT COUNT(*) AS c FROM reports WHERE ip = ? AND created > ?").bind(ip, Date.now() - 3600000).first();
+      if (recent.c >= 5) return reply({ error: "that's a lot of reports; try again in an hour" }, 429);
+      const me = await userForSession(env, body.session).catch(() => null);
+      const cut = (v, n) => String(v || "").slice(-n);
+      const r = await env.DB.prepare(
+        "INSERT INTO reports (created, ip, player, version, text, info, log, prev_log, crashed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+        .bind(Date.now(), ip, me ? me.name : cut(body.name, 32), cut(body.version, 24), String(body.text || "").slice(0, 2000),
+          cut(body.info, 4000), cut(body.log, 120000), cut(body.prev_log, 120000), body.crashed ? 1 : 0)
+        .run();
+      return reply({ ok: true, id: r.meta.last_row_id });
+    }
+    case "/api/admin/reports":
+    case "/api/admin/report":
+    case "/api/admin/report/close": {
+      const me = await userForSession(env, body.session || q("session"));
+      if (!me || me.role !== 1) return reply({ error: "admins only" }, 403);
+      if (url.pathname.endsWith("/close")) {
+        await env.DB.prepare("UPDATE reports SET closed = ? WHERE id = ?").bind(body.open ? 0 : 1, Number(body.id)).run();
+        return reply({ ok: true });
+      }
+      if (url.pathname.endsWith("/report"))
+        return reply((await env.DB.prepare("SELECT * FROM reports WHERE id = ?").bind(Number(q("id"))).first()) || { error: "no such report" });
+      const rows = await env.DB.prepare(
+        "SELECT id, created, player, version, substr(text, 1, 160) AS text, crashed, closed FROM reports WHERE closed = ? ORDER BY created DESC LIMIT 100",
+      )
+        .bind(q("closed") === "1" ? 1 : 0)
+        .all();
+      return reply({ reports: rows.results });
+    }
     case "/api/admin/held": {
       const me = await userForSession(env, q("session"));
       if (!me || me.role !== 1) return reply({ error: "admins only" }, 403);

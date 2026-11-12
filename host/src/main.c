@@ -36,6 +36,10 @@
 #include "bweb.h"
 #include "collections.h"
 #include "osr.h"
+#include "report.h"
+
+/* our server: accounts, scores, rooms and problem reports */
+#define CADENCE_ROOMS "https://projectcadence-rooms.le-bg-de-genshin123.workers.dev"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -208,6 +212,16 @@ static struct {
     char status[256];
 } app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1, .coll_view = -1, .key_overlay = true, .live_board = true,
          .da = {-1, -1, -1, -1}, .mod_custom = -1};
+
+static const char *screen_name(int scr)
+{
+    static const char *const names[] = {
+        "song select", "playing", "paused", "failed", "results", "skins", "mods", "settings", "map downloads",
+        "offset wizard", "main menu", "controls help", "multiplayer", "account", "first-run setup", "rankings",
+        "profile", "chat", "spectating", "imported replays", "set info", "reader", "playlists",
+    };
+    return scr >= 0 && scr < (int)(sizeof(names) / sizeof(names[0])) ? names[scr] : "somewhere";
+}
 
 /* what an osu! map gets converted to when another mode is picked */
 static int conv_of(const song_entry *e)
@@ -2427,7 +2441,7 @@ enum {
     SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_HUD, SET_KEYS, SET_LIVE, SET_CLASSIC, SET_STARS_LO, SET_STARS_HI, SET_CONVERTS, /* gameplay */
     SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, /* audio */
     SET_ACCOUNT, SET_CLAN, SET_PASSWORD, SET_DELETE, SET_BOARD, /* online */
-    SET_RESCAN,                                 /* maintenance */
+    SET_RESCAN, SET_REPORT,                     /* maintenance */
     SET_COUNT
 };
 
@@ -2463,6 +2477,7 @@ static const char *const set_words[SET_COUNT] = {
     [SET_DELETE] = "online delete account remove",
     [SET_BOARD] = "online leaderboard scores osu.ppy.sh",
     [SET_RESCAN] = "maintenance rescan the songs folder ftp",
+    [SET_REPORT] = "maintenance report a problem bug issue crash log send",
 };
 
 static bool set_shown(int i)
@@ -2498,6 +2513,26 @@ static int set_step(int i, int dir)
     return i;
 }
 
+/* the facts that help most with a report, as plain lines */
+static void send_report(const char *text)
+{
+    char info[2048];
+    const song_entry *e = app.playing ? app.playing : app.songs.count ? &app.songs.items[app.sel] : NULL;
+    char tags[64];
+    mod_tags(app.mods, tags, sizeof(tags));
+    snprintf(info, sizeof(info),
+             "version %s\nlook %s, mode %d, converts %s\nmods %s (%d), offset %d ms, sensitivity %.2f\n"
+             "maps %d (%d shown), skin %s\nlast map %s\nsigned in %s, multiplayer %s (%s), osu! API %s\n"
+             "storyboards %s, videos %s, hud %d, classic score %s\ncrashed last time %s",
+             CADENCE_VERSION, app.simple_ui ? "simplified" : "lazer", app.mode_pick, app.converts ? "on" : "off", tags[0] ? tags : "none",
+             app.mods, app.offset_ms, app.sensitivity, app.all.count, app.songs.count, skins_active(), e ? e->file : "none",
+             account_signed_in() ? account_name() : "no", app.mp_on ? (app.mp_kind == MP_BANCHO ? "bancho" : "ProjectCadence") : "off",
+             app.mp_on ? (app.mps.conn == MP_ONLINE ? "online" : "not online") : "-", online_enabled() ? "on" : "off",
+             app.storyboards ? "on" : "off", app.videos ? "on" : "off", app.hud_mode, app.classic_score ? "yes" : "no",
+             log_last_crashed() ? "yes" : "no");
+    report_send(CADENCE_ROOMS, text, info, true);
+}
+
 static void entry_open(int what)
 {
     app.set_entry[0] = 0;
@@ -2531,6 +2566,10 @@ static void entry_done(void)
         break;
     case 4:
         account_delete(t);
+        break;
+    case 5:
+        if (t[0])
+            send_report(t);
         break;
     }
     memset(app.set_entry_keep, 0, sizeof(app.set_entry_keep));
@@ -2690,6 +2729,10 @@ static void settings_frame(const pad_state *pad)
         if (pad->pressed & PAD_CROSS && account_signed_in())
             entry_open(4);
         break;
+    case SET_REPORT:
+        if (pad->pressed & PAD_CROSS && report_state(NULL, NULL, 0) != 1)
+            entry_open(5);
+        break;
     case SET_WIZARD:
         if (pad->pressed & PAD_CROSS) {
             app.wiz_start = wall_ms() + 1000;
@@ -2840,6 +2883,7 @@ static void render_settings(void)
                      : online_enabled() ? "osu.ppy.sh" : "osu.ppy.sh (needs osuapi.txt)");
             break;
         case SET_RESCAN: name = "rescan the Songs folder"; kind = 3; break;
+        case SET_REPORT: name = "report a problem"; kind = 3; break;
         case SET_SKIN: name = "current skin"; snprintf(val, sizeof(val), "%.40s", skins_active()); break;
         case SET_SETUP: name = "run setup wizard"; kind = 3; break;
         case SET_CONVERTS: name = "show converted maps"; kind = 1; flag = app.converts; break;
@@ -2894,6 +2938,7 @@ static void render_settings(void)
     case SET_RESCAN: hint = "after copying maps over FTP"; break;
     case SET_CLAN: hint = "type a tag to join, or a tag and a name to start one: CDN Cadence Crew"; break;
     case SET_DELETE: hint = "scores, replays and your clan place go too; asks for your password"; break;
+    case SET_REPORT: hint = "sends what you write, the game's logs and settings to us; no passwords or keys"; break;
     default: break;
     }
     float hx = panel_x + panel_w + 50;
@@ -2906,7 +2951,8 @@ static void render_settings(void)
     if (app.set_typing)
         kbd_render(&app.set_kbd);
     if (app.set_entering) {
-        static const char *const ask[] = {"", "clan tag (and a name to start one)", "current password", "new password", "password, to delete the account"};
+        static const char *const ask[] = {"", "clan tag (and a name to start one)", "current password", "new password", "password, to delete the account",
+                                          "what went wrong? what were you doing? (the logs go with it)"};
         draw_text(GFX_W / 2, 120, 26, ui_hex(UI_YELLOW, 1), ALIGN_CENTRE, ask[app.set_entering]);
         kbd_render(&app.set_entry_kbd);
     }
@@ -3184,7 +3230,6 @@ static void render_wizard(void)
 /* ---- multiplayer ---- */
 
 #define MP_FILE DATA_DIR "/multiplayer.txt"
-#define CADENCE_ROOMS "https://projectcadence-rooms.le-bg-de-genshin123.workers.dev"
 
 static void mp_load_cfg(void)
 {
@@ -4173,7 +4218,7 @@ static void menu_frame(const pad_state *pad)
     case MB_MAPS: mapdl_ui_open(); app.scr = SCREEN_DOWNLOAD; break;
     case MB_SKINS: skin_ui_open(false); app.scr = SCREEN_SKINS; break;
     case MB_SETTINGS: app.set_sel = 0; app.scr = SCREEN_SETTINGS; break;
-    case MB_QUIT: settings_save(); sceSystemServiceLoadExec("exit", NULL); break;
+    case MB_QUIT: settings_save(); log_close(); sceSystemServiceLoadExec("exit", NULL); break;
     }
 }
 
@@ -4612,6 +4657,11 @@ int main(void)
     restore_selection();
     mp_load_cfg();
     account_init(CADENCE_ROOMS);
+    LOG("ProjectCadence %s: %d difficulties, skin %s, %s look, mode %d, mods %d, offset %d ms, %s, osu! API %s", CADENCE_VERSION,
+        app.all.count, skins_active(), app.simple_ui ? "simplified" : "lazer", app.mode_pick, app.mods, app.offset_ms,
+        account_signed_in() ? "signed in" : "not signed in", online_enabled() ? "on" : "off");
+    if (log_last_crashed())
+        toast("the game crashed last time: settings, report a problem sends us what happened");
     if (account_signed_in() && app.mp_kind == MP_CADENCE) {
         mp_connect(MP_CADENCE, app.mp_rooms_url, app.mp_user[0] ? app.mp_user : account_name(), app.mp_pass);
         app.mp_on = true;
@@ -4785,6 +4835,16 @@ int main(void)
             int as = account_action(am, sizeof(am));
             if ((as == ACC_OK || as == ACC_FAILED) && am[0])
                 toast("%s", am);
+            static int rep_seen;
+            char rm[96];
+            int rid, rs = report_state(&rid, rm, sizeof(rm));
+            if (rs != rep_seen) {
+                if (rs == 2)
+                    toast("report #%d sent, thanks", rid);
+                else if (rs == 3)
+                    toast("report: %s", rm);
+                rep_seen = rs;
+            }
             static int sub_seen;
             char sm[128];
             int ss = bweb_submit_state(sm, sizeof(sm));
@@ -4794,6 +4854,7 @@ int main(void)
                 sub_seen = ss;
             }
         }
+        log_where(screen_name(app.scr));
         gfx_begin(0.06f, 0.06f, 0.09f);
         switch (app.scr) {
         case SCREEN_SELECT:
