@@ -107,6 +107,10 @@ static struct {
     bool bweb_waiting;    /* a server replay is downloading to be watched */
     int rp_from;          /* ...from 0 the bancho server, 1 ours */
     int coll_view;        /* song select shows only this collection, -1 everything */
+    int hud_mode;         /* 0 always, 1 only in breaks, 2 never */
+    bool key_overlay, live_board, classic_score;
+    int map_objects;      /* for classic scoring */
+    int key_count[4], key_prev;
     char set_entry[64], set_entry_keep[64]; /* settings' account fields */
     kbd set_entry_kbd;
     int set_entering;     /* 0 no, 1 clan, 2 old password, 3 new password, 4 delete */
@@ -198,7 +202,7 @@ static struct {
     skin_job topup;       /* default skin from an older version, fetched quietly */
 
     char status[256];
-} app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1, .coll_view = -1};
+} app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1, .coll_view = -1, .key_overlay = true, .live_board = true};
 
 /* what an osu! map gets converted to when another mode is picked */
 static int conv_of(const song_entry *e)
@@ -364,6 +368,10 @@ static void settings_load(void)
             else if (!strcmp(key, "star_lo")) app.star_lo = v;
             else if (!strcmp(key, "star_hi")) app.star_hi = v;
             else if (!strcmp(key, "converts")) app.converts = v != 0;
+            else if (!strcmp(key, "hud")) app.hud_mode = (int)v >= 0 && (int)v <= 2 ? (int)v : 0;
+            else if (!strcmp(key, "key_overlay")) app.key_overlay = v != 0;
+            else if (!strcmp(key, "live_board")) app.live_board = v != 0;
+            else if (!strcmp(key, "classic_score")) app.classic_score = v != 0;
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
             else if (!strcmp(key, "simple_ui")) app.simple_ui = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
@@ -380,9 +388,11 @@ static void settings_save(void)
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f)
         return;
-    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\nmode %d\nstar_lo %.1f\nstar_hi %.1f\nconverts %d\n",
+    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\nmode %d\nstar_lo %.1f\nstar_hi %.1f\nconverts %d\n"
+               "hud %d\nkey_overlay %d\nlive_board %d\nclassic_score %d\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
-            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui, app.mode_pick, app.star_lo, app.star_hi, app.converts);
+            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui, app.mode_pick, app.star_lo, app.star_hi, app.converts,
+            app.hud_mode, app.key_overlay, app.live_board, app.classic_score);
     fclose(f);
 }
 
@@ -625,6 +635,12 @@ static bool start_song(const song_entry *e)
 
     if (!app.watching)
         replay_reset(&app.rec, e->file, app.mods);
+    {
+        int st5[5] = {0};
+        app.map_objects = osu5_map_stats(e->file, st5) == 0 ? st5[0] + st5[1] + st5[2] : 0;
+        memset(app.key_count, 0, sizeof(app.key_count));
+        app.key_prev = 0;
+    }
     if (bweb_on() || (app.mp_on && app.mp_kind == MP_CADENCE)) {
         char what[200];
         snprintf(what, sizeof(what), "%.60s - %.70s [%.50s]", e->info.artist, e->info.title, e->info.version);
@@ -771,6 +787,7 @@ static void play_frame(const pad_state *pad, float dt)
             osu5_update(f->t, f->x, f->y, f->keys);
             app.cursor.x = f->x;
             app.cursor.y = f->y;
+            app.cursor.keys = f->keys;
         }
     } else {
         if (app.ruleset == 0)
@@ -782,6 +799,15 @@ static void play_frame(const pad_state *pad, float dt)
             replay_push(&app.rec, t, app.cursor.x, app.cursor.y, app.cursor.keys);
         if (app.mp_on && app.mp_kind == MP_CADENCE && app.mps.spectators > 0 && !(app.mods & OSU5_MOD_AUTO))
             mp_frames_push(t, app.cursor.x, app.cursor.y, app.cursor.keys);
+    }
+
+    /* presses for the key overlay */
+    {
+        int down = app.cursor.keys & ~app.key_prev;
+        for (int k = 0; k < 4; k++)
+            if (down & (1 << k))
+                app.key_count[k]++;
+        app.key_prev = app.cursor.keys;
     }
 
     osu5_sound ev;
@@ -883,6 +909,72 @@ static void play_frame(const pad_state *pad, float dt)
     }
 }
 
+/* lazer's "classic" display score, per ruleset, from the standardised one */
+static int64_t classic_score(int64_t standardised)
+{
+    double n = app.map_objects > 0 ? app.map_objects : 1;
+    double scale;
+    switch (app.ruleset) {
+    case 1: scale = n * 1109 + 100000; break;
+    case 2: scale = n * n * 21.62 + 100000; break;
+    case 3: return standardised;
+    default: scale = n * n * 32.57 + 100000; break;
+    }
+    return (int64_t)llround(scale * (double)standardised / 1000000.0);
+}
+
+/* the keys down the right edge, lit while held, with how many times each went down */
+static void draw_key_overlay(void)
+{
+    static const char *const osu_names[2] = {"K1", "K2"}, *const taiko_names[4] = {"D", "D", "K", "K"};
+    int n = app.ruleset == 1 ? 4 : app.ruleset == 0 ? 2 : 0;
+    char buf[16];
+    for (int k = 0; k < n; k++) {
+        float x = GFX_W - 90, y = GFX_H / 2 - n * 34 + k * 68;
+        bool held = app.cursor.keys & (1 << k);
+        uint32_t c = app.ruleset == 1 ? (k < 2 ? ui_hex(0xEB452B, 1) : ui_hex(0x438EAC, 1)) : ui_hex(0xFFCC22, 1);
+        ui_round_rect(x, y, 62, 58, 10, held ? c : gfx_rgba(0, 0, 0, 0.45f));
+        ui_round_rect(x, y, 62, 58, 10, gfx_rgba(1, 1, 1, held ? 0 : 0.08f));
+        draw_text(x + 31, y + 6, 18, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, app.ruleset == 1 ? taiko_names[k] : osu_names[k]);
+        snprintf(buf, sizeof(buf), "%d", app.key_count[k]);
+        draw_text(x + 31, y + 30, 16, gfx_rgba(1, 1, 1, 0.75f), ALIGN_CENTRE, buf);
+    }
+}
+
+/* the local top five for this map with you slotted in, like lazer's in-game board */
+static void draw_live_board(int64_t now)
+{
+    if (!app.nscores)
+        return;
+    struct { int64_t score; const char *who; bool me; } rows[6];
+    int n = 0;
+    for (int i = 0; i < app.nscores && n < 5; i++) {
+        rows[n].score = app.classic_score ? classic_score(app.scores[i].score) : app.scores[i].score;
+        rows[n].who = "your best";
+        rows[n].me = false;
+        n++;
+    }
+    rows[n].score = now;
+    rows[n].who = app.watching ? "replay" : "you";
+    rows[n].me = true;
+    n++;
+    for (int i = 1; i < n; i++)
+        for (int k = i; k > 0 && rows[k].score > rows[k - 1].score; k--) {
+            typeof(rows[0]) t = rows[k];
+            rows[k] = rows[k - 1];
+            rows[k - 1] = t;
+        }
+    char buf[48];
+    for (int i = 0; i < n; i++) {
+        float y = GFX_H / 2 - n * 26 + i * 52;
+        ui_round_rect(20, y, 220, 46, 8, rows[i].me ? ui_hex(0x66CCFF, 0.35f) : gfx_rgba(0, 0, 0, 0.35f));
+        snprintf(buf, sizeof(buf), "%d  %s", i + 1, rows[i].who);
+        draw_text(34, y + 4, 16, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%lld", (long long)rows[i].score);
+        draw_text(34, y + 22, 18, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+    }
+}
+
 static void render_play(void)
 {
     double t = app.play_time;
@@ -917,7 +1009,19 @@ static void render_play(void)
 
     if (app.sb)
         sb_draw(app.sb, t, SB_OVER, 0);
-    draw_hud(&app.last_hud, t);
+    {
+        /* lazer's hud visibility, and classic scoring if picked */
+        bool show = app.hud_mode == 0 || (app.hud_mode == 1 && app.last_hud.state == OSU5_STATE_BREAK);
+        osu5_hud h = app.last_hud;
+        if (app.classic_score)
+            h.score = classic_score(h.score);
+        if (show)
+            draw_hud(&h, t);
+        if (show && app.key_overlay)
+            draw_key_overlay();
+        if (show && app.live_board && !app.mp_playing)
+            draw_live_board(h.score);
+    }
 
     /* red at the edges when a decent combo breaks */
     double flash = wall_ms() - app.break_flash;
@@ -2191,7 +2295,7 @@ enum {
     SET_SETUP, SET_HELP, SET_UPDATE, SET_LOOK,  /* general */
     SET_SKIN,                                   /* skin */
     SET_SENS, SET_CURSOR,                       /* input */
-    SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_STARS_LO, SET_STARS_HI, SET_CONVERTS, /* gameplay */
+    SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_HUD, SET_KEYS, SET_LIVE, SET_CLASSIC, SET_STARS_LO, SET_STARS_HI, SET_CONVERTS, /* gameplay */
     SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, /* audio */
     SET_ACCOUNT, SET_CLAN, SET_PASSWORD, SET_DELETE, SET_BOARD, /* online */
     SET_RESCAN,                                 /* maintenance */
@@ -2213,6 +2317,10 @@ static const char *const set_words[SET_COUNT] = {
     [SET_DIM] = "gameplay background dim",
     [SET_STORYBOARD] = "gameplay storyboards",
     [SET_VIDEO] = "gameplay video backgrounds mp4",
+    [SET_HUD] = "gameplay hud visibility interface",
+    [SET_KEYS] = "gameplay key overlay counter",
+    [SET_LIVE] = "gameplay leaderboard in game live",
+    [SET_CLASSIC] = "gameplay score display classic standardised scoring",
     [SET_STARS_LO] = "gameplay song select lowest stars difficulty filter",
     [SET_STARS_HI] = "gameplay song select highest stars difficulty filter",
     [SET_CONVERTS] = "gameplay show converted maps converts taiko catch mania",
@@ -2353,6 +2461,22 @@ static void settings_frame(const pad_state *pad)
     case SET_VIDEO:
         if (d || pad->pressed & PAD_CROSS)
             app.videos = !app.videos;
+        break;
+    case SET_HUD:
+        if (d || pad->pressed & PAD_CROSS)
+            app.hud_mode = (app.hud_mode + (d < 0 ? 2 : 1)) % 3;
+        break;
+    case SET_KEYS:
+        if (d || pad->pressed & PAD_CROSS)
+            app.key_overlay = !app.key_overlay;
+        break;
+    case SET_LIVE:
+        if (d || pad->pressed & PAD_CROSS)
+            app.live_board = !app.live_board;
+        break;
+    case SET_CLASSIC:
+        if (d || pad->pressed & PAD_CROSS)
+            app.classic_score = !app.classic_score;
         break;
     case SET_SKIN:
         if (pad->pressed & PAD_CROSS) {
@@ -2554,6 +2678,15 @@ static void render_settings(void)
         case SET_CURSOR: name = "cursor size"; snprintf(val, sizeof(val), "%.1fx", app.cursor_scale); break;
         case SET_STORYBOARD: name = "storyboards"; kind = 1; flag = app.storyboards; break;
         case SET_VIDEO: name = "video backgrounds (mp4)"; kind = 1; flag = app.videos; break;
+        case SET_HUD: {
+            static const char *const modes[3] = {"always", "only in breaks", "never"};
+            name = "hud";
+            snprintf(val, sizeof(val), "%s", modes[app.hud_mode]);
+            break;
+        }
+        case SET_KEYS: name = "key overlay"; kind = 1; flag = app.key_overlay; break;
+        case SET_LIVE: name = "leaderboard while playing"; kind = 1; flag = app.live_board; break;
+        case SET_CLASSIC: name = "score display"; snprintf(val, sizeof(val), "%s", app.classic_score ? "classic" : "standardised"); break;
         case SET_WIZARD: name = "find my offset"; kind = 3; break;
         case SET_HELP: name = "show the controls"; kind = 3; break;
         case SET_ACCOUNT:
