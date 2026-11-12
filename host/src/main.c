@@ -1076,7 +1076,7 @@ static int closest_in_set(int start, int from)
     return pick;
 }
 
-/* OPTIONS in song select: the things you don't need every second, in a list */
+/* song select options list */
 enum { OPT_RANDOM, OPT_SORT, OPT_FAV, OPT_DELETE, OPT_MAPS, OPT_SKINS, OPT_SETTINGS, OPT_COUNT };
 static int sel_opt = -1; /* -1 closed */
 static double delete_armed;
@@ -1201,7 +1201,7 @@ static void select_frame(const pad_state *pad)
             app.searching = false;
         return;
     }
-    /* the same everywhere: L1 / R1 change the mode */
+    /* L1 / R1: mode */
     if (pad->pressed & (PAD_L1 | PAD_R1)) {
         set_mode(app.mode_pick + (pad->pressed & PAD_R1 ? 1 : -1));
         return;
@@ -1333,7 +1333,7 @@ static void select_frame(const pad_state *pad)
     } else if (pad->pressed & PAD_R2 && app.nscores > 0 && replay_exists(app.scores[0].when))
         watch_replay(e, app.scores[0].when);
 
-    /* the bancho replay asked for above, once it's here */
+    /* bancho replay arrived */
     if (app.bweb_waiting) {
         int mods = app.watch.mods;
         int st = bweb_replay_take(&app.watch);

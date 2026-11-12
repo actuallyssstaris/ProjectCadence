@@ -131,7 +131,7 @@ static void render_rankings(void)
     web_rankings_read(&r);
     draw_background(0.85f);
 
-    /* rankings sit on lazer's green-blue scheme */
+    
     const float px = 144, pw = GFX_W - 2 * px;
     draw_rect(px, 0, pw, GFX_H, ui_hex(0x1C2125, 1));
     ui_header("rankings", "performance", ui_hex(0x66CCFF, 1));
@@ -322,7 +322,7 @@ static void render_profile(void)
                   : pf_name[0]     ? "no such player, or osu.ppy.sh didn't answer"
                                    : "SQUARE to look someone up");
     } else {
-        /* the big two: global and country ranking */
+        /* global and country rank */
         snprintf(buf, sizeof(buf), u.rank ? "#%d" : "-", u.rank);
         if (u.rank) { group3(u.rank, num, sizeof(num)); snprintf(buf, sizeof(buf), "#%s", num); }
         pf_stat(x, y, "global ranking", buf, 40);
@@ -380,7 +380,7 @@ static void render_profile(void)
 
 /* ---- chat ----
  * ProjectCadence server: #lobby and the room. bancho: the room, then every
- * channel joined and every DM, the way lazer lists them along the top. */
+ * channel joined and every DM. */
 
 #define CH_TABS (MP_MAX_CHANNELS + 2)
 
@@ -525,7 +525,7 @@ static uint32_t name_colour(const char *name)
 static void render_chat(void)
 {
     char buf[200];
-    /* whatever was behind stays visible above the chat, like lazer's overlay */
+    /* the screen behind stays visible above */
     if (ov_return == SCREEN_MENU)
         app.simple_ui ? render_menu_classic() : render_menu();
     else
@@ -721,7 +721,7 @@ static int spec_find(const mp_user *u)
     return -1;
 }
 
-/* called every frame of a spectated play: their new frames into the replay */
+/* new spectator frames into the replay, once a frame */
 static void spectate_pull(void)
 {
     static mp_spec_frame got[512];
@@ -730,7 +730,7 @@ static void spectate_pull(void)
     int n = mp_spec_take(got, 512, &action);
     for (int i = 0; i < n; i++)
         replay_push(&app.watch, got[i].t, got[i].x, got[i].y, spec_keys(got[i].keys, mode));
-    /* they quit or went back to song select: so do we */
+    /* they quit or failed */
     if (action == 7 || action == 4) {
         spec_live = false;
         spec_md5[0] = 0;
@@ -804,7 +804,7 @@ static void render_spectate(void)
     ui_footer(NULL, "CIRCLE");
 }
 
-/* a spectated play ended, one way or another: wait for their next */
+/* back to waiting for their next map */
 static void spectate_back(void)
 {
     spec_live = false;
