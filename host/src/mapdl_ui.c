@@ -195,7 +195,7 @@ static void render_simple(void)
         draw_text(120, GFX_H - 70, 26, white, ALIGN_LEFT, "CROSS download   TRIANGLE search   L1/R1 page   CIRCLE back");
 }
 
-/* lazer's status colours, text dark on top */
+/* status colours, dark text on top */
 static uint32_t status_colour(const char *s)
 {
     if (!strcmp(s, "ranked") || !strcmp(s, "approved"))
@@ -219,7 +219,7 @@ void mapdl_ui_render(void)
     char buf[300];
     uint32_t white = gfx_rgba(1, 1, 1, 1), dim = gfx_rgba(1, 1, 1, 0.65f);
 
-    /* lazer's listing overlay, colours sampled off it: a centred blue-grey sheet
+    /* a centred blue-grey sheet
      * with the header, the search block, a sort strip, then the cards */
     const float px = 144, pw = GFX_W - 2 * px;
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.6f));
@@ -243,7 +243,7 @@ void mapdl_ui_render(void)
         snprintf(buf, sizeof(buf), "type in keywords...");
     draw_text(px + 90, 133, 26, ui.query[0] || ui.typing ? white : gfx_rgba(1, 1, 1, 0.45f), ALIGN_LEFT, buf);
     ui_search_icon(px + pw - 100, 147, 32, white);
-    /* the filter rows, lazer's: a label, then the choices with the live one lit */
+    /* filter rows: a label, then the choices with the live one lit */
     {
         float fx = px + 70, fy = 190;
         draw_text(fx, fy, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "mode  (L2)");
@@ -285,7 +285,7 @@ void mapdl_ui_render(void)
     } else if (ui.res.state == 3 || (ui.res.state == 2 && ui.res.count == 0)) {
         draw_text(GFX_W / 2, top + 120, 28, gfx_rgba(1, 0.6f, 0.5f, 1), ALIGN_CENTRE, ui.res.msg);
     } else if (ui.res.state == 2) {
-        /* three to a row, 485 x 112 like lazer's normal cards at 1080p */
+        /* three to a row, 485 x 112 */
         const float gap = 15, cw = 485, ch = 112, gx = (GFX_W - 3 * cw - 2 * gap) / 2;
         int row = ui.sel / 3;
         ui.scroll += (row - ui.scroll) * 0.25f;
@@ -302,7 +302,7 @@ void mapdl_ui_render(void)
             ui_round_rect(x, y, cw, ch, 10, ui_hex(0x38424E, 1));
             int cover = covers_get(s->id);
             if (cover) {
-                /* the cover again behind the text, faint, the way lazer's cards wash it in */
+                /* the cover again behind the text, faint */
                 gfx_bind(cover);
                 gfx_push(&(gfx_inst){x + 102 + (cw - 112) / 2, y + ch / 2, (cw - 112) / 2, ch / 2 - 1, 0, gfx_next_z(),
                                      gfx_rgba(1, 1, 1, 0.14f), GK_TEX, {0, 0.3f, 1, 0.7f}});

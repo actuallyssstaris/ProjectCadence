@@ -152,6 +152,8 @@ void osu5_difficulty(float *out4);
 int osu5_peek(const char *path, osu5_peek_info *info);
 /* circles, sliders, spinners, length (ms), main bpm; a full parse, so not per frame */
 int osu5_map_stats(const char *path, int out5[5]);
+/* load osu! maps as this mode (1 taiko, 2 catch, 3 mania), 0 for as they are */
+void osu5_convert(int mode);
 
 #ifdef __cplusplus
 }

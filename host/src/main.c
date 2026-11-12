@@ -179,7 +179,7 @@ static struct {
     char status[256];
 } app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1};
 
-/* the mode an osu! map plays as when another mode is picked: lazer's converts */
+/* what an osu! map gets converted to when another mode is picked */
 static int conv_of(const song_entry *e)
 {
     return e->info.mode == 0 && app.converts ? app.mode_pick : 0;
@@ -232,7 +232,7 @@ static void notify(const char *msg)
     sceKernelSendNotificationRequest(0, &req, sizeof(req), 0);
 }
 
-/* lazer's notification toasts: they slide in at the top right and leave on their own */
+/* toasts: slide in top right, go away by themselves */
 static struct {
     char msg[128];
     double at;
@@ -607,7 +607,7 @@ static void watch_replay(const song_entry *e, int64_t when)
     }
 }
 
-static int play_retries; /* shown on the pause screen, like lazer's "retry count" */
+static int play_retries; /* for the pause screen */
 
 static void back_to_select(void)
 {
@@ -914,7 +914,7 @@ static void apply_view(void)
 
 static const char *const mode_names[4] = {"osu!", "osu!taiko", "osu!catch", "osu!mania"};
 
-/* the toolbar's mode: song select only lists that mode's maps, like lazer */
+/* toolbar mode; song select only lists maps for it */
 static void set_mode(int m)
 {
     app.mode_pick = (m + 4) % 4;
@@ -1486,7 +1486,7 @@ static void render_select(void)
         float curve = off * off * 110;
 
         if (rows[r].kind == ROW_DIFF) {
-            /* lazer's difficulty panel: tinted with its star colour, brighter when picked */
+            /* difficulty row, tinted with its star colour, brighter when picked */
             bool on = r == sel_row;
             float x = (on ? 960 : 1000) + curve;
             float st = stars_get(e->file, star_flags(e, 0));
@@ -1520,7 +1520,7 @@ static void render_select(void)
             continue;
         }
 
-        /* a set: lazer's panel with its background as the cover, fading to dark */
+        /* a set: background as the cover, fading to dark */
         bool header = rows[r].kind == ROW_HEADER;
         float x = (header ? 920 : 980) + curve;
         int n = set_end(rows[r].index) - rows[r].index;
@@ -1558,7 +1558,7 @@ static void render_select(void)
 
     const osu5_peek_info *in = &app.songs.items[app.sel].info;
     const char *selfile = app.songs.items[app.sel].file;
-    /* the wedge, lazer's: title and artist, the map's numbers in pills, the
+    /* the wedge: title and artist, the map's numbers in pills, the
      * difficulty under its star pill, then a column per stat with a bar on top */
     ui_shear_rect(-60, 0, 995, 318, 46, ui_hex(0x1C1C1C, 0.86f));
     {
@@ -1690,7 +1690,7 @@ static void render_select(void)
               gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, app.board_src && online_enabled() ? "L2 osu.ppy.sh" : "L2 global");
 scores_done:;
 
-    /* footer, lazer's measurements: an 84 tall strip, the wide pink back button,
+    /* footer: 84 tall strip, the wide pink back button,
      * then dark tiles that stand a little proud of it with a colour stripe each */
     {
         const float fh = 84, fy = GFX_H - fh, lean = 14;
@@ -1823,13 +1823,13 @@ static void render_mods(void)
     char buf[128];
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0.03f, 0.04f, 0.03f, 0.82f));
 
-    /* banner across the top, colours off lazer's green scheme */
+    /* banner across the top */
     ui_round_rect(92, 55, GFX_W - 184, 92, 12, ui_hex(0x2F472F, 0.97f));
     draw_text(150, 72, 26, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "mod select");
     draw_text(150, 108, 17, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
               "mods change how a map plays; some change the score you get, others are just for fun");
 
-    /* leaning columns: everything slides left the lower it sits, like lazer's */
+    /* leaning columns: everything slides left the lower it sits */
     const float k = 0.16f, cw = 420, gap = 16, top = 200, hh = 56, bottom = 930, rh = 62;
     float x0 = (GFX_W - MOD_NCOLS * cw - (MOD_NCOLS - 1) * gap) / 2 + 60;
     for (int c = 0; c < MOD_NCOLS; c++) {
@@ -2183,7 +2183,7 @@ typedef struct {
     uint32_t colour;
 } overlay_button;
 
-/* lazer's pause and fail dialog: a spaced-out yellow title, full-width leaning
+/* pause and fail: a spaced-out yellow title, full-width leaning
  * buttons with triangles drifting in them, and the attempt's numbers underneath */
 static void render_overlay(const char *title, const overlay_button *b, int n)
 {
@@ -2225,7 +2225,7 @@ static void render_overlay(const char *title, const overlay_button *b, int n)
     draw_text(GFX_W / 2, iy + 60, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, line);
 }
 
-/* one cell of lazer's statistics grid: a dark label bar over the number */
+/* one stats cell: a dark label bar over the number */
 static void stat_cell(float x, float y, float w, const char *label, uint32_t lc, const char *value)
 {
     ui_round_rect(x, y, w, 20, 10, gfx_rgba(0, 0, 0, 0.35f));
@@ -2241,7 +2241,7 @@ static void render_results(void)
     draw_background(0.6f);
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.35f));
 
-    /* lazer's score card: player on top, then the panel with the ring */
+    /* score card: player on top, then the panel with the ring */
     const float pw = 475, px = (GFX_W - pw) / 2, cxm = GFX_W / 2;
     ui_round_rect(px, 70, pw, 900, 20, ui_hex(0x3A3A3A, 0.96f));
     ui_round_rect(cxm - 52, 40, 104, 104, 16, ui_hex(0x555555, 1));
@@ -2283,7 +2283,7 @@ static void render_results(void)
 
     snprintf(buf, sizeof(buf), "%lld", (long long)h->score);
     {
-        /* grouped in threes with a gap, like lazer's counter */
+        /* grouped in threes */
         char sp[48];
         int n = (int)strlen(buf), o = 0;
         for (int i = 0; i < n; i++) {
@@ -2788,7 +2788,7 @@ static void mp_board(float x, float y, float w, bool compact)
 }
 
 /* a settings-style row: label left, value right, a lighter box and a purple
- * bar on the left when it's the one selected (lazer's settings rows) */
+ * bar on the left when it's the one selected */
 static void form_row(float x, float y, float w, const char *label, const char *value, bool on)
 {
     ui_round_rect(x, y, w, 64, 8, on ? ui_hex(0x46444F, 1) : ui_hex(0x2C2A35, 0.96f));
@@ -2803,7 +2803,7 @@ static void form_row(float x, float y, float w, const char *label, const char *v
     }
 }
 
-/* lazer's full-width action button: purple, or another colour, text centred */
+/* full-width button: purple, or another colour, text centred */
 static void form_button(float x, float y, float w, const char *label, uint32_t colour, bool on)
 {
     uint32_t c = ui_hex(colour, 1);
@@ -2922,7 +2922,7 @@ static void render_mp(void)
         return;
     }
 
-    /* the room, laid out like lazer's: participants, beatmap and chat in three
+    /* the room: participants, beatmap and chat in three
      * columns, and the big ready button in the footer */
     ui_crumb(40, 40, 30, "multiplayer", s->room_name, ui_hex(UI_YELLOW, 1));
     /* the room's own card across the top, same as its lounge card */
@@ -3157,7 +3157,7 @@ static void render_account(void)
     char msg[128], buf[160];
     int st = account_state(msg, sizeof(msg));
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.7f));
-    /* lazer's sign-in panel, centred: a heading, two fields and the buttons */
+    /* sign-in panel: a heading, two fields and the buttons */
     const float pw = 760, px = (GFX_W - pw) / 2, py = 170;
     int rows = account_signed_in() ? ACC_ROWS : ACC_ROWS - 1;
     ui_round_rect(px, py, pw, 250 + rows * 76, 14, ui_hex(0x302E39, 0.98f));
@@ -3310,7 +3310,7 @@ static void render_help(void)
 
 /* ---- main menu ---- */
 
-/* lazer's two rows: settings | play, skins, get maps, quit at the top, and play
+/* two rows: settings | play, skins, get maps, quit at the top, and play
  * opening back | solo, multi. The first entry of each row sits left of the logo */
 enum { MB_SETTINGS, MB_PLAY, MB_SKINS, MB_MAPS, MB_QUIT, MB_BACK, MB_SOLO, MB_MULTI };
 static const int menu_top[] = {MB_SETTINGS, MB_PLAY, MB_SKINS, MB_MAPS, MB_QUIT};
@@ -3334,9 +3334,9 @@ static void menu_enter(void)
     if (!app.logo_tex) {
         int w, h, n;
         unsigned char *px = stbi_load("/app0/sce_sys/icon0.png", &w, &h, &n, 4);
-        app.menu_sel = 1; /* start on play, like lazer */
+        app.menu_sel = 1;
         if (px) {
-            /* the icon is square; lazer's logo is round. Shrink the art into a
+            /* the icon is square; the logo is round. Shrink the art into a
              * disc filled with the icon's own background so nothing gets cut */
             int N = w < h ? w : h;
             unsigned char *out = malloc((size_t)N * N * 4);
@@ -3428,7 +3428,7 @@ static void render_menu(void)
     double now = wall_ms();
     float t = (float)(now / 1000.0);
 
-    /* toolbar along the top, lazer's: settings and home, then the four modes
+    /* toolbar: settings and home, then the four modes
      * with the current map's lit, the player on the right */
     draw_rect(0, 0, GFX_W, 56, ui_hex(0x191919, 0.96f));
     ui_gear_icon(40, 28, 30, gfx_rgba(1, 1, 1, 0.85f));
@@ -3485,7 +3485,7 @@ static void render_menu(void)
     }
 
     /* the button strip through the middle, the logo sitting on its left end;
-     * sizes from lazer at 1080p: 133 tall, 181 wide, 25 of lean */
+     * at 1080p: 133 tall, 181 wide, 25 of lean */
     const float bar_h = 133, bar_y = GFX_H / 2 - bar_h / 2, lean = 25, base_w = 181;
     float pulse = 1 + 0.025f * sinf(t * 2 * 3.14159f * 1.2f);
     float lx = 652, ly = GFX_H / 2, lsize = 284 * pulse;
@@ -3600,7 +3600,7 @@ static void render_menu(void)
     }
 }
 
-/* ---- first-run setup, after lazer's: a step at a time in a centred panel,
+/* ---- first-run setup: a step at a time in a centred panel,
  * "next (step)" in the footer, back to go a step back ---- */
 
 enum { SETUP_WELCOME, SETUP_CONTROLS, SETUP_SKIN, SETUP_BEATMAPS, SETUP_BEHAVIOUR, SETUP_STEPS };
@@ -3614,7 +3614,7 @@ static int setup_actions(int step)
     switch (step) {
     case SETUP_SKIN: return 1;
     case SETUP_BEATMAPS: return 1;
-    case SETUP_BEHAVIOUR: return 3; /* lazer look, simplified look, account */
+    case SETUP_BEHAVIOUR: return 3; /* new look, simplified, account */
     default: return 0;
     }
 }

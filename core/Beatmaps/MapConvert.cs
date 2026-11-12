@@ -6,11 +6,9 @@ using Osu5.Objects;
 
 namespace Osu5.Beatmaps
 {
-    // osu! maps played as another mode, lazer's "converted beatmaps". Ported from
-    // osu!lazer's TaikoBeatmapConverter and ManiaBeatmapConverter with its legacy
-    // pattern generators (https://github.com/ppy/osu, MIT). Catch needs nothing
-    // here: lazer turns osu! objects into fruit with the same code a catch map
-    // goes through, and CatchPlayer already does that.
+    // taiko and mania converts, ported from ppy/osu (MIT): TaikoBeatmapConverter,
+    // ManiaBeatmapConverter and the legacy pattern generators. catch needs
+    // nothing, CatchPlayer already handles osu! objects
     public static class MapConvert
     {
         public static void To(Beatmap map, int mode)
@@ -88,7 +86,7 @@ namespace Osu5.Beatmaps
             map.HitObjects = objects;
         }
 
-        // lazer's ManiaBeatmapConverter key count, from how much of the map is
+        // key count, from how much of the map is
         // sliders and spinners, and from CS / OD
         public static int ManiaKeys(Beatmap map)
         {
@@ -306,7 +304,7 @@ namespace Osu5.Beatmaps
                 }
             }
 
-            // ---- what every generator shares (lazer's LegacyPatternGenerator) ----
+            // ---- shared by the generators (LegacyPatternGenerator) ----
 
             abstract class Gen
             {
