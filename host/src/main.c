@@ -80,6 +80,7 @@ typedef enum {
     SCREEN_RANKINGS,
     SCREEN_PROFILE,
     SCREEN_CHAT,
+    SCREEN_SPECTATE,
 } screen;
 
 static struct {
@@ -206,6 +207,19 @@ static const char *base_name(const char *path)
     const char *b = strrchr(path, '/');
     return b ? b + 1 : path;
 }
+
+/* in overlays.inc, used before it */
+static void chat_open(screen back);
+static void rankings_open(screen back);
+static void profile_lookup(screen back);
+static bool spec_live;
+static int spec_target;
+static void spectate_pull(void);
+static void spectate_back(void);
+static bool host_tools_open(void);
+static void host_tools_frame(const pad_state *pad);
+static void render_host_tools(void);
+static int host_sel;
 
 /* star lookups carry the convert in bits 28-29, so each mode gets its own rating */
 static int star_flags(const song_entry *e, int mods)
@@ -666,6 +680,8 @@ static void back_to_select(void)
         app.mods = app.mp_saved_mods;
         app.scr = SCREEN_MP;
     }
+    if (spec_target)
+        spectate_back();
 }
 
 static double game_time(void) { return audio_music_time() + app.offset_ms + app.map_offset; }
@@ -723,6 +739,14 @@ static void play_frame(const pad_state *pad, float dt)
     }
 
     if (app.watching) {
+        /* spectating: their newest frames first, and out if they left the map */
+        if (spec_target) {
+            spectate_pull();
+            if (!spec_live) {
+                back_to_select();
+                return;
+            }
+        }
         /* the recorded calls, at their own times, up to now */
         while (app.rp_pos < app.watch.count && app.watch.frames[app.rp_pos].t <= t) {
             const replay_frame *f = &app.watch.frames[app.rp_pos++];
@@ -2947,6 +2971,15 @@ static void mp_frame(const pad_state *pad)
         }
         return;
     }
+    /* bancho hosts: R3 opens host tools, which take the pad while open */
+    if (host_tools_open()) {
+        host_tools_frame(pad);
+        return;
+    }
+    if (s->i_host && app.mp_kind == MP_BANCHO && pad->pressed & PAD_R3) {
+        host_sel = 0;
+        return;
+    }
     bool have = mp_find_map(s) >= 0;
     bool between = s->state != MP_PLAYING;
     if (pad->pressed & PAD_CROSS && between) {
@@ -3592,11 +3625,6 @@ static void menu_enter(void)
     }
 }
 
-/* in overlays.inc */
-static void chat_open(screen back);
-static void rankings_open(screen back);
-static void profile_lookup(screen back);
-
 static void menu_frame(const pad_state *pad)
 {
     int flick = rstick_flick(pad);
@@ -4227,6 +4255,9 @@ int main(void)
         case SCREEN_CHAT:
             chat_frame(&pad);
             break;
+        case SCREEN_SPECTATE:
+            spectate_frame(&pad);
+            break;
         }
 
         {
@@ -4324,6 +4355,8 @@ int main(void)
             break;
         case SCREEN_MP:
             app.simple_ui ? render_mp_classic() : render_mp();
+            if (host_tools_open())
+                render_host_tools();
             break;
         case SCREEN_SETUP:
             render_setup();
@@ -4336,6 +4369,9 @@ int main(void)
             break;
         case SCREEN_CHAT:
             render_chat();
+            break;
+        case SCREEN_SPECTATE:
+            render_spectate();
             break;
         }
         {

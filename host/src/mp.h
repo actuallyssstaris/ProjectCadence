@@ -24,6 +24,7 @@ typedef struct {
     int team;           /* 0 red, 1 blue */
     int mods;           /* their own, when the room has free mods */
     bool account;       /* a signed-in name */
+    int slot;           /* bancho: which of the 16 slots */
 } mp_member;
 
 typedef struct {
@@ -87,6 +88,7 @@ typedef struct {
     char map_title[128];
     int mods;           /* ours (OSU5_MOD_*) */
     bool teams, freemod;
+    int win;            /* bancho: 0 score, 1 accuracy, 2 combo, 3 score v2 */
     int nchat;
     mp_line chat[40];
     int nlobby;         /* the server-wide lobby channel, ProjectCadence server only */

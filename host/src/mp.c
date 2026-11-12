@@ -758,6 +758,7 @@ static void bc_publish(void)
     if (in_match) {
         st.teams = cur.team_type == 2 || cur.team_type == 3;
         st.freemod = cur.freemods != 0;
+        st.win = cur.win;
         st.room_id = cur.id;
         snprintf(st.room_name, sizeof(st.room_name), "%s", cur.name);
         st.i_host = cur.host == bc_me;
@@ -775,6 +776,7 @@ static void bc_publish(void)
             mp_member *m = &st.members[st.nmembers++];
             memset(m, 0, sizeof(*m));
             m->id = cur.uid[s];
+            m->slot = s;
             snprintf(m->name, sizeof(m->name), "%s", name_of(cur.uid[s]));
             m->ready = cur.status[s] == SLOT_READY;
             m->has_map = cur.status[s] != SLOT_NO_MAP;
