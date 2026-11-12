@@ -98,6 +98,12 @@ namespace Osu5.Native
             return map?.Mode ?? 0;
         }
 
+        static int convertTo;
+
+        // the mode the next osu! map loads as (0 = itself); other modes' maps ignore it
+        [UnmanagedCallersOnly(EntryPoint = "osu5_convert", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static void SetConvert(int mode) => convertTo = mode;
+
         [UnmanagedCallersOnly(EntryPoint = "osu5_load", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static int Load(byte* path)
         {
@@ -105,6 +111,7 @@ namespace Osu5.Native
             {
                 string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
                 map = BeatmapDecoder.Decode(p, mods);
+                MapConvert.To(map, convertTo);
                 attributes = null;
                 other = null;
 
@@ -171,7 +178,11 @@ namespace Osu5.Native
             try
             {
                 string p = Marshal.PtrToStringUTF8((IntPtr)path) ?? "";
+                // bits 28-29 ask for the map converted to that mode
+                int conv = (flags >> 28) & 3;
+                flags &= 0x0FFFFFFF;
                 var m = BeatmapDecoder.Decode(p, (Mods)flags);
+                MapConvert.To(m, conv);
                 if (m.Mode != 0)
                     return (float)(Osu5.Stars.OtherStars.Calculate(m, (Mods)flags)?.Stars ?? -1);
                 return (float)Osu5.Stars.StarRating.Calculate(m, (Mods)flags).Stars;

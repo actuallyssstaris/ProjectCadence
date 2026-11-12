@@ -85,6 +85,7 @@ static struct {
     int sort;
     int mode_pick;          /* 0 osu!, 1 taiko, 2 catch, 3 mania */
     float star_lo, star_hi; /* song select's star range, hi 0 = no top */
+    bool converts;          /* osu! maps show up, converted, in the other modes */
     bool searching;
     int board;            /* song select: 0 your scores, 1 the online board */
     int board_src;        /* which online board: 0 ProjectCadence, 1 osu.ppy.sh */
@@ -178,12 +179,38 @@ static struct {
     char status[256];
 } app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1};
 
+/* the mode an osu! map plays as when another mode is picked: lazer's converts */
+static int conv_of(const song_entry *e)
+{
+    return e->info.mode == 0 && app.converts ? app.mode_pick : 0;
+}
+
+/* star lookups carry the convert in bits 28-29, so each mode gets its own rating */
+static int star_flags(const song_entry *e, int mods)
+{
+    return stars_mods(mods) | conv_of(e) << 28;
+}
+
+/* scores of a convert live apart from the map's own */
+static const char *score_path(const song_entry *e)
+{
+    static char buf[2][800];
+    static int flip;
+    int c = conv_of(e);
+    if (!c)
+        return e->file;
+    flip ^= 1;
+    snprintf(buf[flip], sizeof(buf[flip]), "%s#%d", e->file, c);
+    return buf[flip];
+}
+
 static void help_open(screen back);
 int sceUserServiceGetUserName(int32_t user, char *name, size_t size);
 static void mp_report(bool failed, bool done);
 static void menu_enter(void);
 static bool setup_active; /* the first-run setup is open underneath */
 static void setup_open(void);
+static void want_converts(void);
 static void mp_board(float x, float y, float w, bool compact);
 static const char *map_md5(const char *file);
 
@@ -263,6 +290,7 @@ static void settings_load(void)
     app.bg_dim = 0.8f;
     app.cursor_scale = 1.0f;
     app.storyboards = true;
+    app.converts = true;
     app.videos = true;
 
     FILE *f = fopen(SETTINGS_FILE, "r");
@@ -281,6 +309,7 @@ static void settings_load(void)
             else if (!strcmp(key, "mode")) app.mode_pick = (int)v & 3;
             else if (!strcmp(key, "star_lo")) app.star_lo = v;
             else if (!strcmp(key, "star_hi")) app.star_hi = v;
+            else if (!strcmp(key, "converts")) app.converts = v != 0;
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
             else if (!strcmp(key, "simple_ui")) app.simple_ui = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
@@ -297,9 +326,9 @@ static void settings_save(void)
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f)
         return;
-    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\nmode %d\nstar_lo %.1f\nstar_hi %.1f\n",
+    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\nmode %d\nstar_lo %.1f\nstar_hi %.1f\nconverts %d\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
-            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui, app.mode_pick, app.star_lo, app.star_hi);
+            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui, app.mode_pick, app.star_lo, app.star_hi, app.converts);
     fclose(f);
 }
 
@@ -477,7 +506,7 @@ static void refresh_scores(void)
     if (app.scores_for == app.sel || app.songs.count == 0)
         return;
     app.scores_for = app.sel;
-    app.nscores = scores_for(app.songs.items[app.sel].file, app.scores, SHOWN_SCORES);
+    app.nscores = scores_for(score_path(&app.songs.items[app.sel]), app.scores, SHOWN_SCORES);
 }
 
 static bool start_song(const song_entry *e)
@@ -489,6 +518,7 @@ static bool start_song(const song_entry *e)
         app.sb = NULL;
     }
 
+    osu5_convert(conv_of(e));
     osu5_set_mods(core_mods(app.mods));
     if (osu5_load(e->file) != 0) {
         char err[200];
@@ -748,7 +778,7 @@ static void play_frame(const pad_state *pad, float dt)
         } else if (wall_ms() - app.finish_seen > 1500) {
             app.last_pp = osu5_pp();
             if (!(app.mods & OSU5_MOD_AUTO) && !app.watching && app.playing) {
-                app.new_place = scores_add(app.playing->file, &app.last_hud, app.mods, app.last_pp, &app.last_when);
+                app.new_place = scores_add(score_path(app.playing), &app.last_hud, app.mods, app.last_pp, &app.last_when);
                 if (!replay_save(&app.rec, app.last_when))
                     app.last_when = 0;
                 const osu5_hud *h = &app.last_hud;
@@ -853,9 +883,10 @@ static void apply_view(void)
         int n = 0;
         for (int i = 0; i < app.songs.count; i++) {
             const song_entry *e = &app.songs.items[i];
-            if ((e->info.mode & 3) != app.mode_pick)
+            bool convert = app.converts && app.mode_pick && e->info.mode == 0;
+            if ((e->info.mode & 3) != app.mode_pick && !convert)
                 continue;
-            float st = stars_get(e->file, 0);
+            float st = stars_get(e->file, star_flags(e, 0));
             if (st >= 0 && (st < app.star_lo || (app.star_hi > 0 && st > app.star_hi)))
                 continue;
             app.songs.items[n++] = *e;
@@ -888,6 +919,8 @@ static void set_mode(int m)
 {
     app.mode_pick = (m + 4) % 4;
     mapdl_ui_set_mode(app.mode_pick);
+    app.scores_for = -1;
+    want_converts();
     apply_view();
     settings_save();
     toast("playing %s maps", mode_names[app.mode_pick]);
@@ -928,12 +961,23 @@ static bool remove_tree(const char *path)
     return rmdir(path) == 0 && ok;
 }
 
+/* converts get their own ratings, queued behind everything else */
+static void want_converts(void)
+{
+    if (!app.converts || !app.mode_pick)
+        return;
+    for (int i = 0; i < app.all.count; i++)
+        if (app.all.items[i].info.mode == 0)
+            stars_want(app.all.items[i].file, app.mode_pick << 28, false);
+}
+
 static void rescan(void)
 {
     songs_scan(SONGS_DIR, &app.all);
     /* everything gets rated in the background, what's on screen first */
     for (int i = 0; i < app.all.count; i++)
         stars_want(app.all.items[i].file, 0, false);
+    want_converts();
     apply_view();
     LOG("%d maps", app.all.count);
 }
@@ -1099,9 +1143,9 @@ static void select_frame(const pad_state *pad)
      * once new numbers land, the open set re-sorts by stars */
     int open = set_start(app.sel), open_end = set_end(app.sel);
     for (int i = open; i < open_end; i++)
-        stars_want(app.songs.items[i].file, 0, true);
+        stars_want(app.songs.items[i].file, star_flags(&app.songs.items[i], 0), true);
     if (stars_mods(app.mods))
-        stars_want(app.songs.items[app.sel].file, stars_mods(app.mods), true);
+        stars_want(app.songs.items[app.sel].file, star_flags(&app.songs.items[app.sel], app.mods), true);
     static int seen_gen;
     if (stars_generation() != seen_gen) {
         seen_gen = stars_generation();
@@ -1445,7 +1489,7 @@ static void render_select(void)
             /* lazer's difficulty panel: tinted with its star colour, brighter when picked */
             bool on = r == sel_row;
             float x = (on ? 960 : 1000) + curve;
-            float st = stars_get(e->file, 0);
+            float st = stars_get(e->file, star_flags(e, 0));
             uint32_t sc = st >= 0 ? star_colour(st, 1) : gfx_rgba(0.5f, 0.5f, 0.5f, 1);
             if (on)
                 ui_round_rect(x - 3, y - 3, GFX_W - x + 30, row, 14, gfx_rgba(1, 1, 1, 0.9f));
@@ -1453,9 +1497,11 @@ static void render_select(void)
             ui_disc(x + 22, y + (row - 6) / 2, 8, gfx_rgba(1, 1, 1, on ? 0.95f : 0.6f));
             uint32_t tc = gfx_rgba(1, 1, 1, on ? 1 : 0.9f);
             float tx = x + 44;
-            if (in->mode != 0) {
+            if (in->mode != 0 || conv_of(e)) {
                 char tag[16];
-                if (in->mode == 3)
+                if (conv_of(e))
+                    snprintf(tag, sizeof(tag), "convert");
+                else if (in->mode == 3)
                     snprintf(tag, sizeof(tag), "%dK", (int)lroundf(in->cs));
                 else
                     snprintf(tag, sizeof(tag), "%s", in->mode == 1 ? "taiko" : "catch");
@@ -1502,7 +1548,7 @@ static void render_select(void)
         /* a dot per difficulty in its star colour, once they're rated */
         float dx = x + 24;
         for (int i = rows[r].index; i < rows[r].index + n && i < rows[r].index + 16; i++) {
-            float st = stars_get(app.songs.items[i].file, 0);
+            float st = stars_get(app.songs.items[i].file, star_flags(&app.songs.items[i], 0));
             ui_round_rect(dx, y + 56, 8, 14, 4, st >= 0 ? star_colour(st, 1) : gfx_rgba(1, 1, 1, 0.3f));
             dx += 11;
         }
@@ -1561,7 +1607,8 @@ static void render_select(void)
         ui_pill(px, py, 16, gfx_rgba(0, 0, 0, 0.45f), ui_hex(UI_YELLOW, 1), pill);
     }
 
-    float st = stars_get(selfile, 0), mst = stars_mods(app.mods) ? stars_get(selfile, stars_mods(app.mods)) : st;
+    const song_entry *sele = &app.songs.items[app.sel];
+    float st = stars_get(selfile, star_flags(sele, 0)), mst = stars_mods(app.mods) ? stars_get(selfile, star_flags(sele, app.mods)) : st;
     float shown = mst >= 0 ? mst : st;
     uint32_t dcol = shown >= 0 ? star_colour(shown, 1) : ui_hex(0xAAAAAA, 1);
     {
@@ -1838,9 +1885,9 @@ static void render_mods(void)
     ui_shear_rect(bx, fy + 12, 560, 62, lean, ui_hex(0x2D372E, 1));
     if (app.songs.count > 0) {
         const song_entry *e = &app.songs.items[app.sel];
-        float st = stars_get(e->file, stars_mods(app.mods));
+        float st = stars_get(e->file, star_flags(e, app.mods));
         if (st < 0)
-            st = stars_get(e->file, 0);
+            st = stars_get(e->file, star_flags(e, 0));
         if (st >= 0)
             star_pill(bx + 30, fy + 28, 30, st);
         const osu5_peek_info *in = &e->info;
@@ -1865,7 +1912,7 @@ enum {
     SET_SETUP, SET_HELP, SET_UPDATE, SET_LOOK,  /* general */
     SET_SKIN,                                   /* skin */
     SET_SENS, SET_CURSOR,                       /* input */
-    SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_STARS_LO, SET_STARS_HI, /* gameplay */
+    SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_STARS_LO, SET_STARS_HI, SET_CONVERTS, /* gameplay */
     SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, /* audio */
     SET_ACCOUNT, SET_BOARD,                     /* online */
     SET_RESCAN,                                 /* maintenance */
@@ -1903,6 +1950,13 @@ static void settings_frame(const pad_state *pad)
         if (pad->pressed & PAD_CROSS) {
             skin_ui_open(false);
             app.scr = SCREEN_SKINS;
+        }
+        break;
+    case SET_CONVERTS:
+        if (d || pad->pressed & PAD_CROSS) {
+            app.converts = !app.converts;
+            want_converts();
+            apply_view();
         }
         break;
     case SET_STARS_LO:
@@ -2061,6 +2115,7 @@ static void render_settings(void)
         case SET_RESCAN: name = "rescan the Songs folder"; kind = 3; break;
         case SET_SKIN: name = "current skin"; snprintf(val, sizeof(val), "%.40s", skins_active()); break;
         case SET_SETUP: name = "run setup wizard"; kind = 3; break;
+        case SET_CONVERTS: name = "show converted maps"; kind = 1; flag = app.converts; break;
         case SET_STARS_LO: name = "song select: lowest stars"; snprintf(val, sizeof(val), "%.1f*", app.star_lo); break;
         case SET_STARS_HI:
             name = "song select: highest stars";
@@ -3998,6 +4053,19 @@ int main(void)
         case SCREEN_SETUP:
             render_setup();
             break;
+        }
+        {
+            /* screens fade in from black when they change, instead of cutting */
+            static screen shown = SCREEN_MENU;
+            static double since;
+            if (app.scr != shown) {
+                bool quiet = (shown == SCREEN_PLAY && app.scr == SCREEN_PAUSE) || (shown == SCREEN_PAUSE && app.scr == SCREEN_PLAY);
+                shown = app.scr;
+                since = quiet ? 0 : wall_ms();
+            }
+            float k = since > 0 ? 1 - (float)((wall_ms() - since) / 220.0) : 0;
+            if (k > 0)
+                draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.75f * k * k));
         }
         if (app.scr != SCREEN_PLAY)
             render_toasts();

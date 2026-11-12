@@ -279,6 +279,7 @@ static void render_settings_classic(void)
         case SET_SKIN: name = "skin"; snprintf(val, sizeof(val), "%.40s", skins_active()); break;
         case SET_UPDATE: name = "check for updates"; snprintf(val, sizeof(val), "CROSS"); break;
         case SET_SETUP: name = "run setup wizard"; snprintf(val, sizeof(val), "CROSS"); break;
+        case SET_CONVERTS: name = "show converted maps"; snprintf(val, sizeof(val), "%s", app.converts ? "on" : "off"); break;
         case SET_STARS_LO: name = "song select: lowest stars"; snprintf(val, sizeof(val), "%.1f*", app.star_lo); break;
         case SET_STARS_HI: name = "song select: highest stars"; snprintf(val, sizeof(val), app.star_hi > 0 ? "%.1f*" : "no limit", app.star_hi); break;
         case SET_LOOK: name = "interface"; snprintf(val, sizeof(val), "%s", app.simple_ui ? "simplified" : "lazer"); break;
