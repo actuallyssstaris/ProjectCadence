@@ -4,6 +4,15 @@
 
 static screen ov_return = SCREEN_MENU;
 static int rk_sel, rk_mode, rk_page;
+static int rk_src; /* 0 ProjectCadence, 1 osu.ppy.sh */
+
+static void rk_fetch(void)
+{
+    if (rk_src == 0)
+        account_rankings_get(rk_mode, rk_page);
+    else
+        web_rankings_get(rk_mode, rk_page);
+}
 static char pf_name[40];
 static kbd pf_kbd;
 static bool pf_typing;
@@ -55,13 +64,15 @@ static void rankings_open(screen back)
     rk_mode = app.mode_pick;
     rk_page = 0;
     rk_sel = 0;
-    web_rankings_get(rk_mode, rk_page);
+    rk_fetch();
     app.scr = SCREEN_RANKINGS;
 }
 
-/* bancho players when we're on a bancho server, unless it came from the
- * osu.ppy.sh rankings */
-static bool pf_bancho;
+/* where a profile comes from: our server, osu.ppy.sh, or the bancho server
+ * we're on; L2 switches */
+enum { PF_CADENCE, PF_OSU, PF_BANCHO };
+static int pf_src;
+static double pf_refetch_at;
 
 static const mp_user *pf_bancho_user(void)
 {
@@ -71,18 +82,28 @@ static const mp_user *pf_bancho_user(void)
     return NULL;
 }
 
+static void pf_fetch(void)
+{
+    if (!pf_name[0])
+        return;
+    if (pf_src == PF_BANCHO)
+        mp_user_lookup(pf_name);
+    else if (pf_src == PF_OSU)
+        web_user_get(pf_name, pf_mode);
+    else
+        account_profile_get(pf_name, pf_mode);
+}
+
 static void profile_open(const char *who, int mode, screen back)
 {
     snprintf(pf_name, sizeof(pf_name), "%s", who);
     pf_mode = mode;
     pf_return = back;
-    pf_bancho = ch_bancho() && back != SCREEN_RANKINGS;
-    if (pf_bancho) {
-        if (pf_name[0])
-            mp_user_lookup(pf_name);
-    } else {
-        web_user_get(pf_name, pf_mode);
-    }
+    if (back == SCREEN_RANKINGS)
+        pf_src = rk_src == 0 ? PF_CADENCE : PF_OSU;
+    else
+        pf_src = ch_bancho() ? PF_BANCHO : PF_CADENCE;
+    pf_fetch();
     app.scr = SCREEN_PROFILE;
 }
 
@@ -95,31 +116,78 @@ static void profile_lookup(screen back)
     pf_typing = true;
 }
 
+/* both sources as one list of rows */
+typedef struct {
+    int state, count;
+    struct { int rank, pp, plays, id; float acc; char name[32], tag[8]; } row[50];
+} rk_view;
+
+static void rk_read(rk_view *v)
+{
+    memset(v, 0, sizeof(*v));
+    if (rk_src == 0) {
+        static cadence_rankings c;
+        account_rankings_read(&c);
+        v->state = c.state;
+        v->count = c.count;
+        for (int i = 0; i < c.count; i++) {
+            v->row[i].rank = c.r[i].rank;
+            v->row[i].pp = c.r[i].pp;
+            v->row[i].plays = c.r[i].plays;
+            v->row[i].acc = c.r[i].acc * 100;
+            snprintf(v->row[i].name, sizeof(v->row[i].name), "%s", c.r[i].name);
+            snprintf(v->row[i].tag, sizeof(v->row[i].tag), "%s", c.r[i].clan);
+        }
+    } else {
+        static web_rankings w;
+        web_rankings_read(&w);
+        v->state = w.state;
+        v->count = w.count;
+        for (int i = 0; i < w.count; i++) {
+            v->row[i].rank = w.r[i].rank;
+            v->row[i].pp = (int)lroundf(w.r[i].pp);
+            v->row[i].plays = w.r[i].plays;
+            v->row[i].acc = w.r[i].acc;
+            v->row[i].id = w.r[i].id;
+            snprintf(v->row[i].name, sizeof(v->row[i].name), "%s", w.r[i].user);
+            snprintf(v->row[i].tag, sizeof(v->row[i].tag), "%s", w.r[i].country);
+        }
+    }
+}
+
 static void rankings_frame(const pad_state *pad)
 {
-    web_rankings r;
-    web_rankings_read(&r);
+    static rk_view r;
+    rk_read(&r);
     int flick = pad->pressed & PAD_L1 ? -1 : pad->pressed & PAD_R1 ? 1 : 0;
     if (flick) {
         rk_mode = (rk_mode + flick + 4) % 4;
         rk_page = rk_sel = 0;
-        web_rankings_get(rk_mode, rk_page);
+        rk_fetch();
+    }
+    if (pad->pressed & PAD_L2) {
+        rk_src = !rk_src;
+        rk_page = rk_sel = 0;
+        rk_fetch();
     }
     if (pad->nav_x && (rk_page + pad->nav_x) >= 0 && (rk_page + pad->nav_x) < 200) {
         rk_page += pad->nav_x;
         rk_sel = 0;
-        web_rankings_get(rk_mode, rk_page);
+        rk_fetch();
     }
     if (r.count)
         rk_sel = (rk_sel + pad->nav_y + r.count) % r.count;
     if (pad->pressed & PAD_CROSS && r.state == WEB_READY && rk_sel < r.count) {
-        char id[16];
-        snprintf(id, sizeof(id), "%d", r.r[rk_sel].id);
+        char id[40];
+        if (rk_src == 0)
+            snprintf(id, sizeof(id), "%s", r.row[rk_sel].name);
+        else
+            snprintf(id, sizeof(id), "%d", r.row[rk_sel].id);
         profile_open(id, rk_mode, SCREEN_RANKINGS);
         return;
     }
     if (pad->pressed & PAD_TRIANGLE)
-        web_rankings_get(rk_mode, rk_page);
+        rk_fetch();
     if (pad->pressed & PAD_CIRCLE)
         app.scr = ov_return;
 }
@@ -127,14 +195,14 @@ static void rankings_frame(const pad_state *pad)
 static void render_rankings(void)
 {
     char buf[96];
-    web_rankings r;
-    web_rankings_read(&r);
+    static rk_view r;
+    rk_read(&r);
     draw_background(0.85f);
 
     
     const float px = 144, pw = GFX_W - 2 * px;
     draw_rect(px, 0, pw, GFX_H, ui_hex(0x1C2125, 1));
-    ui_header("rankings", "performance", ui_hex(0x66CCFF, 1));
+    ui_header("rankings", rk_src == 0 ? "ProjectCadence" : "osu.ppy.sh", ui_hex(0x66CCFF, 1));
     draw_rect(px, 110, pw, 70, ui_hex(0x242B30, 1));
     ov_mode_tabs(px + 50, 128, rk_mode);
     snprintf(buf, sizeof(buf), "page %d", rk_page + 1);
@@ -153,8 +221,11 @@ static void render_rankings(void)
         draw_text(GFX_W / 2, 420, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "loading...");
     } else if (r.state != WEB_READY) {
         draw_text(GFX_W / 2, 400, 26, gfx_rgba(1, 1, 1, 0.75f), ALIGN_CENTRE,
-                  online_enabled() ? "couldn't reach osu.ppy.sh, TRIANGLE tries again"
-                                   : "rankings need osu! API keys in /data/cadence/osuapi.txt");
+                  rk_src == 0         ? "couldn't reach the ProjectCadence server, TRIANGLE tries again"
+                  : online_enabled() ? "couldn't reach osu.ppy.sh, TRIANGLE tries again"
+                                     : "osu.ppy.sh rankings need API keys in /data/cadence/osuapi.txt");
+    } else if (!r.count) {
+        draw_text(GFX_W / 2, 400, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "nobody here yet");
     } else {
         const float row_h = 48;
         int rows = (int)((GFX_H - 84 - 20 - y) / row_h);
@@ -168,23 +239,24 @@ static void render_rankings(void)
             float ry = y + (i - scroll) * row_h;
             if (ry < y - 4 || ry + row_h > GFX_H - 84)
                 continue;
-            const web_rank *e = &r.r[i];
+            const typeof(r.row[0]) *e = &r.row[i];
             bool on = i == rk_sel;
             ui_round_rect(x, ry, w, row_h - 6, 8, on ? ui_hex(0x3A4A55, 1) : ui_hex(0x283035, 1));
             snprintf(buf, sizeof(buf), "#%d", e->rank);
             draw_text(x + 20, ry + 9, 22, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, buf);
-            ui_pill(x + 120, ry + 9, 16, ui_hex(0x445566, 1), gfx_rgba(1, 1, 1, 0.9f), e->country);
-            draw_text(x + 190, ry + 9, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, e->user);
+            if (e->tag[0])
+                ui_pill(x + 120, ry + 9, 16, ui_hex(0x445566, 1), gfx_rgba(1, 1, 1, 0.9f), e->tag);
+            draw_text(x + 200, ry + 9, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, e->name);
             snprintf(buf, sizeof(buf), "%.2f%%", e->acc);
             draw_text(c_acc, ry + 9, 22, gfx_rgba(1, 1, 1, 0.75f), ALIGN_RIGHT, buf);
             group3(e->plays, buf, sizeof(buf));
             draw_text(c_plays, ry + 9, 22, gfx_rgba(1, 1, 1, 0.75f), ALIGN_RIGHT, buf);
-            group3((long long)lroundf(e->pp), buf, sizeof(buf));
+            group3(e->pp, buf, sizeof(buf));
             strcat(buf, "pp");
             draw_text(c_pp, ry + 9, 22, gfx_rgba(1, 1, 1, 1), ALIGN_RIGHT, buf);
         }
     }
-    ui_footer("L1 / R1  mode     LEFT / RIGHT  page     CROSS  profile", "CIRCLE");
+    ui_footer("L1 / R1  mode     L2  ours / osu.ppy.sh     LEFT / RIGHT  page     CROSS  profile", "CIRCLE");
 }
 
 /* ---- a player's profile ---- */
@@ -193,12 +265,8 @@ static void profile_frame(const pad_state *pad)
 {
     if (pf_typing) {
         int k = kbd_frame(&pf_kbd, pad);
-        if (k == KBD_DONE && pf_name[0]) {
-            if (pf_bancho)
-                mp_user_lookup(pf_name);
-            else
-                web_user_get(pf_name, pf_mode);
-        }
+        if (k == KBD_DONE)
+            pf_fetch();
         if (k != KBD_TYPING)
             pf_typing = false;
         return;
@@ -206,7 +274,36 @@ static void profile_frame(const pad_state *pad)
     int flick = pad->pressed & PAD_L1 ? -1 : pad->pressed & PAD_R1 ? 1 : 0;
     if (flick && pf_name[0]) {
         pf_mode = (pf_mode + flick + 4) % 4;
-        web_user_get(pf_name, pf_mode);
+        pf_fetch();
+    }
+    if (pad->pressed & PAD_L2) {
+        /* the next source that can answer */
+        for (int k = 0; k < 3; k++) {
+            pf_src = (pf_src + 1) % 3;
+            if (pf_src == PF_CADENCE || (pf_src == PF_OSU && online_enabled()) || (pf_src == PF_BANCHO && ch_bancho()))
+                break;
+        }
+        pf_fetch();
+    }
+    if (pf_refetch_at && wall_ms() > pf_refetch_at) {
+        pf_refetch_at = 0;
+        pf_fetch();
+    }
+    if (pf_src == PF_CADENCE) {
+        cadence_user cu;
+        account_profile_read(&cu);
+        if (cu.state == ONLINE_READY && pad->pressed & PAD_TRIANGLE && account_signed_in() &&
+            strcasecmp(cu.name, account_name())) {
+            account_friend(cu.name, !cu.friend_);
+            pf_refetch_at = wall_ms() + 1500;
+        }
+        if (pad->pressed & PAD_CROSS) {
+            for (int i = 0; i < app.mps.nusers; i++)
+                if (!strcasecmp(app.mps.users[i].name, pf_name) && app.mps.users[i].id) {
+                    spectate_open(app.mps.users[i].id, app.mps.users[i].name, SCREEN_PROFILE);
+                    return;
+                }
+        }
     }
     if (pad->pressed & PAD_SQUARE) {
         pf_kbd.text = pf_name;
@@ -214,7 +311,7 @@ static void profile_frame(const pad_state *pad)
         pf_typing = true;
         return;
     }
-    const mp_user *bu = pf_bancho ? pf_bancho_user() : NULL;
+    const mp_user *bu = pf_src == PF_BANCHO ? pf_bancho_user() : NULL;
     if (bu) {
         static double asked;
         if (wall_ms() - asked > 4000) { /* keeps "playing ..." current */
@@ -241,6 +338,52 @@ static void pf_stat(float x, float y, const char *label, const char *value, floa
 static const char *const bancho_actions[] = {"idle", "away", "playing", "editing", "modding", "in multiplayer",
                                              "watching", "", "testing", "submitting", "paused", "in the lobby",
                                              "multiplaying", "browsing osu!direct"};
+
+static void render_cadence_profile(const cadence_user *u)
+{
+    char buf[160], num[48];
+    float x = 144 + 60, y = 390, cw = (GFX_W - 2 * 144 - 120) / 4.0f;
+    /* online right now? the room server's list says */
+    for (int i = 0; i < app.mps.nusers; i++)
+        if (!strcasecmp(app.mps.users[i].name, u->name)) {
+            const mp_user *o = &app.mps.users[i];
+            snprintf(buf, sizeof(buf), "%s%s%.90s", o->action == 2 ? "playing" : "online", o->action == 2 && o->doing[0] ? ": " : "",
+                     o->action == 2 ? o->doing : "");
+            draw_text(x + 190, 340, 20, ui_hex(0x88DD44, 1), ALIGN_LEFT, buf);
+        }
+    if (u->rank) { group3(u->rank, num, sizeof(num)); snprintf(buf, sizeof(buf), "#%s", num); }
+    else snprintf(buf, sizeof(buf), "-");
+    pf_stat(x, y, "global ranking", buf, 40);
+    group3(u->pp, num, sizeof(num));
+    pf_stat(x + 340, y, "pp", num, 40);
+    y += 110;
+    snprintf(buf, sizeof(buf), "%.2f%%", u->acc * 100);
+    pf_stat(x, y, "hit accuracy", buf, 28);
+    group3(u->plays, num, sizeof(num));
+    pf_stat(x + cw, y, "play count", num, 28);
+    group3(u->ranked_score, num, sizeof(num));
+    pf_stat(x + 2 * cw, y, "ranked score", num, 28);
+    group3(u->max_combo, num, sizeof(num));
+    pf_stat(x + 3 * cw, y, "maximum combo", num, 28);
+    /* best plays */
+    y += 100;
+    draw_text(x, y, 22, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, u->ntop ? "best performance" : "no ranked plays yet");
+    for (int i = 0; i < u->ntop && i < 5; i++) {
+        float ry = y + 36 + i * 46;
+        ui_round_rect(x, ry, GFX_W - 2 * 144 - 120, 40, 8, ui_hex(0x2A2733, 1));
+        snprintf(buf, sizeof(buf), "%.90s", u->top[i].title[0] ? u->top[i].title : "a map that isn't on osu.ppy.sh");
+        ui_fit(buf, 19, 1000);
+        draw_text(x + 16, ry + 9, 19, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%.2f%%   %dpp", u->top[i].acc * 100, (int)lroundf(u->top[i].pp));
+        draw_text(GFX_W - 144 - 80, ry + 9, 19, ui_hex(UI_YELLOW, 1), ALIGN_RIGHT, buf);
+    }
+    if (u->clan[0])
+        ui_pill(x + 190, 300, 18, ui_hex(0x66CCFF, 1), ui_hex(0x1F1D24, 1), u->clan);
+    if (u->friend_)
+        ui_pill(x + 190 + (u->clan[0] ? 90 : 0), 300, 18, ui_hex(0xFF66AA, 1), gfx_rgba(1, 1, 1, 1), "friend");
+    if (u->restricted)
+        ui_pill(x + 380, 300, 18, ui_hex(0xAA1B27, 1), gfx_rgba(1, 1, 1, 1), "restricted");
+}
 
 static void render_bancho_profile(const mp_user *u)
 {
@@ -283,26 +426,42 @@ static void render_profile(void)
 
     const float px = 144, pw = GFX_W - 2 * px;
     draw_rect(px, 0, pw, GFX_H, ui_hex(0x1F1D24, 1));
-    ui_header("player info", ov_modes[pf_mode], ui_hex(0xFFCC22, 1));
+    static const char *const srcs[] = {"ProjectCadence", "osu.ppy.sh", "bancho"};
+    char head[64];
+    snprintf(head, sizeof(head), "%s  /  %s", ov_modes[pf_mode], srcs[pf_src]);
+    ui_header("player info", head, ui_hex(0xFFCC22, 1));
 
     /* cover band with the avatar square over its bottom edge, then the name */
     draw_rect(px, 110, pw, 190, ui_hex(0x3D3550, 1));
     ui_triangles(px, 110, pw, 190, ui_hex(0x4A4060, 0.7f), wall_ms(), 7, 14);
     float ax = px + 60, ay = 200;
     ui_round_rect(ax, ay, 150, 150, 24, ui_hex(0x555066, 1));
-    const char *nm = !pf_bancho && u.user[0] ? u.user : pf_name;
+    const char *nm = pf_src == PF_OSU && u.user[0] ? u.user : pf_name;
     char ini[2] = {nm[0] >= 'a' && nm[0] <= 'z' ? (char)(nm[0] - 32) : nm[0], 0};
     draw_text(ax + 75, ay + 40, 64, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, ini);
     float nx = ax + 190;
-    draw_text(nx, 230, 44, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, !pf_bancho && u.user[0] ? u.user : pf_name);
+    draw_text(nx, 230, 44, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, pf_src == PF_OSU && u.user[0] ? u.user : pf_name);
     float tx = nx;
-    if (!pf_bancho && u.country[0])
+    if (pf_src == PF_OSU && u.country[0])
         tx += ui_pill(tx, 300, 18, ui_hex(0x445566, 1), gfx_rgba(1, 1, 1, 0.9f), u.country) + 12;
-    if (!pf_bancho && u.supporter)
+    if (pf_src == PF_OSU && u.supporter)
         ui_pill(tx, 300, 18, ui_hex(0xFF66AA, 1), gfx_rgba(1, 1, 1, 1), "supporter");
 
     float y = 390, x = px + 60;
-    if (pf_bancho) {
+    if (pf_src == PF_CADENCE) {
+        cadence_user cu;
+        account_profile_read(&cu);
+        if (cu.state == ONLINE_READY)
+            render_cadence_profile(&cu);
+        else
+            draw_text(GFX_W / 2, 470, 26, gfx_rgba(1, 1, 1, 0.75f), ALIGN_CENTRE,
+                      !pf_name[0] ? "SQUARE to look someone up" : cu.state == ONLINE_LOADING ? "loading..." : "no player by that name");
+        ui_footer(cu.state == ONLINE_READY ? "L2 source   SQUARE look up   CROSS spectate   TRIANGLE friend" : "L2 source   SQUARE look someone up", "CIRCLE");
+        if (pf_typing)
+            kbd_render(&pf_kbd);
+        return;
+    }
+    if (pf_src == PF_BANCHO) {
         const mp_user *bu = pf_bancho_user();
         if (bu)
             render_bancho_profile(bu);
@@ -617,13 +776,13 @@ static const char *const win_names[4] = {"score", "accuracy", "combo", "score v2
 
 static bool host_tools_open(void) { return host_sel >= 0; }
 
-static int host_fixed_rows(void) { return app.mp_kind == MP_BANCHO ? 3 : 2; }
+static int host_fixed_rows(void) { return 3; }
 
 static void host_tools_frame(const pad_state *pad)
 {
     const mp_state *s = &app.mps;
     int fixed = host_fixed_rows();
-    int rows = fixed + (app.mp_kind == MP_BANCHO ? s->nmembers : 0);
+    int rows = fixed + s->nmembers;
     host_sel = (host_sel + pad->nav_y + rows) % rows;
     bool pick = pad->pressed & PAD_CROSS || pad->nav_x;
     if (host_sel == 0 && pick)
@@ -631,7 +790,10 @@ static void host_tools_frame(const pad_state *pad)
     else if (host_sel == 1 && pick)
         mp_settings(s->teams, !s->freemod);
     else if (host_sel == 2 && fixed == 3 && pick)
-        mp_win_condition((s->win + (pad->nav_x < 0 ? 3 : 1)) % 4);
+    {
+        int wins = app.mp_kind == MP_BANCHO ? 4 : 3; /* score v2 is bancho's */
+        mp_win_condition((s->win + (pad->nav_x < 0 ? wins - 1 : 1)) % wins);
+    }
     else if (host_sel >= fixed && host_sel - fixed < s->nmembers) {
         const mp_member *m = &s->members[host_sel - fixed];
         if (pad->pressed & PAD_CROSS && !m->me)
@@ -648,7 +810,7 @@ static void render_host_tools(void)
     const mp_state *s = &app.mps;
     char buf[96];
     int fixed = host_fixed_rows();
-    int players = app.mp_kind == MP_BANCHO ? s->nmembers : 0;
+    int players = s->nmembers;
     const float w = 700, row = 52, h = 100 + (fixed + players) * row + (players ? 40 : 0);
     const float x = (GFX_W - w) / 2, y = (GFX_H - h) / 2;
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.55f));
@@ -685,8 +847,10 @@ static char spec_name[32];
 static bool spec_live;      /* a map is playing from their frames */
 static char spec_md5[33];   /* the map we started, so a new one restarts */
 
-static int spec_keys(int k, int mode)
+static int spec_keys(int k, int mode, int raw)
 {
+    if (raw)
+        return k;
     if (mode == 1)
         return (k & 1 ? 1 : 0) | (k & 4 ? 2 : 0) | (k & 2 ? 4 : 0) | (k & 8 ? 8 : 0);
     return (k & 1 ? 1 : 0) | (k & 2 ? 2 : 0);
@@ -729,7 +893,7 @@ static void spectate_pull(void)
     int mode = app.ruleset;
     int n = mp_spec_take(got, 512, &action);
     for (int i = 0; i < n; i++)
-        replay_push(&app.watch, got[i].t, got[i].x, got[i].y, spec_keys(got[i].keys, mode));
+        replay_push(&app.watch, got[i].t, got[i].x, got[i].y, spec_keys(got[i].keys, mode, got[i].raw));
     /* they quit or failed */
     if (action == 7 || action == 4) {
         spec_live = false;
@@ -786,8 +950,8 @@ static void render_spectate(void)
     ui_header("spectating", spec_name, ui_hex(0x66CCFF, 1));
     const char *line = "waiting for them to play something";
     const char *sub = NULL;
-    if (!ch_bancho())
-        line = "spectating needs a bancho server: connect in multiplayer";
+    if (!app.mp_on || app.mps.conn != MP_ONLINE)
+        line = "not connected: sign in, or connect in multiplayer";
     else if (u && u->action == 2 && spec_find(u) < 0) {
         line = "they're playing a map you don't have";
         sub = u->map_id > 0 ? "CROSS downloads it, and watching starts once it's in" : "it isn't on the mirror, so it can't be fetched";

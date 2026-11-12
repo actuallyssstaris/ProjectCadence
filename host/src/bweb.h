@@ -4,6 +4,7 @@
 #include "replay.h"
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* The web half of a bancho server (bancho.py and the like): its leaderboards,
@@ -44,6 +45,12 @@ typedef struct {
     int play_ms, fail_ms;
     const replay *rp;   /* copied into the request */
 } bweb_play;
+
+/* osu!'s replay frames, LZMA'd, from ours and back; both servers store them like this */
+uint8_t *osr_pack(const replay *rp, int mode, size_t *n);
+bool osr_unpack(const uint8_t *lz, size_t n, int mode, replay *out);
+/* out needs 4 * ((n + 2) / 3) + 1 bytes */
+size_t b64_encode(const uint8_t *in, size_t n, char *out);
 
 /* from mp.c's login and logout */
 void bweb_session(const char *domain, const char *user, const char *pass_md5, const char *version,

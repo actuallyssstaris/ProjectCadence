@@ -163,6 +163,8 @@ export class Rooms {
         return reply(err ? { error: err, lobby: this.lobby.chat, now } : { lobby: this.lobby.chat, now });
       }
       case "/api/status":
+        // leaving a play tells spectators to wait for the next one
+        if (me.status.action === 2 && Number(body.action) !== 2) me.action = 7;
         me.status = {
           action: Number(body.action) || 0, text: clean(body.text), md5: String(body.md5 || "").slice(0, 32),
           mode: Number(body.mode) || 0, mods: Number(body.mods) || 0, beatmap_id: Number(body.beatmap_id) || 0,

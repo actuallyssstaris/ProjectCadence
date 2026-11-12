@@ -74,6 +74,22 @@ static void fail(const char *msg)
     LOG("mp: %s", msg);
 }
 
+/* spectating, either server: their frames until the game takes them, ours until sent */
+static mp_spec_frame spec[4096];
+static int nspec, spec_action, watching;
+static mp_spec_frame outgoing[4096];
+static int noutgoing;
+static long spec_seq;
+
+static void spec_add(double t, float x, float y, int keys, int raw)
+{
+    if (nspec == (int)(sizeof(spec) / sizeof(spec[0]))) {
+        memmove(spec, spec + 1024, sizeof(spec[0]) * (size_t)(nspec - 1024));
+        nspec -= 1024;
+    }
+    spec[nspec++] = (mp_spec_frame){t, x, y, keys, raw};
+}
+
 /* ================= ProjectCadence room server ================= */
 
 static char cd_token[64];
@@ -86,6 +102,7 @@ typedef struct {
     bool teams, freemod;
     int nchat;
     mp_line chat[40];
+    int win;
     double start_at;
     char name[48], state[16];
     int map_id, map_set;
@@ -107,6 +124,7 @@ typedef struct {
     bool got_lobby;
     int nlobby;
     mp_line lobby[40];
+    int watchers;
 } cd_reply;
 
 static bool jbool(js *j)
@@ -192,6 +210,7 @@ static bool room_key(js *j, const char *key, void *ctx)
     else if (!strcmp(key, "teams")) r->teams = jbool(j);
     else if (!strcmp(key, "freemod")) r->freemod = jbool(j);
     else if (!strcmp(key, "chat") && *j->p == '[') return read_chat(j, r->chat, &r->nchat);
+    else if (!strcmp(key, "win")) r->win = (int)json_num(j);
     else if (!strcmp(key, "start_at")) r->start_at = json_num(j);
     else if (!strcmp(key, "name")) return json_str(j, r->name, sizeof(r->name));
     else if (!strcmp(key, "state")) return json_str(j, r->state, sizeof(r->state));
@@ -241,6 +260,7 @@ static bool reply_key(js *j, const char *key, void *ctx)
 {
     cd_reply *r = ctx;
     if (!strcmp(key, "now")) r->now = json_num(j);
+    else if (!strcmp(key, "watchers")) r->watchers = (int)json_num(j);
     else if (!strcmp(key, "online")) r->online = (int)json_num(j);
     else if (!strcmp(key, "id")) r->id = (int)json_num(j);
     else if (!strcmp(key, "token")) return json_str(j, r->token, sizeof(r->token));
@@ -314,6 +334,7 @@ static int cd_call(const char *method, const char *path, const char *body)
     pthread_mutex_lock(&lock);
     if (r.online > 0)
         st.online = r.online;
+    st.spectators = r.watchers;
     if (r.error[0])
         snprintf(st.error, sizeof(st.error), "%s", r.error);
     if (r.got_rooms) {
@@ -346,6 +367,7 @@ static int cd_call(const char *method, const char *path, const char *body)
             st.mods = rm->mods;
             st.teams = rm->teams;
             st.freemod = rm->freemod;
+            st.win = rm->win;
             st.nchat = rm->nchat;
             memcpy(st.chat, rm->chat, sizeof(rm->chat[0]) * (size_t)rm->nchat);
             st.nmembers = rm->n;
@@ -353,6 +375,7 @@ static int cd_call(const char *method, const char *path, const char *body)
                 st.members[i] = rm->m[i];
                 st.members[i].host = rm->m[i].id == rm->host;
                 st.members[i].me = rm->m[i].id == cd_me;
+                st.members[i].slot = rm->m[i].id; /* host tools name members by id here */
             }
         }
     }
@@ -390,6 +413,7 @@ static void json_escape(const char *in, char *out, size_t n)
     out[k] = 0;
 }
 
+static void cd_online(void);
 static void cd_do(const cmd *c)
 {
     char body[512], esc[256];
@@ -430,6 +454,42 @@ static void cd_do(const cmd *c)
         snprintf(body, sizeof(body), "{\"token\":\"%s\",\"text\":\"%s\"}", cd_token, esc);
         cd_call("POST", "/api/chat", body);
         return;
+    case OP_STATUS: {
+        json_escape(c->s1, esc, sizeof(esc));
+        snprintf(body, sizeof(body),
+                 "{\"token\":\"%s\",\"action\":%d,\"text\":\"%s\",\"md5\":\"%s\",\"mode\":%d,\"mods\":%d,\"beatmap_id\":%d}",
+                 cd_token, c->a, esc, c->md5, c->mode, c->mods, c->b);
+        cd_call("POST", "/api/status", body);
+        return;
+    }
+    case OP_STATS:
+    case OP_LOOKUP:
+        cd_online();
+        return;
+    case OP_HOST:
+    case OP_LOCK:
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"member\":%d}", cd_token, c->a);
+        cd_call("POST", c->op == OP_HOST ? "/api/host" : "/api/kick", body);
+        return;
+    case OP_WIN: {
+        pthread_mutex_lock(&lock);
+        bool teams = st.teams, freemod = st.freemod;
+        pthread_mutex_unlock(&lock);
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"teams\":%s,\"freemod\":%s,\"win\":%d}", cd_token,
+                 teams ? "true" : "false", freemod ? "true" : "false", c->a);
+        cd_call("POST", "/api/settings", body);
+        return;
+    }
+    case OP_SPECTATE:
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"id\":%d}", cd_token, c->a);
+        cd_call("POST", "/api/spectate", body);
+        pthread_mutex_lock(&lock);
+        watching = c->a;
+        st.spectating = c->a;
+        nspec = spec_action = 0;
+        spec_seq = 0;
+        pthread_mutex_unlock(&lock);
+        return;
     case OP_LOBBY_CHAT:
         json_escape(c->s1, esc, sizeof(esc));
         snprintf(body, sizeof(body), "{\"token\":\"%s\",\"text\":\"%s\"}", cd_token, esc);
@@ -469,8 +529,140 @@ static void cd_do(const cmd *c)
     }
 }
 
+static bool online_key(js *j, const char *key, void *ctx)
+{
+    mp_user *u = ctx;
+    if (!strcmp(key, "id")) u->id = (int)json_num(j);
+    else if (!strcmp(key, "name")) return json_str(j, u->name, sizeof(u->name));
+    else if (!strcmp(key, "text")) return json_str(j, u->doing, sizeof(u->doing));
+    else if (!strcmp(key, "md5")) return json_str(j, u->md5, sizeof(u->md5));
+    else if (!strcmp(key, "action")) u->action = (int)json_num(j);
+    else if (!strcmp(key, "mode")) u->mode = (int)json_num(j);
+    else if (!strcmp(key, "mods")) u->mods = (int)json_num(j);
+    else if (!strcmp(key, "beatmap_id")) u->map_id = (int)json_num(j);
+    else return false;
+    return true;
+}
+
+static bool players_key(js *j, const char *key, void *ctx)
+{
+    (void)ctx;
+    if (strcmp(key, "players") || *j->p != '[')
+        return false;
+    static mp_user got[MP_MAX_USERS];
+    int n = 0;
+    j->p++;
+    for (;;) {
+        json_ws(j);
+        if (*j->p == ']') {
+            j->p++;
+            break;
+        }
+        mp_user u;
+        memset(&u, 0, sizeof(u));
+        if (!json_object(j, online_key, &u))
+            return false;
+        u.online = true;
+        if (n < MP_MAX_USERS)
+            got[n++] = u;
+        json_ws(j);
+        if (*j->p == ',')
+            j->p++;
+    }
+    pthread_mutex_lock(&lock);
+    st.nusers = n;
+    memcpy(st.users, got, sizeof(got[0]) * (size_t)n);
+    pthread_mutex_unlock(&lock);
+    return true;
+}
+
+static void cd_online(void)
+{
+    char url[300], *out = NULL;
+    size_t len;
+    snprintf(url, sizeof(url), "%s/api/online?token=%s", server, cd_token);
+    if (net_get(url, &out, &len) == 200 && out) {
+        js j = {out};
+        json_object(&j, players_key, NULL);
+    }
+    free(out);
+}
+
+/* [[seq, t, x, y, keys], ...] and the player's last action */
+static void cd_watch(void)
+{
+    char url[300], *out = NULL;
+    size_t len;
+    snprintf(url, sizeof(url), "%s/api/watch?token=%s&after=%ld", server, cd_token, spec_seq);
+    if (net_get(url, &out, &len) != 200 || !out) {
+        free(out);
+        return;
+    }
+    const char *f = strstr(out, "\"frames\":[");
+    const char *a = strstr(out, "\"action\":");
+    pthread_mutex_lock(&lock);
+    if (f) {
+        const char *p = f + 10;
+        while ((p = strchr(p, '[')) != NULL) {
+            char *e;
+            double v[5];
+            int k = 0;
+            p++;
+            for (; k < 5; k++) {
+                v[k] = strtod(p, &e);
+                if (e == p)
+                    break;
+                p = e;
+                while (*p == ',' || *p == ' ')
+                    p++;
+            }
+            if (k < 5)
+                break;
+            spec_seq = (long)v[0];
+            spec_add(v[1], (float)v[2], (float)v[3], (int)v[4], 1);
+        }
+    }
+    if (a) {
+        int act = atoi(a + 9);
+        if (act)
+            spec_action = act;
+    }
+    pthread_mutex_unlock(&lock);
+    free(out);
+}
+
+static void cd_send_frames(void)
+{
+    pthread_mutex_lock(&lock);
+    int n = noutgoing;
+    static mp_spec_frame copy[4096];
+    memcpy(copy, outgoing, sizeof(copy[0]) * (size_t)n);
+    noutgoing = 0;
+    pthread_mutex_unlock(&lock);
+    if (!n)
+        return;
+    size_t cap = 128 + (size_t)n * 48, k = 0;
+    char *body = malloc(cap);
+    if (!body)
+        return;
+    k += (size_t)snprintf(body, cap, "{\"token\":\"%s\",\"frames\":[", cd_token);
+    for (int i = 0; i < n && k + 64 < cap; i++)
+        k += (size_t)snprintf(body + k, cap - k, "%s[%.0f,%.1f,%.1f,%d]", i ? "," : "", copy[i].t, copy[i].x, copy[i].y, copy[i].keys);
+    snprintf(body + k, cap - k, "]}");
+    cd_call("POST", "/api/frames", body);
+    free(body);
+}
+
 static void cd_poll(void)
 {
+    static double online_at;
+    if (wall_ms() - online_at > 10000) {
+        cd_online();
+        online_at = wall_ms();
+    }
+    if (watching)
+        cd_watch();
+    cd_send_frames();
     char path[128];
     bool in;
     pthread_mutex_lock(&lock);
@@ -552,9 +744,7 @@ static int nmsgs;
 static mp_user users[MP_MAX_USERS];
 static int nusers;
 static int friends[256], nfriends;
-static int watching, watchers;
-static mp_spec_frame spec[4096];
-static int nspec, spec_action;
+static int watchers;
 
 /* ---- writing ---- */
 
@@ -998,15 +1188,12 @@ static void handle(uint16_t id, rd *r)
             r_u8(r); /* taiko's old byte */
             uint32_t xb = r_u32(r), yb = r_u32(r);
             int t = (int32_t)r_u32(r);
-            if (nspec == (int)(sizeof(spec) / sizeof(spec[0]))) {
-                memmove(spec, spec + 1024, sizeof(spec[0]) * (size_t)(nspec - 1024));
-                nspec -= 1024;
-            }
-            mp_spec_frame *f = &spec[nspec++];
-            memcpy(&f->x, &xb, 4);
-            memcpy(&f->y, &yb, 4);
-            f->t = t;
-            f->keys = keys;
+            float x, y;
+            memcpy(&x, &xb, 4);
+            memcpy(&y, &yb, 4);
+            pthread_mutex_lock(&lock);
+            spec_add(t, x, y, keys, 0);
+            pthread_mutex_unlock(&lock);
         }
         int action = r_u8(r);
         if (action)
@@ -1317,8 +1504,10 @@ static void bc_do(const cmd *c)
     case OP_SPECTATE:
         if (watching)
             packet(C_STOP_SPECTATING);
+        pthread_mutex_lock(&lock);
         watching = c->a;
         nspec = spec_action = 0;
+        pthread_mutex_unlock(&lock);
         if (watching) {
             size_t at = begin(C_START_SPECTATING);
             w_i32(watching);
@@ -1438,7 +1627,11 @@ static void *worker(void *arg)
         if (want_on && queued == 0) {
             struct timespec until;
             clock_gettime(CLOCK_REALTIME, &until);
-            until.tv_nsec += 800 * 1000000L;
+            /* every 0.8s while something's happening, every 4s sat in the lobby */
+            bool busy = kind == MP_BANCHO || st.in_room || watching || st.spectators > 0;
+            long ms = busy ? 800 : 4000;
+            until.tv_sec += ms / 1000;
+            until.tv_nsec += (ms % 1000) * 1000000L;
             if (until.tv_nsec >= 1000000000L) {
                 until.tv_sec++;
                 until.tv_nsec -= 1000000000L;
@@ -1633,6 +1826,14 @@ int mp_spec_take(mp_spec_frame *out, int max, int *action)
     }
     pthread_mutex_unlock(&lock);
     return n;
+}
+
+void mp_frames_push(double t, float x, float y, int keys)
+{
+    pthread_mutex_lock(&lock);
+    if (noutgoing < (int)(sizeof(outgoing) / sizeof(outgoing[0])))
+        outgoing[noutgoing++] = (mp_spec_frame){t, x, y, keys, 1};
+    pthread_mutex_unlock(&lock);
 }
 
 void mp_lobby_chat(const char *text)

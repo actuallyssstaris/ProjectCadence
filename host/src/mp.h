@@ -142,8 +142,10 @@ void mp_status(int action, const char *text, const char *md5, int mods, int mode
 /* spectating someone: their frames pile up until taken. action is osu!'s
  * replay action from the last batch (1 new song, 3 done, 4 failed, 7 back in song select) */
 void mp_spectate(int user_id); /* 0 stops */
-typedef struct { double t; float x, y; int keys; } mp_spec_frame;
+typedef struct { double t; float x, y; int keys; int raw; } mp_spec_frame; /* raw: keys already ours */
 int mp_spec_take(mp_spec_frame *out, int max, int *action);
+/* our own play, for whoever spectates us on the ProjectCadence server */
+void mp_frames_push(double t, float x, float y, int keys);
 
 /* our mods to osu!'s bits and back */
 uint32_t mp_mods_to_osu(int mods);

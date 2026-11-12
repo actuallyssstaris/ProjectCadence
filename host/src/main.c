@@ -98,7 +98,12 @@ static struct {
     bool set_typing;
     int board;           /* song select: 0 your scores, 1 the online board */
     int board_src;        /* which online board: 0 ProjectCadence, 1 osu.ppy.sh, 2 the bancho server */
-    bool bweb_waiting;    /* a bancho replay is downloading to be watched */
+    bool bweb_waiting;    /* a server replay is downloading to be watched */
+    int rp_from;          /* ...from 0 the bancho server, 1 ours */
+    char set_entry[64], set_entry_keep[64]; /* settings' account fields */
+    kbd set_entry_kbd;
+    int set_entering;     /* 0 no, 1 clan, 2 old password, 3 new password, 4 delete */
+    double clan_leave_armed;
     kbd search;
     int sel;
     float sel_scroll;
@@ -606,7 +611,7 @@ static bool start_song(const song_entry *e)
 
     if (!app.watching)
         replay_reset(&app.rec, e->file, app.mods);
-    if (bweb_on()) {
+    if (bweb_on() || (app.mp_on && app.mp_kind == MP_CADENCE)) {
         char what[200];
         snprintf(what, sizeof(what), "%.60s - %.70s [%.50s]", e->info.artist, e->info.title, e->info.version);
         mp_status(app.watching ? 6 : 2, what, map_md5(e->file), app.mods, play_mode(e), e->info.beatmap_id);
@@ -667,7 +672,7 @@ static void back_to_select(void)
     }
     app.previewed = -1; /* get the preview going again */
     app.sel_changed = 0;
-    if (bweb_on())
+    if (bweb_on() || (app.mp_on && app.mp_kind == MP_CADENCE))
         mp_status(0, "", "", 0, app.mode_pick, 0);
     app.scores_for = -1;
     app.scr = SCREEN_SELECT;
@@ -761,6 +766,8 @@ static void play_frame(const pad_state *pad, float dt)
         osu5_update(t, app.cursor.x, app.cursor.y, app.cursor.keys);
         if (!(app.mods & OSU5_MOD_AUTO))
             replay_push(&app.rec, t, app.cursor.x, app.cursor.y, app.cursor.keys);
+        if (app.mp_on && app.mp_kind == MP_CADENCE && app.mps.spectators > 0 && !(app.mods & OSU5_MOD_AUTO))
+            mp_frames_push(t, app.cursor.x, app.cursor.y, app.cursor.keys);
     }
 
     osu5_sound ev;
@@ -835,7 +842,7 @@ static void play_frame(const pad_state *pad, float dt)
                     app.last_when = 0;
                 const osu5_hud *h = &app.last_hud;
                 account_submit(map_md5(app.playing->file), app.playing->info.beatmap_id, app.ruleset, h->score, h->accuracy,
-                               h->max_combo, app.mods, app.last_pp, h->rank, h->great, h->ok, h->meh, h->miss);
+                               h->max_combo, app.mods, app.last_pp, h->rank, h->great, h->ok, h->meh, h->miss, &app.rec);
                 if (bweb_on()) {
                     bweb_play bp;
                     memset(&bp, 0, sizeof(bp));
@@ -1322,12 +1329,21 @@ static void select_frame(const pad_state *pad)
         app.scr = SCREEN_MP;
     } else if (pad->pressed & PAD_CROSS)
         start_song(e);
-    else if (pad->pressed & PAD_R2 && app.board && app.board_src == 2) {
+    else if (pad->pressed & PAD_R2 && app.board && app.board_src == 0) {
+        static global_board gb;
+        if (!app.bweb_waiting && account_board(map_md5(e->file), &gb) == ONLINE_READY && gb.count > 0 && gb.s[0].replay) {
+            account_replay_get(map_md5(e->file), gb.s[0].name, play_mode(e), e->file);
+            app.bweb_waiting = true;
+            app.rp_from = 1;
+            app.watch.mods = gb.s[0].mods;
+        }
+    } else if (pad->pressed & PAD_R2 && app.board && app.board_src == 2) {
         bweb_board b;
         if (!app.bweb_waiting && bweb_board_for(map_md5(e->file), base_name(e->file), e->info.set_id, play_mode(e), &b) == ONLINE_READY &&
             b.count > 0) {
             bweb_replay_get(b.s[0].id, play_mode(e), e->file);
             app.bweb_waiting = true;
+            app.rp_from = 0;
             app.watch.mods = b.s[0].mods;
         }
     } else if (pad->pressed & PAD_R2 && app.nscores > 0 && replay_exists(app.scores[0].when))
@@ -1336,7 +1352,7 @@ static void select_frame(const pad_state *pad)
     /* bancho replay arrived */
     if (app.bweb_waiting) {
         int mods = app.watch.mods;
-        int st = bweb_replay_take(&app.watch);
+        int st = app.rp_from ? account_replay_take(&app.watch) : bweb_replay_take(&app.watch);
         if (st == ONLINE_READY) {
             app.bweb_waiting = false;
             app.watch.mods = mods;
@@ -1467,8 +1483,19 @@ static void render_global(const song_entry *e)
         head = "couldn't reach the ProjectCadence server";
     else if (b.count == 0)
         head = account_signed_in() ? "no scores yet: be the first" : "no scores yet; sign in from settings to post yours";
-    draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, head);
-    draw_text(820, 356, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, "L2 yours");
+    if (app.bweb_waiting)
+        head = "getting the replay...";
+    float hw = draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, head);
+    if (st == ONLINE_READY && b.status != -99) {
+        static const char *const names[] = {"not on osu.ppy.sh", "graveyard", "wip", "pending", "ranked", "approved", "qualified", "loved"};
+        int k = b.status + 3;
+        if (k >= 0 && k < 8)
+            ui_pill(60 + hw + 14, 360, 14, b.status == 1 || b.status == 2 ? ui_hex(0x88DD44, 1) : b.status == 4 ? ui_hex(0xFF66AA, 1)
+                                                                                              : gfx_rgba(1, 1, 1, 0.25f),
+                    gfx_rgba(0.1f, 0.1f, 0.1f, 1), names[k]);
+    }
+    draw_text(820, 356, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT,
+              st == ONLINE_READY && b.count && b.s[0].replay ? "R2 watch #1   L2 yours" : "L2 yours");
     if (st != ONLINE_READY)
         return;
 
@@ -2112,7 +2139,7 @@ enum {
     SET_SENS, SET_CURSOR,                       /* input */
     SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_STARS_LO, SET_STARS_HI, SET_CONVERTS, /* gameplay */
     SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, /* audio */
-    SET_ACCOUNT, SET_BOARD,                     /* online */
+    SET_ACCOUNT, SET_CLAN, SET_PASSWORD, SET_DELETE, SET_BOARD, /* online */
     SET_RESCAN,                                 /* maintenance */
     SET_COUNT
 };
@@ -2140,6 +2167,9 @@ static const char *const set_words[SET_COUNT] = {
     [SET_OFFSET] = "audio offset latency",
     [SET_WIZARD] = "audio find my offset calibrate",
     [SET_ACCOUNT] = "online ProjectCadence account sign in",
+    [SET_CLAN] = "online clan tag join create leave",
+    [SET_PASSWORD] = "online change password account",
+    [SET_DELETE] = "online delete account remove",
     [SET_BOARD] = "online leaderboard scores osu.ppy.sh",
     [SET_RESCAN] = "maintenance rescan the songs folder ftp",
 };
@@ -2177,8 +2207,56 @@ static int set_step(int i, int dir)
     return i;
 }
 
+static void entry_open(int what)
+{
+    app.set_entry[0] = 0;
+    app.set_entry_kbd.text = app.set_entry;
+    app.set_entry_kbd.cap = sizeof(app.set_entry);
+    app.set_entering = what;
+}
+
+/* what was typed into an account field */
+static void entry_done(void)
+{
+    char *t = app.set_entry;
+    switch (app.set_entering) {
+    case 1: {
+        /* "TAG" joins, "TAG Some Name" starts one */
+        char *space = strchr(t, ' ');
+        if (space) {
+            *space = 0;
+            account_clan_create(t, space + 1);
+        } else if (t[0]) {
+            account_clan_join(t);
+        }
+        break;
+    }
+    case 2:
+        snprintf(app.set_entry_keep, sizeof(app.set_entry_keep), "%s", t);
+        entry_open(3);
+        return;
+    case 3:
+        account_password(app.set_entry_keep, t);
+        break;
+    case 4:
+        account_delete(t);
+        break;
+    }
+    memset(app.set_entry_keep, 0, sizeof(app.set_entry_keep));
+    memset(app.set_entry, 0, sizeof(app.set_entry));
+    app.set_entering = 0;
+}
+
 static void settings_frame(const pad_state *pad)
 {
+    if (app.set_entering) {
+        int k = kbd_frame(&app.set_entry_kbd, pad);
+        if (k == KBD_DONE)
+            entry_done();
+        else if (k == KBD_CANCEL)
+            app.set_entering = 0;
+        return;
+    }
     /* typing in the search box: rows filter as the text changes */
     if (app.set_typing) {
         int k = kbd_frame(&app.set_kbd, pad);
@@ -2284,6 +2362,26 @@ static void settings_frame(const pad_state *pad)
     case SET_BOARD:
         if (d || pad->pressed & PAD_CROSS)
             app.board_src = (app.board_src + (d < 0 ? 2 : 1)) % 3;
+        break;
+    case SET_CLAN:
+        if (!(pad->pressed & PAD_CROSS) || !account_signed_in())
+            break;
+        if (!account_clan()[0]) {
+            entry_open(1);
+        } else if (wall_ms() - app.clan_leave_armed < 3000) {
+            account_clan_leave();
+            app.clan_leave_armed = 0;
+        } else {
+            app.clan_leave_armed = wall_ms();
+        }
+        break;
+    case SET_PASSWORD:
+        if (pad->pressed & PAD_CROSS && account_signed_in())
+            entry_open(2);
+        break;
+    case SET_DELETE:
+        if (pad->pressed & PAD_CROSS && account_signed_in())
+            entry_open(4);
         break;
     case SET_WIZARD:
         if (pad->pressed & PAD_CROSS) {
@@ -2408,6 +2506,17 @@ static void render_settings(void)
             name = "ProjectCadence account";
             snprintf(val, sizeof(val), "%s", account_signed_in() ? account_name() : "sign in");
             break;
+        case SET_CLAN:
+            name = "clan";
+            if (!account_signed_in())
+                snprintf(val, sizeof(val), "sign in first");
+            else if (!account_clan()[0])
+                snprintf(val, sizeof(val), "join or start one");
+            else
+                snprintf(val, sizeof(val), wall_ms() - app.clan_leave_armed < 3000 ? "CROSS again to leave" : "[%s]", account_clan());
+            break;
+        case SET_PASSWORD: name = "change password"; kind = account_signed_in() ? 3 : 0; break;
+        case SET_DELETE: name = "delete account"; kind = account_signed_in() ? 3 : 0; break;
         case SET_BOARD:
             name = "online leaderboard";
             snprintf(val, sizeof(val), "%s", app.board_src == 0 ? "ProjectCadence"
@@ -2467,6 +2576,8 @@ static void render_settings(void)
     case SET_OFFSET: hint = "positive if you hit late everywhere; L1/R1 in song select change it by 5 too"; break;
     case SET_SENS: hint = "how far a full stick tilt reaches; above 1 you can reach the edge before full tilt"; break;
     case SET_RESCAN: hint = "after copying maps over FTP"; break;
+    case SET_CLAN: hint = "type a tag to join, or a tag and a name to start one: CDN Cadence Crew"; break;
+    case SET_DELETE: hint = "scores, replays and your clan place go too; asks for your password"; break;
     default: break;
     }
     float hx = panel_x + panel_w + 50;
@@ -2478,6 +2589,11 @@ static void render_settings(void)
               "LEFT / RIGHT change   CROSS pick   SQUARE search   TRIANGLE clear   CIRCLE back");
     if (app.set_typing)
         kbd_render(&app.set_kbd);
+    if (app.set_entering) {
+        static const char *const ask[] = {"", "clan tag (and a name to start one)", "current password", "new password", "password, to delete the account"};
+        draw_text(GFX_W / 2, 120, 26, ui_hex(UI_YELLOW, 1), ALIGN_CENTRE, ask[app.set_entering]);
+        kbd_render(&app.set_entry_kbd);
+    }
 }
 
 /* ---- pause / fail / results ---- */
@@ -4165,6 +4281,10 @@ int main(void)
     restore_selection();
     mp_load_cfg();
     account_init(CADENCE_ROOMS);
+    if (account_signed_in() && app.mp_kind == MP_CADENCE) {
+        mp_connect(MP_CADENCE, app.mp_rooms_url, app.mp_user[0] ? app.mp_user : account_name(), app.mp_pass);
+        app.mp_on = true;
+    }
     if (app.scr == SCREEN_SELECT) {
         menu_enter();
         if (!app.onboarded)
@@ -4308,6 +4428,10 @@ int main(void)
                 toast("%s", ts.msg[0] ? ts.msg : "download finished");
                 toasted = ts.installed;
             }
+            char am[128];
+            int as = account_action(am, sizeof(am));
+            if ((as == ACC_OK || as == ACC_FAILED) && am[0])
+                toast("%s", am);
             static int sub_seen;
             char sm[128];
             int ss = bweb_submit_state(sm, sizeof(sm));

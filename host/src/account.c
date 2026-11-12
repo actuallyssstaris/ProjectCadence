@@ -1,11 +1,14 @@
-/* ProjectCadence accounts and global scores (server/cloudflare, the /api/account
- * and /api/scores calls). Every call runs on a short-lived thread of its own. */
+/* ProjectCadence accounts, scores, rankings, replays, friends and clans
+ * (server/cloudflare, the /api calls outside the rooms). Every call runs on a
+ * short-lived thread of its own. */
 #include "account.h"
+#include "bweb.h"
 #include "json.h"
 #include "log.h"
 #include "net.h"
 #include "online.h"
 
+#include <ctype.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,7 +19,7 @@
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static char base[160];
-static char name[24], session[80];
+static char name[24], session[80], clan[8];
 static int state = ACC_IDLE;
 static char message[128];
 static int last_place;
@@ -41,6 +44,23 @@ static void escape(const char *in, char *out, size_t n)
     out[k] = 0;
 }
 
+static void url_encode(const char *in, char *out, size_t n)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t k = 0;
+    for (; *in && k + 4 < n; in++) {
+        unsigned char c = (unsigned char)*in;
+        if (isalnum(c) || c == '-' || c == '_' || c == '.') {
+            out[k++] = (char)c;
+        } else {
+            out[k++] = '%';
+            out[k++] = hex[c >> 4];
+            out[k++] = hex[c & 15];
+        }
+    }
+    out[k] = 0;
+}
+
 static int post(const char *path, const char *body, char **out)
 {
     char url[256];
@@ -48,6 +68,22 @@ static int post(const char *path, const char *body, char **out)
     static const char *const hdr[] = {"Content-Type", "application/json", NULL};
     size_t len;
     return net_request("POST", url, hdr, body, out, &len);
+}
+
+static int get(const char *path, char **out, size_t *len)
+{
+    char url[512];
+    snprintf(url, sizeof(url), "%s%s", base, path);
+    return net_get(url, out, len);
+}
+
+static void save(void)
+{
+    FILE *f = fopen(ACCOUNT_FILE, "w");
+    if (f) {
+        fprintf(f, "%s\n%s\n%s\n", name, session, clan);
+        fclose(f);
+    }
 }
 
 void account_init(const char *server)
@@ -59,6 +95,8 @@ void account_init(const char *server)
     if (fgets(name, sizeof(name), f) && fgets(session, sizeof(session), f)) {
         name[strcspn(name, "\r\n")] = 0;
         session[strcspn(session, "\r\n")] = 0;
+        if (fgets(clan, sizeof(clan), f))
+            clan[strcspn(clan, "\r\n")] = 0;
     } else {
         name[0] = session[0] = 0;
     }
@@ -68,6 +106,7 @@ void account_init(const char *server)
 bool account_signed_in(void) { return session[0] != 0; }
 const char *account_name(void) { return name; }
 const char *account_session(void) { return session; }
+const char *account_clan(void) { return clan; }
 
 /* ---- signing in ---- */
 
@@ -76,12 +115,17 @@ typedef struct {
     bool create;
 } sign_job;
 
+typedef struct {
+    char session[80], name[24], clan[8], error[128];
+} sign_reply;
+
 static bool sign_key(js *j, const char *key, void *ctx)
 {
-    char **f = ctx;
-    if (!strcmp(key, "session")) return json_str(j, f[0], 80);
-    if (!strcmp(key, "name")) return json_str(j, f[1], 24);
-    if (!strcmp(key, "error")) return json_str(j, f[2], 128);
+    sign_reply *r = ctx;
+    if (!strcmp(key, "session")) return json_str(j, r->session, sizeof(r->session));
+    if (!strcmp(key, "name")) return json_str(j, r->name, sizeof(r->name));
+    if (!strcmp(key, "clan")) return json_str(j, r->clan, sizeof(r->clan));
+    if (!strcmp(key, "error")) return json_str(j, r->error, sizeof(r->error));
     return false;
 }
 
@@ -95,28 +139,25 @@ static void *sign_thread(void *arg)
     char *out = NULL;
     int st = post(job->create ? "/api/account/register" : "/api/account/login", body, &out);
 
-    char s[80] = "", n[24] = "", err[128] = "";
-    char *fields[3] = {s, n, err};
+    sign_reply r;
+    memset(&r, 0, sizeof(r));
     if (out) {
         js j = {out};
-        json_object(&j, sign_key, fields);
+        json_object(&j, sign_key, &r);
         free(out);
     }
     pthread_mutex_lock(&lock);
-    if (st == 200 && s[0]) {
-        snprintf(session, sizeof(session), "%s", s);
-        snprintf(name, sizeof(name), "%s", n);
-        FILE *f = fopen(ACCOUNT_FILE, "w");
-        if (f) {
-            fprintf(f, "%s\n%s\n", name, session);
-            fclose(f);
-        }
+    if (st == 200 && r.session[0]) {
+        snprintf(session, sizeof(session), "%s", r.session);
+        snprintf(name, sizeof(name), "%s", r.name);
+        snprintf(clan, sizeof(clan), "%s", r.clan);
+        save();
         state = ACC_OK;
         message[0] = 0;
     } else {
         state = ACC_FAILED;
         /* the server's reason doesn't survive a non-200 here, so say it ourselves */
-        snprintf(message, sizeof(message), "%s", err[0] ? err
+        snprintf(message, sizeof(message), "%s", r.error[0] ? r.error
                  : st == 401 ? "wrong name or password"
                  : st == 409 ? "that name is taken"
                  : st == 400 ? "names are 3-20 letters, digits, spaces, _ or -; passwords 6+ characters"
@@ -146,7 +187,7 @@ void account_sign_in(const char *n, const char *password, bool create)
 void account_sign_out(void)
 {
     pthread_mutex_lock(&lock);
-    name[0] = session[0] = 0;
+    name[0] = session[0] = clan[0] = 0;
     state = ACC_IDLE;
     remove(ACCOUNT_FILE);
     pthread_mutex_unlock(&lock);
@@ -186,17 +227,27 @@ static void *submit_thread(void *arg)
 }
 
 void account_submit(const char *md5, int beatmap_id, int mode, long long score, float acc, int max_combo, int mods,
-                    float pp, int rank, int n300, int n100, int n50, int miss)
+                    float pp, int rank, int n300, int n100, int n50, int miss, const replay *rp)
 {
     if (!session[0] || !md5[0])
         return;
-    char *body = malloc(600);
-    if (!body)
+    /* the replay rides along, LZMA'd and base64'd, so the board can show it */
+    size_t packed_n = 0;
+    uint8_t *packed = rp && rp->count ? osr_pack(rp, mode, &packed_n) : NULL;
+    size_t cap = 700 + (packed_n + 2) / 3 * 4;
+    char *body = malloc(cap);
+    if (!body) {
+        free(packed);
         return;
-    snprintf(body, 600,
-             "{\"session\":\"%s\",\"md5\":\"%s\",\"beatmap_id\":%d,\"mode\":%d,\"score\":%lld,\"acc\":%.5f,\"max_combo\":%d,"
-             "\"mods\":%d,\"pp\":%.2f,\"rank\":%d,\"n300\":%d,\"n100\":%d,\"n50\":%d,\"miss\":%d}",
-             session, md5, beatmap_id, mode, score, acc, max_combo, mods, pp, rank, n300, n100, n50, miss);
+    }
+    int k = snprintf(body, cap,
+                     "{\"session\":\"%s\",\"md5\":\"%s\",\"beatmap_id\":%d,\"mode\":%d,\"score\":%lld,\"acc\":%.5f,\"max_combo\":%d,"
+                     "\"mods\":%d,\"pp\":%.2f,\"rank\":%d,\"n300\":%d,\"n100\":%d,\"n50\":%d,\"miss\":%d,\"replay\":\"",
+                     session, md5, beatmap_id, mode, score, acc, max_combo, mods, pp, rank, n300, n100, n50, miss);
+    if (packed)
+        k += (int)b64_encode(packed, packed_n, body + k);
+    snprintf(body + k, cap - (size_t)k, "\"}");
+    free(packed);
     pthread_mutex_lock(&lock);
     last_place = 0;
     pthread_mutex_unlock(&lock);
@@ -228,14 +279,15 @@ static bool score_key(js *j, const char *key, void *ctx)
     else if (!strcmp(key, "max_combo")) s->combo = (int)json_num(j);
     else if (!strcmp(key, "mods")) s->mods = (int)json_num(j);
     else if (!strcmp(key, "rank")) s->rank = (int)json_num(j);
+    else if (!strcmp(key, "replay")) s->replay = json_num(j) != 0;
     else return false;
     return true;
 }
 
-static bool board_key(js *j, const char *key, void *ctx)
+/* walks a JSON array of objects, handing each to fn with a fresh item */
+static bool each(js *j, key_fn fn, void *item, size_t size, void (*keep)(void *ctx, void *item), void *ctx)
 {
-    global_board *b = ctx;
-    if (strcmp(key, "scores") || *j->p != '[')
+    if (*j->p != '[')
         return false;
     j->p++;
     for (;;) {
@@ -244,26 +296,47 @@ static bool board_key(js *j, const char *key, void *ctx)
             j->p++;
             return true;
         }
-        global_score s;
-        memset(&s, 0, sizeof(s));
-        if (!json_object(j, score_key, &s))
+        memset(item, 0, size);
+        if (!json_object(j, fn, item))
             return false;
-        if (b->count < GLOBAL_MAX)
-            b->s[b->count++] = s;
+        keep(ctx, item);
         json_ws(j);
         if (*j->p == ',')
             j->p++;
     }
 }
 
+static void keep_score(void *ctx, void *item)
+{
+    global_board *b = ctx;
+    if (b->count < GLOBAL_MAX)
+        b->s[b->count++] = *(global_score *)item;
+}
+
+static bool board_key(js *j, const char *key, void *ctx)
+{
+    global_board *b = ctx;
+    if (!strcmp(key, "status")) {
+        b->status = !strncmp(j->p, "null", 4) ? -99 : (int)json_num(j);
+        if (b->status == -99)
+            json_skip(j);
+        return true;
+    }
+    if (strcmp(key, "scores"))
+        return false;
+    global_score s;
+    return each(j, score_key, &s, sizeof(s), keep_score, b);
+}
+
 static void *board_thread(void *arg)
 {
-    char *md5 = arg, url[256], *out = NULL;
+    char *md5 = arg, path[128], *out = NULL;
     size_t len;
-    snprintf(url, sizeof(url), "%s/api/scores/top?md5=%s", base, md5);
-    int st = net_get(url, &out, &len);
+    snprintf(path, sizeof(path), "/api/scores/top?md5=%s", md5);
+    int st = get(path, &out, &len);
     static global_board b;
     memset(&b, 0, sizeof(b));
+    b.status = -99;
     snprintf(b.md5, sizeof(b.md5), "%s", md5);
     if (st == 200 && out) {
         js j = {out};
@@ -309,4 +382,431 @@ int account_board(const char *md5, global_board *out)
         *out = board;
     pthread_mutex_unlock(&lock);
     return st;
+}
+
+/* ---- replays ---- */
+
+static struct {
+    int state, gen;
+    replay r;
+} rp_got;
+
+typedef struct {
+    int gen, mode;
+    char md5[33], player[24], path[768];
+} rp_job;
+
+static void *replay_thread(void *arg)
+{
+    rp_job *q = arg;
+    char who[80], path[200], *out = NULL;
+    size_t len = 0;
+    url_encode(q->player, who, sizeof(who));
+    snprintf(path, sizeof(path), "/api/replay?md5=%s&name=%s", q->md5, who);
+    int st = get(path, &out, &len);
+    replay r;
+    memset(&r, 0, sizeof(r));
+    bool ok = false;
+    if (st == 200 && out && len > 13) {
+        replay_reset(&r, q->path, 0);
+        ok = osr_unpack((const uint8_t *)out, len, q->mode, &r);
+    }
+    free(out);
+    LOG("account: replay %s by %s -> %d, %d frames", q->md5, q->player, st, r.count);
+    pthread_mutex_lock(&lock);
+    if (q->gen == rp_got.gen) {
+        replay_free(&rp_got.r);
+        rp_got.r = r;
+        rp_got.state = ok ? ONLINE_READY : ONLINE_FAILED;
+    } else {
+        replay_free(&r);
+    }
+    pthread_mutex_unlock(&lock);
+    free(q);
+    return NULL;
+}
+
+void account_replay_get(const char *md5, const char *player, int mode, const char *osu_path)
+{
+    rp_job *q = calloc(1, sizeof(*q));
+    if (!q)
+        return;
+    pthread_mutex_lock(&lock);
+    q->gen = ++rp_got.gen;
+    rp_got.state = ONLINE_LOADING;
+    pthread_mutex_unlock(&lock);
+    q->mode = mode;
+    snprintf(q->md5, sizeof(q->md5), "%s", md5);
+    snprintf(q->player, sizeof(q->player), "%s", player);
+    snprintf(q->path, sizeof(q->path), "%s", osu_path);
+    spawn(replay_thread, q);
+}
+
+int account_replay_take(replay *out)
+{
+    pthread_mutex_lock(&lock);
+    int st = rp_got.state;
+    if (st == ONLINE_READY) {
+        replay_free(out);
+        *out = rp_got.r;
+        memset(&rp_got.r, 0, sizeof(rp_got.r));
+        rp_got.state = ONLINE_OFF;
+    } else if (st == ONLINE_FAILED) {
+        rp_got.state = ONLINE_OFF;
+    }
+    pthread_mutex_unlock(&lock);
+    return st;
+}
+
+/* ---- rankings ---- */
+
+static cadence_rankings ranks;
+static int ranks_gen;
+
+static bool rank_key(js *j, const char *key, void *ctx)
+{
+    cadence_rank *r = ctx;
+    if (!strcmp(key, "name")) return json_str(j, r->name, sizeof(r->name));
+    if (!strcmp(key, "clan")) return json_str(j, r->clan, sizeof(r->clan));
+    if (!strcmp(key, "rank")) r->rank = (int)json_num(j);
+    else if (!strcmp(key, "pp")) r->pp = (int)json_num(j);
+    else if (!strcmp(key, "acc")) r->acc = (float)json_num(j);
+    else if (!strcmp(key, "plays")) r->plays = (int)json_num(j);
+    else return false;
+    return true;
+}
+
+static void keep_rank(void *ctx, void *item)
+{
+    cadence_rankings *r = ctx;
+    if (r->count < GLOBAL_MAX)
+        r->r[r->count++] = *(cadence_rank *)item;
+}
+
+static bool ranks_key(js *j, const char *key, void *ctx)
+{
+    cadence_rankings *r = ctx;
+    if (!strcmp(key, "total")) {
+        r->total = (int)json_num(j);
+        return true;
+    }
+    if (strcmp(key, "users"))
+        return false;
+    cadence_rank item;
+    return each(j, rank_key, &item, sizeof(item), keep_rank, r);
+}
+
+typedef struct {
+    int gen, mode, page;
+    char name[24];
+} list_job;
+
+static void *ranks_thread(void *arg)
+{
+    list_job *q = arg;
+    char path[96], *out = NULL;
+    size_t len;
+    snprintf(path, sizeof(path), "/api/users/top?mode=%d&page=%d", q->mode, q->page);
+    int st = get(path, &out, &len);
+    static cadence_rankings got;
+    memset(&got, 0, sizeof(got));
+    if (st == 200 && out) {
+        js j = {out};
+        json_object(&j, ranks_key, &got);
+    }
+    free(out);
+    pthread_mutex_lock(&lock);
+    if (q->gen == ranks_gen) {
+        got.state = st == 200 ? ONLINE_READY : ONLINE_FAILED;
+        got.mode = q->mode;
+        got.page = q->page;
+        ranks = got;
+    }
+    pthread_mutex_unlock(&lock);
+    free(q);
+    return NULL;
+}
+
+void account_rankings_get(int mode, int page)
+{
+    list_job *q = calloc(1, sizeof(*q));
+    if (!q)
+        return;
+    pthread_mutex_lock(&lock);
+    q->gen = ++ranks_gen;
+    ranks.state = ONLINE_LOADING;
+    ranks.mode = q->mode = mode;
+    ranks.page = q->page = page;
+    pthread_mutex_unlock(&lock);
+    spawn(ranks_thread, q);
+}
+
+void account_rankings_read(cadence_rankings *out)
+{
+    pthread_mutex_lock(&lock);
+    *out = ranks;
+    pthread_mutex_unlock(&lock);
+}
+
+/* ---- profiles ---- */
+
+static cadence_user prof;
+static int prof_gen;
+
+typedef struct {
+    cadence_user *u;
+    int i;
+} top_ctx;
+
+static bool top_key(js *j, const char *key, void *ctx)
+{
+    typeof(prof.top[0]) *t = ctx;
+    if (!strcmp(key, "title")) {
+        if (*j->p == '"')
+            return json_str(j, t->title, sizeof(t->title));
+        json_skip(j);
+        return true;
+    }
+    if (!strcmp(key, "acc")) t->acc = (float)json_num(j);
+    else if (!strcmp(key, "pp")) t->pp = (float)json_num(j);
+    else if (!strcmp(key, "max_combo")) t->combo = (int)json_num(j);
+    else if (!strcmp(key, "mods")) t->mods = (int)json_num(j);
+    else if (!strcmp(key, "rank")) t->rank = (int)json_num(j);
+    else return false;
+    return true;
+}
+
+static void keep_top(void *ctx, void *item)
+{
+    cadence_user *u = ctx;
+    if (u->ntop < 10)
+        u->top[u->ntop++] = *(typeof(prof.top[0]) *)item;
+}
+
+static bool prof_key(js *j, const char *key, void *ctx)
+{
+    cadence_user *u = ctx;
+    if (!strcmp(key, "name")) return json_str(j, u->name, sizeof(u->name));
+    if (!strcmp(key, "clan")) return json_str(j, u->clan, sizeof(u->clan));
+    if (!strcmp(key, "clan_name")) return json_str(j, u->clan_name, sizeof(u->clan_name));
+    if (!strcmp(key, "rank")) u->rank = (int)json_num(j);
+    else if (!strcmp(key, "pp")) u->pp = (int)json_num(j);
+    else if (!strcmp(key, "acc")) u->acc = (float)json_num(j);
+    else if (!strcmp(key, "plays")) u->plays = (int)json_num(j);
+    else if (!strcmp(key, "max_combo")) u->max_combo = (int)json_num(j);
+    else if (!strcmp(key, "ranked_score")) u->ranked_score = (long long)json_num(j);
+    else if (!strcmp(key, "total_score")) u->total_score = (long long)json_num(j);
+    else if (!strcmp(key, "joined")) u->joined_ms = (long long)json_num(j);
+    else if (!strcmp(key, "friend")) u->friend_ = !strncmp(j->p, "true", 4), json_skip(j);
+    else if (!strcmp(key, "restricted")) u->restricted = !strncmp(j->p, "true", 4), json_skip(j);
+    else if (!strcmp(key, "top")) {
+        typeof(prof.top[0]) t;
+        return each(j, top_key, &t, sizeof(t), keep_top, u);
+    } else
+        return false;
+    return true;
+}
+
+static void *prof_thread(void *arg)
+{
+    list_job *q = arg;
+    char who[80], path[256], *out = NULL;
+    size_t len;
+    url_encode(q->name, who, sizeof(who));
+    snprintf(path, sizeof(path), "/api/users/profile?name=%s&mode=%d&session=%s", who, q->mode, session);
+    int st = get(path, &out, &len);
+    static cadence_user got;
+    memset(&got, 0, sizeof(got));
+    if (st == 200 && out) {
+        js j = {out};
+        json_object(&j, prof_key, &got);
+    }
+    free(out);
+    pthread_mutex_lock(&lock);
+    if (q->gen == prof_gen) {
+        got.state = st == 200 && got.name[0] ? ONLINE_READY : ONLINE_FAILED;
+        got.mode = q->mode;
+        if (!got.name[0])
+            snprintf(got.name, sizeof(got.name), "%s", q->name);
+        prof = got;
+    }
+    pthread_mutex_unlock(&lock);
+    free(q);
+    return NULL;
+}
+
+void account_profile_get(const char *who, int mode)
+{
+    list_job *q = calloc(1, sizeof(*q));
+    if (!q)
+        return;
+    snprintf(q->name, sizeof(q->name), "%s", who);
+    pthread_mutex_lock(&lock);
+    q->gen = ++prof_gen;
+    q->mode = mode;
+    memset(&prof, 0, sizeof(prof));
+    prof.state = ONLINE_LOADING;
+    prof.mode = mode;
+    snprintf(prof.name, sizeof(prof.name), "%s", who);
+    pthread_mutex_unlock(&lock);
+    spawn(prof_thread, q);
+}
+
+void account_profile_read(cadence_user *out)
+{
+    pthread_mutex_lock(&lock);
+    *out = prof;
+    pthread_mutex_unlock(&lock);
+}
+
+/* ---- account changes ---- */
+
+static int act_state = ACC_IDLE;
+static char act_msg[128];
+
+enum { ACT_FRIEND_ADD, ACT_FRIEND_DEL, ACT_CLAN_JOIN, ACT_CLAN_CREATE, ACT_CLAN_LEAVE, ACT_PASSWORD, ACT_DELETE };
+
+typedef struct {
+    int kind;
+    char a[64], b[64];
+} act_job;
+
+typedef struct {
+    char error[128], tag[8], session[80];
+} act_reply;
+
+static bool act_key(js *j, const char *key, void *ctx)
+{
+    act_reply *r = ctx;
+    if (!strcmp(key, "error")) return json_str(j, r->error, sizeof(r->error));
+    if (!strcmp(key, "tag")) return json_str(j, r->tag, sizeof(r->tag));
+    if (!strcmp(key, "session")) return json_str(j, r->session, sizeof(r->session));
+    return false;
+}
+
+static void *act_thread(void *arg)
+{
+    act_job *q = arg;
+    char ea[140], eb[140], body[512];
+    escape(q->a, ea, sizeof(ea));
+    escape(q->b, eb, sizeof(eb));
+    const char *path = "";
+    switch (q->kind) {
+    case ACT_FRIEND_ADD:
+    case ACT_FRIEND_DEL:
+        path = q->kind == ACT_FRIEND_ADD ? "/api/friends/add" : "/api/friends/remove";
+        snprintf(body, sizeof(body), "{\"session\":\"%s\",\"name\":\"%s\"}", session, ea);
+        break;
+    case ACT_CLAN_JOIN:
+        path = "/api/clans/join";
+        snprintf(body, sizeof(body), "{\"session\":\"%s\",\"tag\":\"%s\"}", session, ea);
+        break;
+    case ACT_CLAN_CREATE:
+        path = "/api/clans/create";
+        snprintf(body, sizeof(body), "{\"session\":\"%s\",\"tag\":\"%s\",\"name\":\"%s\"}", session, ea, eb);
+        break;
+    case ACT_CLAN_LEAVE:
+        path = "/api/clans/leave";
+        snprintf(body, sizeof(body), "{\"session\":\"%s\"}", session);
+        break;
+    case ACT_PASSWORD:
+        path = "/api/account/password";
+        snprintf(body, sizeof(body), "{\"session\":\"%s\",\"password\":\"%s\",\"new_password\":\"%s\"}", session, ea, eb);
+        break;
+    case ACT_DELETE:
+        path = "/api/account/delete";
+        snprintf(body, sizeof(body), "{\"session\":\"%s\",\"password\":\"%s\"}", session, ea);
+        break;
+    }
+    char *out = NULL;
+    int st = post(path, body, &out);
+    act_reply r;
+    memset(&r, 0, sizeof(r));
+    if (out) {
+        js j = {out};
+        json_object(&j, act_key, &r);
+        free(out);
+    }
+    pthread_mutex_lock(&lock);
+    if (st == 200) {
+        act_state = ACC_OK;
+        switch (q->kind) {
+        case ACT_FRIEND_ADD: snprintf(act_msg, sizeof(act_msg), "added %s as a friend", q->a); break;
+        case ACT_FRIEND_DEL: snprintf(act_msg, sizeof(act_msg), "removed %s from your friends", q->a); break;
+        case ACT_CLAN_JOIN:
+        case ACT_CLAN_CREATE:
+            snprintf(clan, sizeof(clan), "%s", r.tag);
+            snprintf(act_msg, sizeof(act_msg), "you're in [%s] now", r.tag);
+            save();
+            break;
+        case ACT_CLAN_LEAVE:
+            clan[0] = 0;
+            snprintf(act_msg, sizeof(act_msg), "you left your clan");
+            save();
+            break;
+        case ACT_PASSWORD:
+            if (r.session[0])
+                snprintf(session, sizeof(session), "%s", r.session);
+            save();
+            snprintf(act_msg, sizeof(act_msg), "password changed");
+            break;
+        case ACT_DELETE:
+            name[0] = session[0] = clan[0] = 0;
+            remove(ACCOUNT_FILE);
+            snprintf(act_msg, sizeof(act_msg), "account deleted");
+            break;
+        }
+    } else {
+        act_state = ACC_FAILED;
+        snprintf(act_msg, sizeof(act_msg), "%s", r.error[0] ? r.error
+                 : st == 401 ? "wrong password, or sign in again"
+                 : st == 404 ? "not found"
+                 : st == 409 ? "that's taken, or you're already in a clan"
+                 : "couldn't reach the server");
+    }
+    pthread_mutex_unlock(&lock);
+    LOG("account: %s -> %d", path, st);
+    free(q);
+    return NULL;
+}
+
+static void act(int kind, const char *a, const char *b)
+{
+    if (!session[0]) {
+        pthread_mutex_lock(&lock);
+        act_state = ACC_FAILED;
+        snprintf(act_msg, sizeof(act_msg), "sign in first");
+        pthread_mutex_unlock(&lock);
+        return;
+    }
+    act_job *q = calloc(1, sizeof(*q));
+    if (!q)
+        return;
+    q->kind = kind;
+    snprintf(q->a, sizeof(q->a), "%s", a ? a : "");
+    snprintf(q->b, sizeof(q->b), "%s", b ? b : "");
+    pthread_mutex_lock(&lock);
+    act_state = ACC_BUSY;
+    act_msg[0] = 0;
+    pthread_mutex_unlock(&lock);
+    spawn(act_thread, q);
+}
+
+void account_friend(const char *who, bool add) { act(add ? ACT_FRIEND_ADD : ACT_FRIEND_DEL, who, NULL); }
+void account_clan_join(const char *tag) { act(ACT_CLAN_JOIN, tag, NULL); }
+void account_clan_create(const char *tag, const char *cname) { act(ACT_CLAN_CREATE, tag, cname); }
+void account_clan_leave(void) { act(ACT_CLAN_LEAVE, NULL, NULL); }
+void account_password(const char *old_pw, const char *new_pw) { act(ACT_PASSWORD, old_pw, new_pw); }
+void account_delete(const char *password) { act(ACT_DELETE, password, NULL); }
+
+int account_action(char *msg, int n)
+{
+    pthread_mutex_lock(&lock);
+    int s = act_state;
+    if (msg)
+        snprintf(msg, (size_t)n, "%s", act_msg);
+    if (s == ACC_OK || s == ACC_FAILED)
+        act_state = ACC_IDLE; /* read once */
+    pthread_mutex_unlock(&lock);
+    return s;
 }

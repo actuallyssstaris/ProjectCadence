@@ -82,7 +82,7 @@ static void url_encode(const char *in, char *out, size_t n)
     out[k] = 0;
 }
 
-static size_t b64(const uint8_t *in, size_t n, char *out)
+size_t b64_encode(const uint8_t *in, size_t n, char *out)
 {
     static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     size_t k = 0;
@@ -316,7 +316,7 @@ static int keys_in(int keys, int mode)
     return (keys & 1 ? 1 : 0) | (keys & 2 ? 2 : 0);
 }
 
-static uint8_t *frames_text(const replay *rp, int mode, size_t *n)
+uint8_t *osr_pack(const replay *rp, int mode, size_t *n)
 {
     size_t cap = 64 + (size_t)rp->count * 40, k = 0;
     char *t = malloc(cap);
@@ -374,6 +374,17 @@ static bool frames_read(const uint8_t *text, size_t n, int mode, replay *out)
         p = comma + 1;
     }
     return out->count > 0;
+}
+
+bool osr_unpack(const uint8_t *lz, size_t n, int mode, replay *out)
+{
+    size_t tn;
+    uint8_t *text = lzma_unpack(lz, n, &tn);
+    if (!text)
+        return false;
+    bool ok = frames_read(text, tn, mode, out);
+    free(text);
+    return ok;
 }
 
 /* ---- submitting ---- */
@@ -463,11 +474,11 @@ static void *submit_thread(void *arg)
         static uint8_t enc[1100], enc2[300];
         static char line64[1500], client64[420], iv64[48], fs64[16];
         size_t en = rijndael256_cbc(key, iv, (const uint8_t *)line, (size_t)ln, enc);
-        b64(enc, en, line64);
+        b64_encode(enc, en, line64);
         size_t en2 = rijndael256_cbc(key, iv, (const uint8_t *)s.client, strlen(s.client), enc2);
-        b64(enc2, en2, client64);
-        b64(iv, 32, iv64);
-        b64((const uint8_t *)"", 0, fs64);
+        b64_encode(enc2, en2, client64);
+        b64_encode(iv, 32, iv64);
+        b64_encode((const uint8_t *)"", 0, fs64);
 
         char num[32], uids[90];
         size_t n = 0, cap = 4096 + q->rp_n;
@@ -542,7 +553,7 @@ void bweb_submit(const bweb_play *p)
         return;
     q->p = *p;
     q->p.rp = NULL;
-    q->rp = frames_text(p->rp, p->mode, &q->rp_n);
+    q->rp = osr_pack(p->rp, p->mode, &q->rp_n);
     if (!q->rp) {
         free(q);
         return;

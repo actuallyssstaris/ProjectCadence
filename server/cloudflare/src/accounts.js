@@ -221,7 +221,8 @@ export async function accounts(request, env, url) {
       const user = await env.DB.prepare("SELECT id, name, pass_hash, salt FROM users WHERE name = ?").bind(String(body.name || "").trim()).first();
       if (!user || (await hash(String(body.password || ""), user.salt)) !== user.pass_hash)
         return reply({ error: "wrong name or password" }, 401);
-      return reply({ session: await newSession(env, user.id), name: user.name });
+      const clan = await clanOf(env, user.id);
+      return reply({ session: await newSession(env, user.id), name: user.name, clan: clan ? clan.tag : "" });
     }
     case "/api/account/password":
     case "/api/account/delete": {
