@@ -83,6 +83,19 @@ void log_open(void)
 
 bool log_last_crashed(void) { return last_crashed; }
 
+void log_enable(bool on)
+{
+    if (!on && log_file) {
+        /* off: nothing kept on the console; klog still gets the lines */
+        fclose(log_file);
+        log_file = NULL;
+        remove(LOG_PATH);
+        remove(PREV_PATH);
+    } else if (on && !log_file) {
+        log_file = fopen(LOG_PATH, "a");
+    }
+}
+
 void log_where(const char *what)
 {
     if (strcmp(where, what)) {

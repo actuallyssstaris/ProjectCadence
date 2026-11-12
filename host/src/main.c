@@ -116,6 +116,7 @@ static struct {
     bool key_overlay, live_board, classic_score;
     int map_objects;      /* for classic scoring */
     bool show_fps;
+    bool save_logs;       /* keep cadence.log on the console, for reports */
     float frame_ms, frame_worst; /* smoothed, and the worst of the last few seconds */
     int key_count[4], key_prev;
     float da[4];          /* Difficulty Adjust: cs, ar, od, hp; -1 the map's own */
@@ -213,7 +214,7 @@ static struct {
 
     char status[256];
 } app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1, .coll_view = -1, .key_overlay = true, .live_board = true,
-         .da = {-1, -1, -1, -1}, .mod_custom = -1};
+         .da = {-1, -1, -1, -1}, .mod_custom = -1, .save_logs = true};
 
 static const char *screen_name(int scr)
 {
@@ -395,6 +396,7 @@ static void settings_load(void)
             else if (!strcmp(key, "live_board")) app.live_board = v != 0;
             else if (!strcmp(key, "classic_score")) app.classic_score = v != 0;
             else if (!strcmp(key, "show_fps")) app.show_fps = v != 0;
+            else if (!strcmp(key, "save_logs")) app.save_logs = v != 0;
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
             else if (!strcmp(key, "simple_ui")) app.simple_ui = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
@@ -412,10 +414,10 @@ static void settings_save(void)
     if (!f)
         return;
     fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\nmode %d\nstar_lo %.1f\nstar_hi %.1f\nconverts %d\n"
-               "hud %d\nkey_overlay %d\nlive_board %d\nclassic_score %d\nshow_fps %d\n",
+               "hud %d\nkey_overlay %d\nlive_board %d\nclassic_score %d\nshow_fps %d\nsave_logs %d\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
             app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui, app.mode_pick, app.star_lo, app.star_hi, app.converts,
-            app.hud_mode, app.key_overlay, app.live_board, app.classic_score, app.show_fps);
+            app.hud_mode, app.key_overlay, app.live_board, app.classic_score, app.show_fps, app.save_logs);
     fclose(f);
 }
 
@@ -2444,7 +2446,7 @@ enum {
     SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_HUD, SET_KEYS, SET_LIVE, SET_CLASSIC, SET_FPS, SET_STARS_LO, SET_STARS_HI, SET_CONVERTS, /* gameplay */
     SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, /* audio */
     SET_ACCOUNT, SET_CLAN, SET_PASSWORD, SET_DELETE, SET_BOARD, /* online */
-    SET_RESCAN, SET_REPORT,                     /* maintenance */
+    SET_RESCAN, SET_LOGS, SET_REPORT,           /* maintenance */
     SET_COUNT
 };
 
@@ -2481,6 +2483,7 @@ static const char *const set_words[SET_COUNT] = {
     [SET_DELETE] = "online delete account remove",
     [SET_BOARD] = "online leaderboard scores osu.ppy.sh",
     [SET_RESCAN] = "maintenance rescan the songs folder ftp",
+    [SET_LOGS] = "maintenance save logs log diagnostics debug",
     [SET_REPORT] = "maintenance report a problem bug issue crash log send",
 };
 
@@ -2737,6 +2740,12 @@ static void settings_frame(const pad_state *pad)
         if (pad->pressed & PAD_CROSS && account_signed_in())
             entry_open(4);
         break;
+    case SET_LOGS:
+        if (d || pad->pressed & PAD_CROSS) {
+            app.save_logs = !app.save_logs;
+            log_enable(app.save_logs);
+        }
+        break;
     case SET_REPORT:
         if (pad->pressed & PAD_CROSS && report_state(NULL, NULL, 0) != 1)
             entry_open(5);
@@ -2892,6 +2901,7 @@ static void render_settings(void)
                      : online_enabled() ? "osu.ppy.sh" : "osu.ppy.sh (needs osuapi.txt)");
             break;
         case SET_RESCAN: name = "rescan the Songs folder"; kind = 3; break;
+        case SET_LOGS: name = "save logs"; kind = 1; flag = app.save_logs; break;
         case SET_REPORT: name = "report a problem"; kind = 3; break;
         case SET_SKIN: name = "current skin"; snprintf(val, sizeof(val), "%.40s", skins_active()); break;
         case SET_SETUP: name = "run setup wizard"; kind = 3; break;
@@ -2947,7 +2957,9 @@ static void render_settings(void)
     case SET_RESCAN: hint = "after copying maps over FTP"; break;
     case SET_CLAN: hint = "type a tag to join, or a tag and a name to start one: CDN Cadence Crew"; break;
     case SET_DELETE: hint = "scores, replays and your clan place go too; asks for your password"; break;
-    case SET_REPORT: hint = "sends what you write, the game's logs and settings to us; no passwords or keys"; break;
+    case SET_LOGS: hint = "keeps a log of what the game does on the console so reports can show what went wrong"; break;
+    case SET_REPORT: hint = app.save_logs ? "sends what you write, the game's logs and settings to us; no passwords or keys"
+                                          : "sends what you write and your settings; turn save logs on so we can see what happened"; break;
     default: break;
     }
     float hx = panel_x + panel_w + 50;
@@ -4645,6 +4657,7 @@ int main(void)
     LOG("gc check: %d collections", osu5_gc_check());
 
     settings_load();
+    log_enable(app.save_logs);
     mapdl_ui_set_mode(app.mode_pick);
     mapdl_ui_set_simple(app.simple_ui);
     audio_music_volume(app.music_vol);

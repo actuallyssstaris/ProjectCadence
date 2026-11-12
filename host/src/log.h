@@ -12,6 +12,8 @@ void logf_(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 
 /* what the game is doing, for crash lines and reports; logged when it changes */
 void log_where(const char *what);
+/* the settings toggle: off closes and deletes the log files */
+void log_enable(bool on);
 /* the last line of a run that ended on purpose */
 void log_close(void);
 /* the previous run never got to log_close: it crashed or was killed */

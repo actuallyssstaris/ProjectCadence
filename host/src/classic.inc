@@ -291,6 +291,7 @@ static void render_settings_classic(void)
         case SET_CLAN: name = "clan"; snprintf(val, sizeof(val), "%s", account_clan()[0] ? account_clan() : "CROSS"); break;
         case SET_PASSWORD: name = "change password"; snprintf(val, sizeof(val), "CROSS"); break;
         case SET_DELETE: name = "delete account"; snprintf(val, sizeof(val), "CROSS"); break;
+        case SET_LOGS: name = "save logs"; snprintf(val, sizeof(val), "%s", app.save_logs ? "on" : "off"); break;
         case SET_REPORT: name = "report a problem"; snprintf(val, sizeof(val), "CROSS"); break;
         }
         float y = 150 + i * 54;
