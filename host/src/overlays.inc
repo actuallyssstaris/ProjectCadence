@@ -99,10 +99,8 @@ static void rankings_frame(const pad_state *pad)
 {
     web_rankings r;
     web_rankings_read(&r);
-    int flick = rstick_flick(pad);
-    if (pad->pressed & PAD_L1) flick = -1;
-    if (pad->pressed & PAD_R1) flick = 1;
-    if (flick == 1 || flick == -1) {
+    int flick = pad->pressed & PAD_L1 ? -1 : pad->pressed & PAD_R1 ? 1 : 0;
+    if (flick) {
         rk_mode = (rk_mode + flick + 4) % 4;
         rk_page = rk_sel = 0;
         web_rankings_get(rk_mode, rk_page);
@@ -205,10 +203,8 @@ static void profile_frame(const pad_state *pad)
             pf_typing = false;
         return;
     }
-    int flick = rstick_flick(pad);
-    if (pad->pressed & PAD_L1) flick = -1;
-    if (pad->pressed & PAD_R1) flick = 1;
-    if ((flick == 1 || flick == -1) && pf_name[0]) {
+    int flick = pad->pressed & PAD_L1 ? -1 : pad->pressed & PAD_R1 ? 1 : 0;
+    if (flick && pf_name[0]) {
         pf_mode = (pf_mode + flick + 4) % 4;
         web_user_get(pf_name, pf_mode);
     }
@@ -487,7 +483,7 @@ static void chat_frame(const pad_state *pad)
         mp_channel_seen(names[ch_tab]);
     ch_scroll = clampf(ch_scroll - pad->nav_y, 0, 119);
     bool online = app.mp_on && app.mps.conn == MP_ONLINE;
-    if (pad->pressed & (PAD_CROSS | PAD_SQUARE) && online) {
+    if (pad->pressed & PAD_CROSS && online) {
         ch_kbd.text = ch_line;
         ch_kbd.cap = sizeof(ch_line);
         ch_typing = true;
@@ -612,26 +608,38 @@ static void render_chat(void)
         kbd_render(&ch_kbd);
 }
 
-/* ---- host tools, for a bancho room's host ---- */
+/* ---- room settings, for the host: OPTIONS in a room ----
+ * teams and free mods everywhere; on bancho also the win condition, and each
+ * player with make-host and kick */
 
-static int host_sel = -1; /* member row, -1 closed */
+static int host_sel = -1; /* row, -1 closed */
 static const char *const win_names[4] = {"score", "accuracy", "combo", "score v2"};
 
 static bool host_tools_open(void) { return host_sel >= 0; }
 
+static int host_fixed_rows(void) { return app.mp_kind == MP_BANCHO ? 3 : 2; }
+
 static void host_tools_frame(const pad_state *pad)
 {
     const mp_state *s = &app.mps;
-    if (s->nmembers)
-        host_sel = (host_sel + pad->nav_y + s->nmembers) % s->nmembers;
-    const mp_member *m = s->nmembers ? &s->members[host_sel % s->nmembers] : NULL;
-    if (pad->pressed & PAD_CROSS && m && !m->me)
-        mp_host_to(m->slot);
-    if (pad->pressed & PAD_SQUARE && m && !m->me)
-        mp_lock_slot(m->slot); /* locking an occupied slot sends them out */
-    if (pad->nav_x)
-        mp_win_condition((s->win + pad->nav_x + 4) % 4);
-    if (pad->pressed & (PAD_CIRCLE | PAD_R3))
+    int fixed = host_fixed_rows();
+    int rows = fixed + (app.mp_kind == MP_BANCHO ? s->nmembers : 0);
+    host_sel = (host_sel + pad->nav_y + rows) % rows;
+    bool pick = pad->pressed & PAD_CROSS || pad->nav_x;
+    if (host_sel == 0 && pick)
+        mp_settings(!s->teams, s->freemod);
+    else if (host_sel == 1 && pick)
+        mp_settings(s->teams, !s->freemod);
+    else if (host_sel == 2 && fixed == 3 && pick)
+        mp_win_condition((s->win + (pad->nav_x < 0 ? 3 : 1)) % 4);
+    else if (host_sel >= fixed && host_sel - fixed < s->nmembers) {
+        const mp_member *m = &s->members[host_sel - fixed];
+        if (pad->pressed & PAD_CROSS && !m->me)
+            mp_host_to(m->slot);
+        if (pad->pressed & PAD_SQUARE && !m->me)
+            mp_lock_slot(m->slot); /* locking an occupied slot sends them out */
+    }
+    if (pad->pressed & (PAD_CIRCLE | PAD_OPTIONS))
         host_sel = -1;
 }
 
@@ -639,24 +647,35 @@ static void render_host_tools(void)
 {
     const mp_state *s = &app.mps;
     char buf[96];
-    const float w = 700, h = 140 + s->nmembers * 52, x = (GFX_W - w) / 2, y = (GFX_H - h) / 2;
+    int fixed = host_fixed_rows();
+    int players = app.mp_kind == MP_BANCHO ? s->nmembers : 0;
+    const float w = 700, row = 52, h = 100 + (fixed + players) * row + (players ? 40 : 0);
+    const float x = (GFX_W - w) / 2, y = (GFX_H - h) / 2;
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.55f));
     ui_round_rect(x, y, w, h, 18, ui_plum(0.16f, 0.98f));
-    draw_text(x + 30, y + 24, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "host tools");
-    snprintf(buf, sizeof(buf), "win by:  %s", win_names[s->win & 3]);
-    draw_text(x + w - 30, y + 30, 22, ui_hex(UI_YELLOW, 1), ALIGN_RIGHT, buf);
-    for (int i = 0; i < s->nmembers; i++) {
-        const mp_member *m = &s->members[i];
-        float ry = y + 80 + i * 52;
+    draw_text(x + 30, y + 24, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "room settings");
+    float ry = y + 80;
+    for (int i = 0; i < fixed + players; i++) {
+        if (i == fixed) {
+            draw_text(x + 30, ry + 8, 20, gfx_rgba(1, 1, 1, 0.55f), ALIGN_LEFT, "players");
+            ry += 40;
+        }
         bool on = i == host_sel;
-        ui_round_rect(x + 20, ry, w - 40, 46, 8, on ? ui_plum(0.3f, 1) : ui_plum(0.22f, 1));
-        snprintf(buf, sizeof(buf), "%s%s%s", m->name, m->host ? "  (host)" : "", m->me ? "  (you)" : "");
-        draw_text(x + 40, ry + 11, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
-        snprintf(buf, sizeof(buf), "slot %d", m->slot + 1);
-        draw_text(x + w - 40, ry + 13, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, buf);
+        ui_round_rect(x + 20, ry, w - 40, row - 6, 8, on ? ui_plum(0.3f, 1) : ui_plum(0.22f, 1));
+        const char *label = buf, *value = "";
+        if (i == 0) { label = "teams"; value = s->teams ? "on" : "off"; }
+        else if (i == 1) { label = "free mods"; value = s->freemod ? "on" : "off"; }
+        else if (i == 2 && fixed == 3) { label = "win by"; value = win_names[s->win & 3]; }
+        else {
+            const mp_member *m = &s->members[i - fixed];
+            snprintf(buf, sizeof(buf), "%s%s%s", m->name, m->host ? "  (host)" : "", m->me ? "  (you)" : "");
+            value = on && !m->me ? "CROSS make host   SQUARE kick" : "";
+        }
+        draw_text(x + 40, ry + 11, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, label);
+        draw_text(x + w - 40, ry + 12, 20, i < fixed ? ui_hex(UI_YELLOW, 1) : gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, value);
+        ry += row;
     }
-    draw_text(GFX_W / 2, y + h + 16, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE,
-              "CROSS make host   SQUARE kick   LEFT / RIGHT win condition   CIRCLE close");
+    draw_text(GFX_W / 2, y + h + 16, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, "CROSS change   CIRCLE close");
 }
 
 /* ---- spectating someone on bancho ---- */

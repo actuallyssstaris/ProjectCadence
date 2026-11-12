@@ -116,7 +116,6 @@ static struct {
     bool videos;
     int map_offset;       /* per map, from offsets.txt */
     bool fav_only;
-    double delete_armed;  /* wall ms R3 was pressed once; a second press deletes */
     int ruleset, keys;    /* of the map being played: 0 osu, 1 taiko, 3 mania; mania columns */
 
     /* multiplayer */
@@ -999,23 +998,6 @@ static void set_mode(int m)
     toast("playing %s maps", mode_names[app.mode_pick]);
 }
 
-/* right stick flicks, once per push: left/right -1/+1, down 2 */
-static int rstick_flick(const pad_state *pad)
-{
-    static bool armed = true;
-    float ax = fabsf(pad->rx), ay = fabsf(pad->ry);
-    if (ax < 0.35f && ay < 0.35f) {
-        armed = true;
-        return 0;
-    }
-    if (!armed || (ax < 0.75f && ay < 0.75f))
-        return 0;
-    armed = false;
-    if (ax > ay)
-        return pad->rx > 0 ? 1 : -1;
-    return pad->ry > 0 ? 2 : 0;
-}
-
 static bool remove_tree(const char *path)
 {
     DIR *d = opendir(path);
@@ -1094,16 +1076,113 @@ static int closest_in_set(int start, int from)
     return pick;
 }
 
-static void select_frame(const pad_state *pad)
+/* OPTIONS in song select: the things you don't need every second, in a list */
+enum { OPT_RANDOM, OPT_SORT, OPT_FAV, OPT_DELETE, OPT_MAPS, OPT_SKINS, OPT_SETTINGS, OPT_COUNT };
+static int sel_opt = -1; /* -1 closed */
+static double delete_armed;
+
+static void random_set(void)
 {
-    /* right stick: left/right change the mode, down jumps to a random set */
-    int flick = app.searching ? 0 : rstick_flick(pad);
-    if (flick == 1 || flick == -1) {
-        set_mode(app.mode_pick + flick);
+    if (app.songs.count > 0)
+        app.sel = set_start(rand() % app.songs.count);
+}
+
+static void sel_opts_frame(const pad_state *pad)
+{
+    sel_opt = (sel_opt + pad->nav_y + OPT_COUNT) % OPT_COUNT;
+    if (pad->pressed & (PAD_CIRCLE | PAD_OPTIONS)) {
+        sel_opt = -1;
         return;
     }
-    if (flick == 2 && app.songs.count > 0) {
-        app.sel = set_start(rand() % app.songs.count);
+    if (!(pad->pressed & PAD_CROSS))
+        return;
+    bool have = app.songs.count > 0;
+    switch (sel_opt) {
+    case OPT_RANDOM:
+        random_set();
+        sel_opt = -1;
+        break;
+    case OPT_SORT:
+        app.sort = (app.sort + 1) % (SORT_COUNT + 1);
+        apply_view();
+        settings_save();
+        break;
+    case OPT_FAV:
+        if (have) {
+            bool on = fav_toggle(app.songs.items[app.sel].dir);
+            toast(on ? "added to favourites" : "removed from favourites");
+            if (app.sort == SORT_COUNT)
+                apply_view();
+        }
+        break;
+    case OPT_DELETE:
+        if (!have)
+            break;
+        if (wall_ms() - delete_armed < 3000) {
+            char dir[512];
+            snprintf(dir, sizeof(dir), "%s", app.songs.items[app.sel].dir);
+            preview_cancel();
+            audio_music_stop();
+            bool ok = remove_tree(dir);
+            LOG("deleted %s: %s", dir, ok ? "ok" : "failed");
+            toast(ok ? "set deleted" : "couldn't delete everything");
+            delete_armed = 0;
+            sel_opt = -1;
+            rescan();
+        } else {
+            delete_armed = wall_ms();
+        }
+        break;
+    case OPT_MAPS:
+        sel_opt = -1;
+        mapdl_ui_open();
+        app.scr = SCREEN_DOWNLOAD;
+        break;
+    case OPT_SKINS:
+        sel_opt = -1;
+        skin_ui_open(false);
+        app.scr = SCREEN_SKINS;
+        break;
+    case OPT_SETTINGS:
+        sel_opt = -1;
+        app.set_sel = 0;
+        app.scr = SCREEN_SETTINGS;
+        break;
+    }
+}
+
+static void render_sel_opts(void)
+{
+    char buf[96];
+    const float w = 560, row = 62, h = 100 + OPT_COUNT * row, x = (GFX_W - w) / 2, y = (GFX_H - h) / 2;
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.55f));
+    ui_round_rect(x, y, w, h, 18, ui_hex(0x22222A, 0.98f));
+    draw_text(x + 30, y + 24, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "options");
+    bool fav = app.songs.count > 0 && fav_is(app.songs.items[app.sel].dir);
+    for (int i = 0; i < OPT_COUNT; i++) {
+        float ry = y + 84 + i * row;
+        bool on = i == sel_opt;
+        const char *label = "";
+        switch (i) {
+        case OPT_RANDOM: label = "random set"; break;
+        case OPT_SORT: snprintf(buf, sizeof(buf), "sort by: %s", sort_label()); label = buf; break;
+        case OPT_FAV: label = fav ? "remove from favourites" : "add to favourites"; break;
+        case OPT_DELETE: label = wall_ms() - delete_armed < 3000 ? "press CROSS again to delete" : "delete this set"; break;
+        case OPT_MAPS: label = "get more maps"; break;
+        case OPT_SKINS: label = "skins"; break;
+        case OPT_SETTINGS: label = "settings"; break;
+        }
+        uint32_t bg = i == OPT_DELETE && on ? ui_hex(0xAA1B27, 1) : on ? ui_hex(0x3D3D4A, 1) : ui_hex(0x2C2C35, 1);
+        ui_round_rect(x + 20, ry, w - 40, row - 8, 10, bg);
+        draw_text(x + 44, ry + 14, 24, gfx_rgba(1, 1, 1, on ? 1 : 0.8f), ALIGN_LEFT, label);
+    }
+    draw_text(GFX_W / 2, y + h + 16, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, "CROSS pick   CIRCLE close");
+}
+
+static void select_frame(const pad_state *pad)
+{
+    if (sel_opt >= 0) {
+        sel_opts_frame(pad);
         return;
     }
     if (!app.searching && pad->pressed & PAD_CIRCLE) {
@@ -1122,7 +1201,12 @@ static void select_frame(const pad_state *pad)
             app.searching = false;
         return;
     }
-    if (pad->pressed & PAD_L1) {
+    /* the same everywhere: L1 / R1 change the mode */
+    if (pad->pressed & (PAD_L1 | PAD_R1)) {
+        set_mode(app.mode_pick + (pad->pressed & PAD_R1 ? 1 : -1));
+        return;
+    }
+    if (pad->pressed & PAD_TRIANGLE) {
         app.search.text = app.filter;
         app.search.cap = sizeof(app.filter);
         app.searching = true;
@@ -1130,48 +1214,13 @@ static void select_frame(const pad_state *pad)
     }
     if (pad->pressed & PAD_L2)
         app.board = !app.board; /* yours <-> the online board picked in settings */
-    if (pad->pressed & PAD_R1) {
-        app.sort = (app.sort + 1) % (SORT_COUNT + 1);
-        apply_view();
-        settings_save();
-    }
-    if (pad->pressed & PAD_L3 && app.songs.count > 0) {
-        bool on = fav_toggle(app.songs.items[app.sel].dir);
-        snprintf(app.status, sizeof(app.status), on ? "added to favourites" : "removed from favourites");
-        toast(on ? "added to favourites" : "removed from favourites");
-        if (app.sort == SORT_COUNT)
-            apply_view();
-    }
-    if (pad->pressed & PAD_R3 && app.songs.count > 0) {
-        if (wall_ms() - app.delete_armed < 3000) {
-            char dir[512];
-            snprintf(dir, sizeof(dir), "%s", app.songs.items[app.sel].dir);
-            preview_cancel();
-            audio_music_stop();
-            bool ok = remove_tree(dir);
-            LOG("deleted %s: %s", dir, ok ? "ok" : "failed");
-            snprintf(app.status, sizeof(app.status), ok ? "deleted" : "couldn't delete everything");
-            app.delete_armed = 0;
-            rescan();
-            return;
-        }
-        app.delete_armed = wall_ms();
-        snprintf(app.status, sizeof(app.status), "press R3 again to delete this whole set");
-    }
-
-    if (pad->pressed & PAD_TOUCHPAD) {
-        skin_ui_open(false);
-        app.scr = SCREEN_SKINS;
-        return;
-    }
-    if (pad->pressed & PAD_TRIANGLE) {
-        mapdl_ui_open();
-        app.scr = SCREEN_DOWNLOAD;
+    if (pad->pressed & PAD_R3) {
+        random_set();
         return;
     }
     if (pad->pressed & PAD_OPTIONS) {
-        app.set_sel = 0;
-        app.scr = SCREEN_SETTINGS;
+        sel_opt = 0;
+        delete_armed = 0;
         return;
     }
     if (pad->pressed & PAD_SQUARE) {
@@ -1545,7 +1594,7 @@ static void render_select(void)
     else
         snprintf(buf, sizeof(buf), "type to search  (L1)");
     draw_text(GFX_W - 860, 38, 24, gfx_rgba(1, 1, 1, app.filter[0] || app.searching ? 1 : 0.45f), ALIGN_LEFT, buf);
-    snprintf(buf, sizeof(buf), "sort by  %s   (R1)", sort_label());
+    snprintf(buf, sizeof(buf), "sort by  %s   (OPTIONS)", sort_label());
     draw_text(GFX_W - 860, 86, 20, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, buf);
     if (app.star_hi > 0)
         snprintf(buf, sizeof(buf), "%s   %.1f-%.1f*", mode_names[app.mode_pick], app.star_lo, app.star_hi);
@@ -1574,11 +1623,11 @@ static void render_select(void)
             return;
         }
         draw_text(GFX_W / 2, 400, 48, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "no beatmaps yet");
-        draw_text(GFX_W / 2, 480, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "press TRIANGLE to download some");
+        draw_text(GFX_W / 2, 480, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "press OPTIONS, then get more maps");
         draw_text(GFX_W / 2, 525, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "or copy extracted .osz folders to " SONGS_DIR);
         draw_text(GFX_W / 2, 570, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "and press CROSS to rescan");
         draw_text(40, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
-                  "TRIANGLE get maps   OPTIONS settings   TOUCHPAD skins");
+                  "OPTIONS get maps, skins and settings");
         return;
     }
 
@@ -1744,7 +1793,7 @@ static void render_select(void)
         }
         bool fav = fav_is(app.songs.items[app.sel].dir);
         px += ui_pill(px, py, 16, fav ? ui_hex(UI_PINK, 1) : gfx_rgba(0, 0, 0, 0.45f), gfx_rgba(1, 1, 1, 0.9f),
-                      fav ? "favourite" : "not favourite  (L3)") + 8;
+                      fav ? "favourite" : "not favourite") + 8;
         snprintf(pill, sizeof(pill), "%d %s", app.nscores, app.nscores == 1 ? "score" : "scores");
         px += ui_pill(px, py, 16, gfx_rgba(0, 0, 0, 0.45f), gfx_rgba(1, 1, 1, 0.9f), pill) + 8;
         snprintf(pill, sizeof(pill), "offset %+dms", app.offset_ms);
@@ -1848,7 +1897,7 @@ scores_done:;
         draw_text(196, fy + 34, 24, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "back");
 
         static const struct { const char *label, *button; uint32_t colour; } tiles[] = {
-            {"mods", "SQUARE", 0xB2E05C}, {"get maps", "TRIANGLE", UI_BLUE}, {"skins", "TOUCHPAD", UI_ORANGE}, {"options", "OPTIONS", 0x8866EE},
+            {"mods", "SQUARE", 0xB2E05C}, {"random", "R3", UI_ORANGE}, {"search", "TRIANGLE", UI_BLUE}, {"options", "OPTIONS", 0x8866EE},
         };
         float tx = 400;
         for (int i = 0; i < 4; i++) {
@@ -1863,13 +1912,14 @@ scores_done:;
                 draw_rect(cx - 10, fy + 27, 22, 3, ic);
                 ui_arrow_left(cx - 12, fy + 28.5f, 10, ic);
                 break;
-            case 1:
-                draw_rect(cx - 2, fy + 10, 4, 12, ic);
-                ui_arrow_down(cx, fy + 25, 14, ic);
+            case 1: /* a die */
+                ui_round_rect(cx - 11, fy + 11, 22, 22, 5, ic);
+                ui_disc(cx - 5, fy + 17, 2.5f, gfx_rgba(0.22f, 0.22f, 0.26f, 1));
+                ui_disc(cx + 5, fy + 27, 2.5f, gfx_rgba(0.22f, 0.22f, 0.26f, 1));
+                ui_disc(cx, fy + 22, 2.5f, gfx_rgba(0.22f, 0.22f, 0.26f, 1));
                 break;
             case 2:
-                arc(cx, fy + 22, 9, 3, 0, 1, ic);
-                ui_disc(cx, fy + 22, 3.5f, ic);
+                ui_search_icon(cx, fy + 22, 9, ic);
                 break;
             default: ui_gear_icon(cx, fy + 22, 24, ic); break;
             }
@@ -1877,7 +1927,7 @@ scores_done:;
             draw_text(tx + 150 - lean - 8, fy + 6, 11, gfx_rgba(1, 1, 1, 0.4f), ALIGN_RIGHT, tiles[i].button);
             tx += 156;
         }
-        draw_text(GFX_W - 330, fy + 36, 20, gfx_rgba(1, 1, 1, 0.55f), ALIGN_RIGHT, "L2 board   R2 replay   CROSS play");
+        draw_text(GFX_W - 330, fy + 36, 20, gfx_rgba(1, 1, 1, 0.55f), ALIGN_RIGHT, "L1 / R1 mode   L2 board   R2 replay   CROSS play");
         /* our logo peeking in from the corner, like the menu's */
         if (app.logo_tex) {
             float s = 230;
@@ -2971,12 +3021,12 @@ static void mp_frame(const pad_state *pad)
         }
         return;
     }
-    /* bancho hosts: R3 opens host tools, which take the pad while open */
+    /* the host's room settings take the pad while they're open */
     if (host_tools_open()) {
         host_tools_frame(pad);
         return;
     }
-    if (s->i_host && app.mp_kind == MP_BANCHO && pad->pressed & PAD_R3) {
+    if (s->i_host && pad->pressed & PAD_OPTIONS && s->state != MP_PLAYING) {
         host_sel = 0;
         return;
     }
@@ -2999,10 +3049,6 @@ static void mp_frame(const pad_state *pad)
     }
     if (s->i_host && pad->pressed & PAD_TRIANGLE && between)
         mp_start();
-    if (s->i_host && pad->pressed & PAD_R2 && between)
-        mp_settings(!s->teams, s->freemod);
-    if (s->i_host && pad->pressed & PAD_L3 && between)
-        mp_settings(s->teams, !s->freemod);
     if (s->teams && pad->pressed & PAD_L2 && between) {
         int mine = 0;
         for (int i = 0; i < s->nmembers; i++)
@@ -3330,8 +3376,7 @@ static void render_mp(void)
     /* footer: back, what this player can change, and the big ready button */
     char hints[160];
     if (s->i_host)
-        snprintf(hints, sizeof(hints), "SQUARE map   R2 %s   L3 %s%s", s->teams ? "no teams" : "teams",
-                 s->freemod ? "host's mods" : "free mods", s->teams ? "   L2 team" : "");
+        snprintf(hints, sizeof(hints), "SQUARE map   TRIANGLE start   OPTIONS room settings%s", s->teams ? "   L2 team" : "");
     else
         snprintf(hints, sizeof(hints), "%s%s", s->freemod ? "SQUARE your mods" : "", s->teams ? "   L2 team" : "");
     ui_footer(hints, "CIRCLE");
@@ -3472,15 +3517,12 @@ static const struct help_page {
         {"D-PAD up / down", "pick the difficulty"},
         {"CROSS", "play"},
         {"SQUARE", "mods"},
-        {"TRIANGLE", "get maps"},
-        {"L1", "search"},
-        {"R1", "change the sort, favourites last"},
-        {"L2", "online leaderboard"},
-        {"R2", "watch your best replay"},
-        {"L3", "favourite the set"},
-        {"R3  twice", "delete the set"},
-        {"OPTIONS", "settings"},
-        {"TOUCHPAD", "skins"},
+        {"TRIANGLE", "search"},
+        {"L1 / R1", "change the mode (osu!, taiko, catch, mania)"},
+        {"L2", "your scores / online leaderboard"},
+        {"R2", "watch the top replay"},
+        {"R3", "random set"},
+        {"OPTIONS", "sort, favourite, delete, get maps, skins, settings"},
         {"CIRCLE", "main menu"},
     }},
     {"pause and results", {
@@ -3490,15 +3532,17 @@ static const struct help_page {
         {"D-PAD left / right", "this map's offset, while paused"},
         {"SQUARE", "watch the replay, on results"},
     }},
-    {"multiplayer", {
-        {"main menu", "multiplayer, then connect"},
-        {"server", "ProjectCadence rooms, or a bancho.py server"},
-        {"CROSS on a room", "join it, or make your own at the top"},
-        {"CROSS in a room", "ready / not ready"},
-        {"SQUARE, host", "pick the map (and its mods) in song select"},
-        {"TRIANGLE, host", "start once everyone's ready"},
-        {"CIRCLE", "leave the room"},
-        {"missing maps", "download by themselves"},
+    {"main menu and online", {
+        {"L1 / R1", "change the mode"},
+        {"SQUARE", "chat"},
+        {"R2", "rankings"},
+        {"L2", "look a player up"},
+        {"in a room: CROSS", "ready / not ready"},
+        {"in a room: SQUARE", "pick the map (host) or your mods (free mods)"},
+        {"in a room: TRIANGLE", "start, for the host"},
+        {"in a room: OPTIONS", "room settings, for the host"},
+        {"in a room: R1 / L1", "type in chat / quick lines"},
+        {"in a room: CIRCLE", "leave"},
     }},
     {"taiko, catch and mania", {
         {"catch: left stick or D-PAD", "move"},
@@ -3627,13 +3671,8 @@ static void menu_enter(void)
 
 static void menu_frame(const pad_state *pad)
 {
-    int flick = rstick_flick(pad);
-    if (pad->pressed & PAD_L1)
-        flick = -1;
-    if (pad->pressed & PAD_R1)
-        flick = 1;
-    if (flick == 1 || flick == -1)
-        set_mode(app.mode_pick + flick);
+    if (pad->pressed & (PAD_L1 | PAD_R1))
+        set_mode(app.mode_pick + (pad->pressed & PAD_R1 ? 1 : -1));
     {
         const int *ids;
         int n = menu_row(&ids);
@@ -4282,6 +4321,8 @@ int main(void)
         switch (app.scr) {
         case SCREEN_SELECT:
             app.simple_ui ? render_select_classic() : render_select();
+            if (sel_opt >= 0)
+                render_sel_opts();
             break;
         case SCREEN_PLAY:
             render_play();

@@ -14,7 +14,7 @@ static void render_select_classic(void)
     if (app.filter[0] || app.searching)
         snprintf(buf, sizeof(buf), "search: %s%s   sort: %s", app.filter, app.searching ? "_" : "", sort_label());
     else
-        snprintf(buf, sizeof(buf), "L1 search   R1 sort: %s", sort_label());
+        snprintf(buf, sizeof(buf), "TRIANGLE search   sort: %s", sort_label());
     draw_rect(0, 0, GFX_W, 52, gfx_rgba(0, 0, 0, 0.6f));
     draw_text(GFX_W - 30, 12, 26, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, buf);
     draw_text(40, 12, 28, gfx_rgba(0.5f, 0.9f, 0.95f, 1), ALIGN_LEFT, "ProjectCadence");
@@ -29,11 +29,11 @@ static void render_select_classic(void)
 
     if (app.songs.count == 0) {
         draw_text(GFX_W / 2, 400, 48, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "no beatmaps yet");
-        draw_text(GFX_W / 2, 480, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "press TRIANGLE to download some");
+        draw_text(GFX_W / 2, 480, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "press OPTIONS, then get more maps");
         draw_text(GFX_W / 2, 525, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "or copy extracted .osz folders to " SONGS_DIR);
         draw_text(GFX_W / 2, 570, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "and press CROSS to rescan");
         draw_text(40, GFX_H - 60, 22, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT,
-                  "TRIANGLE get maps   OPTIONS settings   TOUCHPAD skins");
+                  "OPTIONS get maps, skins and settings");
         return;
     }
 
@@ -528,8 +528,7 @@ static void render_mp_classic(void)
     if (s->i_host) {
         acts[na++] = "SQUARE  pick the map";
         acts[na++] = "TRIANGLE  start";
-        acts[na++] = s->teams ? "R2  no teams" : "R2  teams";
-        acts[na++] = s->freemod ? "L3  host's mods" : "L3  free mods";
+        acts[na++] = "OPTIONS  room settings";
     } else if (s->freemod) {
         acts[na++] = "SQUARE  your mods";
     }

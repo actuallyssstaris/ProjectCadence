@@ -75,19 +75,23 @@ Everything lives in `/data/cadence` on the console.
 |---|---|
 | Left stick | scroll through sets |
 | D-pad up / down | pick the difficulty |
-| Right stick left / right | change mode |
-| Right stick down | random set |
 | Cross | play |
 | Square | mods |
-| Triangle | get maps |
-| L1 | search |
-| R1 | change sort |
-| R2 | watch your best replay |
-| L2 | osu.ppy.sh leaderboard |
-| Options | settings |
-| Touchpad | skins |
+| Triangle | search |
+| L1 / R1 | change mode |
+| L2 | your scores / online leaderboard |
+| R2 | watch the top replay |
+| R3 | random set |
+| Options | sort, favourite, delete, get maps, skins, settings |
+| Circle | back |
 
-On the main menu, L1 and R1 change the mode too.
+| Everywhere else | |
+|---|---|
+| L1 / R1 | change mode (menu, rankings, profiles) |
+| Square on the menu | chat |
+| R2 / L2 on the menu | rankings / look a player up |
+| Options in a room | room settings, for the host |
+| Circle | back |
 
 ## Maps
 
