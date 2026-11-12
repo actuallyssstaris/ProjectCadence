@@ -21,6 +21,8 @@
 //   POST /api/team             {token, team}           0 red, 1 blue
 //   POST /api/mods             {token, mods}           your own, with freemod on
 //   POST /api/chat             {token, text}
+//   POST /api/lobby            {token, text}      everyone's channel; the room and
+//                                                 rooms replies carry it as "lobby"
 //   POST /api/ready            {token, ready, has_map}
 //   POST /api/start            {token}                                          host
 //   POST /api/score            {token, score, combo, max_combo, acc, n300, n100, n50, miss, failed, done}
@@ -177,6 +179,7 @@ export class Rooms {
     this.rooms = new Map();   // id -> room
     this.nextRoom = 1;
     this.nextPlayer = 1;
+    this.lobby = { chat: [], next_msg: 1 };
   }
 
   async fetch(request) {
@@ -212,7 +215,7 @@ export class Rooms {
       }
       case "/api/rooms":
         if (request.method === "GET")
-          return reply({ rooms: [...this.rooms.values()].map(summary), online: this.players.size, now });
+          return reply({ rooms: [...this.rooms.values()].map(summary), lobby: this.lobby.chat, online: this.players.size, now });
         if (!me) return reply({ error: "say hello first" }, 401);
         return this.create(me, body, now);
     }
@@ -222,7 +225,12 @@ export class Rooms {
 
     switch (url.pathname) {
       case "/api/room":
-        return reply({ room: room ? view(room) : null, online: this.players.size, now });
+        return reply({ room: room ? view(room) : null, lobby: this.lobby.chat, online: this.players.size, now });
+      case "/api/lobby": {
+        const text = String(body.text || "").replace(/[^\x20-\x7e]/g, "").trim().slice(0, 120);
+        if (text) say(this.lobby, me.name, text);
+        return reply({ lobby: this.lobby.chat, now });
+      }
       case "/api/join": {
         const target = this.rooms.get(Number(body.room));
         if (!target) return reply({ error: "that room is gone" }, 404);

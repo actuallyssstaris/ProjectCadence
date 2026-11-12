@@ -34,6 +34,13 @@ typedef struct {
     char map[96];
 } mp_room_brief;
 
+/* one chat line, oldest first in the arrays below */
+typedef struct {
+    int id;
+    char from[24];
+    char text[124];
+} mp_line;
+
 typedef struct {
     int conn;
     int online;         /* players connected to the server, -1 unknown */
@@ -56,7 +63,9 @@ typedef struct {
     int mods;           /* ours (OSU5_MOD_*) */
     bool teams, freemod;
     int nchat;
-    struct { int id; char from[24]; char text[124]; } chat[40];
+    mp_line chat[40];
+    int nlobby;         /* the server-wide lobby channel, ProjectCadence server only */
+    mp_line lobby[40];
     int nmembers;
     mp_member members[MP_MAX_MEMBERS];
 } mp_state;
@@ -73,6 +82,7 @@ void mp_settings(bool teams, bool freemod); /* host */
 void mp_team(int team);
 void mp_my_mods(int mods);
 void mp_chat(const char *text);
+void mp_lobby_chat(const char *text);
 void mp_leave(void);
 void mp_set_map(int beatmap_id, int set_id, int mode, const char *md5, const char *title, int mods);
 void mp_ready(bool ready, bool has_map);

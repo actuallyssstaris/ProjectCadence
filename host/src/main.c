@@ -32,6 +32,7 @@
 #include "update.h"
 #include "video.h"
 #include "ui.h"
+#include "web.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -75,6 +76,9 @@ typedef enum {
     SCREEN_MP,
     SCREEN_ACCOUNT,
     SCREEN_SETUP,
+    SCREEN_RANKINGS,
+    SCREEN_PROFILE,
+    SCREEN_CHAT,
 } screen;
 
 static struct {
@@ -87,7 +91,10 @@ static struct {
     float star_lo, star_hi; /* song select's star range, hi 0 = no top */
     bool converts;          /* osu! maps show up, converted, in the other modes */
     bool searching;
-    int board;            /* song select: 0 your scores, 1 the online board */
+    char set_query[48];   /* settings search */
+    kbd set_kbd;
+    bool set_typing;
+    int board;           /* song select: 0 your scores, 1 the online board */
     int board_src;        /* which online board: 0 ProjectCadence, 1 osu.ppy.sh */
     kbd search;
     int sel;
@@ -1921,9 +1928,87 @@ enum {
 
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
 
+/* what the search box looks through: each row's name, its section, and a few
+ * words someone might type instead */
+static const char *const set_words[SET_COUNT] = {
+    [SET_SETUP] = "general run setup wizard first-run onboarding",
+    [SET_HELP] = "general show the controls buttons help",
+    [SET_UPDATE] = "general check for updates version",
+    [SET_LOOK] = "general interface simplified lazer look ui",
+    [SET_SKIN] = "skin current skin",
+    [SET_SENS] = "input left stick reach sensitivity",
+    [SET_CURSOR] = "input cursor size",
+    [SET_DIM] = "gameplay background dim",
+    [SET_STORYBOARD] = "gameplay storyboards",
+    [SET_VIDEO] = "gameplay video backgrounds mp4",
+    [SET_STARS_LO] = "gameplay song select lowest stars difficulty filter",
+    [SET_STARS_HI] = "gameplay song select highest stars difficulty filter",
+    [SET_CONVERTS] = "gameplay show converted maps converts taiko catch mania",
+    [SET_MUSIC] = "audio music volume",
+    [SET_EFFECTS] = "audio effects volume hitsounds",
+    [SET_OFFSET] = "audio offset latency",
+    [SET_WIZARD] = "audio find my offset calibrate",
+    [SET_ACCOUNT] = "online ProjectCadence account sign in",
+    [SET_BOARD] = "online leaderboard scores osu.ppy.sh",
+    [SET_RESCAN] = "maintenance rescan the songs folder ftp",
+};
+
+static bool set_shown(int i)
+{
+    if (app.simple_ui || !app.set_query[0])
+        return true;
+    /* every word typed has to be in there somewhere */
+    const char *q = app.set_query;
+    while (*q) {
+        while (*q == ' ')
+            q++;
+        size_t n = strcspn(q, " ");
+        if (!n)
+            break;
+        bool hit = false;
+        for (const char *s = set_words[i]; *s && !hit; s++)
+            hit = !strncasecmp(s, q, n);
+        if (!hit)
+            return false;
+        q += n;
+    }
+    return true;
+}
+
+/* first shown row from i on, going in dir; i itself if nothing is */
+static int set_step(int i, int dir)
+{
+    for (int k = 1; k <= SET_COUNT; k++) {
+        int j = ((i + dir * k) % SET_COUNT + SET_COUNT) % SET_COUNT;
+        if (set_shown(j))
+            return j;
+    }
+    return i;
+}
+
 static void settings_frame(const pad_state *pad)
 {
-    app.set_sel = (app.set_sel + pad->nav_y + SET_COUNT) % SET_COUNT;
+    /* typing in the search box: rows filter as the text changes */
+    if (app.set_typing) {
+        int k = kbd_frame(&app.set_kbd, pad);
+        if (!set_shown(app.set_sel))
+            app.set_sel = set_step(app.set_sel, 1);
+        if (k != KBD_TYPING)
+            app.set_typing = false;
+        return;
+    }
+    if (!app.simple_ui && pad->pressed & PAD_SQUARE) {
+        app.set_kbd.text = app.set_query;
+        app.set_kbd.cap = sizeof(app.set_query);
+        app.set_typing = true;
+        return;
+    }
+    if (!app.simple_ui && pad->pressed & PAD_TRIANGLE)
+        app.set_query[0] = 0;
+    if (pad->nav_y)
+        app.set_sel = set_step(app.set_sel, pad->nav_y > 0 ? 1 : -1);
+    else if (!set_shown(app.set_sel))
+        app.set_sel = set_step(app.set_sel, 1);
     int d = pad->nav_x;
     switch (app.set_sel) {
     case SET_MUSIC:
@@ -2062,17 +2147,26 @@ static void render_settings(void)
 
     /* rows with a header above each section; scrolled to keep the selection in view */
     const float row_h = 58, head_h = 70;
-    float ys[SET_COUNT], y = 190;
+    float ys[SET_COUNT], heads[8], y = 250;
+    int shown = 0;
     for (int i = 0, s = 0; i < SET_COUNT; i++) {
-        if (s < nsec && i == sections[s].first) {
+        bool head = s < nsec && i == sections[s].first;
+        if (head)
+            heads[s++] = -1;
+        ys[i] = -1;
+        if (!set_shown(i))
+            continue;
+        /* a section's header only when something under it is left */
+        if (s > 0 && heads[s - 1] < 0) {
             y += head_h;
-            s++;
+            heads[s - 1] = y;
         }
         ys[i] = y;
         y += row_h;
+        shown++;
     }
     static float scroll;
-    float want = ys[app.set_sel] - GFX_H * 0.45f;
+    float want = shown ? ys[app.set_sel] - GFX_H * 0.45f : 0;
     if (want < 0) want = 0;
     if (want > y - GFX_H + 120) want = fmaxf(0, y - GFX_H + 120);
     scroll = ui_approach(scroll, want, 0.25f);
@@ -2080,10 +2174,26 @@ static void render_settings(void)
     draw_text(panel_x + 50, 40 - scroll, 52, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "settings");
     draw_text(panel_x + 52, 104 - scroll, 22, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "how ProjectCadence plays, sounds and looks");
 
+    /* the search box under the title */
+    {
+        float bx = panel_x + 40, by = 150 - scroll, bw = panel_w - 80;
+        ui_round_rect(bx, by, bw, 54, 27, app.set_typing ? gfx_rgba(1, 1, 1, 0.16f) : gfx_rgba(0, 0, 0, 0.3f));
+        ui_search_icon(bx + 34, by + 27, 11, gfx_rgba(1, 1, 1, 0.7f));
+        if (app.set_query[0])
+            draw_text(bx + 64, by + 13, 24, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, app.set_query);
+        else
+            draw_text(bx + 64, by + 13, 24, gfx_rgba(1, 1, 1, 0.4f), ALIGN_LEFT, "type to search  (SQUARE)");
+    }
+    if (!shown)
+        draw_text(panel_x + panel_w / 2, 300, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "no settings match that");
+
     for (int s = 0; s < nsec; s++)
-        draw_text(panel_x + 50, ys[sections[s].first] - head_h + 22 - scroll, 32, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, sections[s].name);
+        if (heads[s] >= 0)
+            draw_text(panel_x + 50, heads[s] - head_h + 22 - scroll, 32, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, sections[s].name);
 
     for (int i = 0; i < SET_COUNT; i++) {
+        if (ys[i] < 0)
+            continue;
         float ry = ys[i] - scroll;
         if (ry < -row_h || ry > GFX_H)
             continue;
@@ -2172,7 +2282,10 @@ static void render_settings(void)
         draw_text(hx, GFX_H - 160, 22, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, hint);
     if (app.status[0])
         draw_text(hx, GFX_H - 120, 24, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, app.status);
-    draw_text(GFX_W - 40, GFX_H - 60, 20, gfx_rgba(1, 1, 1, 0.55f), ALIGN_RIGHT, "LEFT / RIGHT change   CROSS pick   CIRCLE back");
+    draw_text(GFX_W - 40, GFX_H - 60, 20, gfx_rgba(1, 1, 1, 0.55f), ALIGN_RIGHT,
+              "LEFT / RIGHT change   CROSS pick   SQUARE search   TRIANGLE clear   CIRCLE back");
+    if (app.set_typing)
+        kbd_render(&app.set_kbd);
 }
 
 /* ---- pause / fail / results ---- */
@@ -3361,6 +3474,11 @@ static void menu_enter(void)
     }
 }
 
+/* in overlays.inc */
+static void chat_open(screen back);
+static void rankings_open(screen back);
+static void profile_lookup(screen back);
+
 static void menu_frame(const pad_state *pad)
 {
     int flick = rstick_flick(pad);
@@ -3400,6 +3518,20 @@ static void menu_frame(const pad_state *pad)
     update_status(&up);
     if (pad->pressed & PAD_TRIANGLE && (up.state == UPDATE_AVAILABLE || up.state == UPDATE_FAILED))
         update_install();
+
+    /* the toolbar's overlays: chat, rankings, and looking a player up */
+    if (pad->pressed & PAD_SQUARE) {
+        chat_open(SCREEN_MENU);
+        return;
+    }
+    if (pad->pressed & PAD_R2) {
+        rankings_open(SCREEN_MENU);
+        return;
+    }
+    if (pad->pressed & PAD_L2) {
+        profile_lookup(SCREEN_MENU);
+        return;
+    }
 
     const int *ids;
     int n = menu_row(&ids);
@@ -3481,7 +3613,14 @@ static void render_menu(void)
         ui_round_rect(rx - 40, 8, 40, 40, 6, ui_hex(0x555555, 1));
         char ini[2] = {name[0] >= 'a' && name[0] <= 'z' ? (char)(name[0] - 32) : name[0], 0};
         draw_text(rx - 20, 15, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, ini);
-        draw_text(rx - 52, 16, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, name);
+        rx -= 52 + draw_text(rx - 52, 16, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, name) + 40;
+        /* the overlay buttons left of the user, with the pad button under each */
+        static const char *const tb[3][2] = {{"players", "L2"}, {"rankings", "R2"}, {"chat", "SQUARE"}};
+        for (int i = 2; i >= 0; i--) {
+            float w = draw_text(rx, 10, 20, gfx_rgba(1, 1, 1, 0.85f), ALIGN_RIGHT, tb[i][0]);
+            draw_text(rx - w / 2, 34, 13, gfx_rgba(1, 1, 1, 0.4f), ALIGN_CENTRE, tb[i][1]);
+            rx -= w + 34;
+        }
     }
 
     /* the button strip through the middle, the logo sitting on its left end;
@@ -3790,6 +3929,7 @@ static void render_setup(void)
 }
 
 #include "classic.inc"
+#include "overlays.inc"
 
 int main(void)
 {
@@ -3960,6 +4100,15 @@ int main(void)
         case SCREEN_SETUP:
             setup_frame(&pad);
             break;
+        case SCREEN_RANKINGS:
+            rankings_frame(&pad);
+            break;
+        case SCREEN_PROFILE:
+            profile_frame(&pad);
+            break;
+        case SCREEN_CHAT:
+            chat_frame(&pad);
+            break;
         }
 
         {
@@ -4052,6 +4201,15 @@ int main(void)
             break;
         case SCREEN_SETUP:
             render_setup();
+            break;
+        case SCREEN_RANKINGS:
+            render_rankings();
+            break;
+        case SCREEN_PROFILE:
+            render_profile();
+            break;
+        case SCREEN_CHAT:
+            render_chat();
             break;
         }
         {

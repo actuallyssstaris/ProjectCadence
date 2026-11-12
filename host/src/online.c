@@ -176,6 +176,9 @@ static bool id_key(js *j, const char *key, void *ctx)
     return true;
 }
 
+/* the token is shared by the board worker and anyone calling online_api */
+static pthread_mutex_t api_lock = PTHREAD_MUTEX_INITIALIZER;
+
 static int api_get(const char *url, char **out)
 {
     char auth[2100];
@@ -252,7 +255,9 @@ static void *worker(void *arg)
         static online_board b;
         memset(&b, 0, sizeof(b));
         b.beatmap_id = id;
+        pthread_mutex_lock(&api_lock);
         int st = fetch(id, path, &b);
+        pthread_mutex_unlock(&api_lock);
 
         pthread_mutex_lock(&lock);
         slot *s = find(id);
@@ -350,6 +355,16 @@ bool online_stable_version(char *out, size_t n)
         return false;
     snprintf(out, n, "%s", v);
     return true;
+}
+
+int online_api(const char *url, char **out)
+{
+    if (!enabled)
+        return -1;
+    pthread_mutex_lock(&api_lock);
+    int st = get_token() ? api_get(url, out) : -1;
+    pthread_mutex_unlock(&api_lock);
+    return st;
 }
 
 int online_board_for(int beatmap_id, const char *osu_path, online_board *out)

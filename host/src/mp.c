@@ -23,7 +23,7 @@ static mp_state st;
 static int kind;
 static char server[160], user[32], pass[64];
 
-enum { OP_REFRESH, OP_CREATE, OP_JOIN, OP_LEAVE, OP_MAP, OP_READY, OP_START, OP_SCORE, OP_SETTINGS, OP_TEAM, OP_MODS, OP_CHAT };
+enum { OP_REFRESH, OP_CREATE, OP_JOIN, OP_LEAVE, OP_MAP, OP_READY, OP_START, OP_SCORE, OP_SETTINGS, OP_TEAM, OP_MODS, OP_CHAT, OP_LOBBY_CHAT };
 
 typedef struct {
     int op;
@@ -82,7 +82,7 @@ typedef struct {
     int id, host, mods, round;
     bool teams, freemod;
     int nchat;
-    struct { int id; char from[24]; char text[124]; } chat[40];
+    mp_line chat[40];
     double start_at;
     char name[48], state[16];
     int map_id, map_set;
@@ -101,6 +101,9 @@ typedef struct {
     mp_room_brief rooms[MP_MAX_ROOMS];
     bool got_room;
     cd_room room;
+    bool got_lobby;
+    int nlobby;
+    mp_line lobby[40];
 } cd_reply;
 
 static bool jbool(js *j)
@@ -147,7 +150,7 @@ static bool map_key(js *j, const char *key, void *ctx)
 
 static bool chat_key(js *j, const char *key, void *ctx)
 {
-    typeof(((cd_room *)0)->chat[0]) *c = ctx;
+    mp_line *c = ctx;
     if (!strcmp(key, "id")) c->id = (int)json_num(j);
     else if (!strcmp(key, "from")) return json_str(j, c->from, sizeof(c->from));
     else if (!strcmp(key, "text")) return json_str(j, c->text, sizeof(c->text));
@@ -155,7 +158,7 @@ static bool chat_key(js *j, const char *key, void *ctx)
     return true;
 }
 
-static bool read_chat(js *j, cd_room *r)
+static bool read_chat(js *j, mp_line *out, int *n)
 {
     j->p++;
     for (;;) {
@@ -164,12 +167,12 @@ static bool read_chat(js *j, cd_room *r)
             j->p++;
             return true;
         }
-        typeof(r->chat[0]) c;
+        mp_line c;
         memset(&c, 0, sizeof(c));
         if (!json_object(j, chat_key, &c))
             return false;
-        if (r->nchat < 40)
-            r->chat[r->nchat++] = c;
+        if (*n < 40)
+            out[(*n)++] = c;
         json_ws(j);
         if (*j->p == ',')
             j->p++;
@@ -185,7 +188,7 @@ static bool room_key(js *j, const char *key, void *ctx)
     else if (!strcmp(key, "round")) r->round = (int)json_num(j);
     else if (!strcmp(key, "teams")) r->teams = jbool(j);
     else if (!strcmp(key, "freemod")) r->freemod = jbool(j);
-    else if (!strcmp(key, "chat") && *j->p == '[') return read_chat(j, r);
+    else if (!strcmp(key, "chat") && *j->p == '[') return read_chat(j, r->chat, &r->nchat);
     else if (!strcmp(key, "start_at")) r->start_at = json_num(j);
     else if (!strcmp(key, "name")) return json_str(j, r->name, sizeof(r->name));
     else if (!strcmp(key, "state")) return json_str(j, r->state, sizeof(r->state));
@@ -245,6 +248,9 @@ static bool reply_key(js *j, const char *key, void *ctx)
             return false; /* null: not in a room */
         r->room.has = true;
         return json_object(j, room_key, &r->room);
+    } else if (!strcmp(key, "lobby") && *j->p == '[') {
+        r->got_lobby = true;
+        return read_chat(j, r->lobby, &r->nlobby);
     } else if (!strcmp(key, "rooms") && *j->p == '[') {
         r->got_rooms = true;
         j->p++;
@@ -312,6 +318,10 @@ static int cd_call(const char *method, const char *path, const char *body)
         if (r.online > 0)
             st.online = r.online;
         memcpy(st.rooms, r.rooms, sizeof(r.rooms[0]) * (size_t)r.nrooms);
+    }
+    if (r.got_lobby) {
+        st.nlobby = r.nlobby;
+        memcpy(st.lobby, r.lobby, sizeof(r.lobby[0]) * (size_t)r.nlobby);
     }
     if (r.got_room) {
         const cd_room *rm = &r.room;
@@ -416,6 +426,11 @@ static void cd_do(const cmd *c)
         json_escape(c->s1, esc, sizeof(esc));
         snprintf(body, sizeof(body), "{\"token\":\"%s\",\"text\":\"%s\"}", cd_token, esc);
         cd_call("POST", "/api/chat", body);
+        return;
+    case OP_LOBBY_CHAT:
+        json_escape(c->s1, esc, sizeof(esc));
+        snprintf(body, sizeof(body), "{\"token\":\"%s\",\"text\":\"%s\"}", cd_token, esc);
+        cd_call("POST", "/api/lobby", body);
         return;
     case OP_LEAVE:
         snprintf(body, sizeof(body), "{\"token\":\"%s\"}", cd_token);
@@ -1238,6 +1253,13 @@ void mp_my_mods(int mods) { push(&(cmd){.op = OP_MODS, .mods = mods}); }
 void mp_chat(const char *text)
 {
     cmd c = {.op = OP_CHAT};
+    snprintf(c.s1, sizeof(c.s1), "%s", text);
+    push(&c);
+}
+
+void mp_lobby_chat(const char *text)
+{
+    cmd c = {.op = OP_LOBBY_CHAT};
     snprintf(c.s1, sizeof(c.s1), "%s", text);
     push(&c);
 }

@@ -13,6 +13,10 @@ namespace Osu5.Beatmaps
     {
         public static void To(Beatmap map, int mode)
         {
+            // taiko maps go through the same converter in lazer: short sliders
+            // split, drum rolls get their taiko length
+            if (map.Mode == 1)
+                toTaiko(map);
             if (map.Mode != 0 || mode <= 0 || mode > 3)
                 return;
 
@@ -69,6 +73,7 @@ namespace Osu5.Beatmaps
 
                 if (!(tickSpacing > 0 && distance / osuVelocity * 1000 < 2 * beatLength))
                 {
+                    s.RollDuration = taikoDuration;
                     objects.Add(h);
                     continue;
                 }

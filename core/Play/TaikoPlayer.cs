@@ -69,23 +69,33 @@ namespace Osu5.Play
 
             double swellRate = Difficulty.Range(od, 3, 5, 7.5);
             var maxes = new List<(double Time, HitResult Max)>();
+            // lazer's time range at 16:9: stable scrolls 693 of 853 px in 6.93s at
+            // sv 1, and the 1.4 taiko speed-up comes off that
+            const double time_range = (16.0 / 9 * 480 - 160) / 100 * 1000 / 1.4;
             foreach (var h in m.HitObjects)
             {
                 var sv = m.ControlPoints.DifficultyAt(h.StartTime).SliderVelocity;
+                double beat = m.ControlPoints.TimingAt(h.StartTime).BeatLength;
                 var n = new Note
                 {
                     Time = h.StartTime,
                     End = h.EndTime,
                     Big = (h.Samples.Sound & HitSound.Finish) != 0,
-                    Speed = 0.55 * sv * m.Difficulty.SliderMultiplier / 1.4,
+                    Speed = (1920 - hit_x) * m.Difficulty.SliderMultiplier * (1000 / beat) * sv / time_range,
                     Samples = h.Samples,
                 };
                 switch (h)
                 {
-                    case Slider:
+                    case Slider s:
                         n.Kind = Kind.Roll;
-                        double beat = m.ControlPoints.TimingAt(h.StartTime).BeatLength;
-                        n.Needed = Math.Max(1, (int)((n.End - n.Time) / Math.Max(30, beat / 4)) + 1);
+                        if (!double.IsNaN(s.RollDuration))
+                            n.End = n.Time + s.RollDuration;
+                        // a tick every quarter beat (third on 3 tick rate maps), to the end
+                        double spacing = beat / (m.Difficulty.SliderTickRate == 3 ? 3 : 4);
+                        n.Needed = 0;
+                        for (double t = n.Time; t < n.End + spacing / 2; t += spacing)
+                            n.Needed++;
+                        n.Needed = Math.Max(1, n.Needed);
                         break;
                     case Spinner:
                         n.Kind = Kind.Swell;

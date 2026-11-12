@@ -144,6 +144,8 @@ namespace Osu5.Objects
         public double TickDistanceMultiplier = 1;
         public double SliderVelocity = 1;
         public bool GenerateTicks = true;
+        // length as a taiko drum roll, longer than the slider itself; NaN otherwise
+        public double RollDuration = double.NaN;
 
         public readonly List<SliderNested> Nested = new List<SliderNested>();
 

@@ -37,4 +37,7 @@ bool online_stable_version(char *out, size_t n);
  * fills out once it's READY */
 int online_board_for(int beatmap_id, const char *osu_path, online_board *out);
 
+/* a GET on the osu! API with our token; the HTTP status, -1 when off. Blocks. */
+int online_api(const char *url, char **out);
+
 #endif
