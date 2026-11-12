@@ -323,6 +323,16 @@ export async function accounts(request, env, url) {
         await env.DB.batch(stmts);
         await mapStatus(env, md5).catch(() => null);
       }
+      // today's challenge keeps its own board, best per player
+      const daily = await dailyMap(env);
+      if (daily && daily.md5 === md5 && !held)
+        await env.DB.prepare(
+          `INSERT INTO daily_scores (day, user_id, score, acc, max_combo, mods) VALUES (?, ?, ?, ?, ?, ?)
+             ON CONFLICT (day, user_id) DO UPDATE SET score = excluded.score, acc = excluded.acc, max_combo = excluded.max_combo,
+               mods = excluded.mods WHERE excluded.score > daily_scores.score`,
+        )
+          .bind(daily.day, user.id, score, Math.min(1, Number(body.acc) || 0), n("max_combo"), n("mods"))
+          .run();
       const ahead = await env.DB.prepare(
         "SELECT COUNT(*) AS c FROM scores s JOIN users u ON u.id = s.user_id WHERE map_md5 = ? AND score > ? AND u.restricted = 0 AND s.held = 0",
       )
@@ -330,6 +340,80 @@ export async function accounts(request, env, url) {
         .first();
       return reply({ best, place: ahead.c + 1, held: !!held });
     }
+    case "/api/daily": {
+      const d = await dailyMap(env);
+      if (!d) return reply({ error: "no maps to pick from yet" }, 404);
+      const rows = await env.DB.prepare(
+        `SELECT u.name, d.score, d.acc, d.max_combo, d.mods FROM daily_scores d JOIN users u ON u.id = d.user_id
+          WHERE d.day = ? AND u.restricted = 0 ORDER BY d.score DESC LIMIT 50`,
+      )
+        .bind(d.day)
+        .all();
+      return reply({ ...d, scores: rows.results });
+    }
+
+    case "/api/playlists":
+      return reply({
+        playlists: (
+          await env.DB.prepare(
+            `SELECT p.id, p.name, u.name AS owner, (SELECT COUNT(*) FROM playlist_items i WHERE i.playlist_id = p.id) AS items
+               FROM playlists p JOIN users u ON u.id = p.owner ORDER BY p.created DESC LIMIT 50`,
+          ).all()
+        ).results,
+      });
+    case "/api/playlists/get": {
+      const id = Number(q("id"));
+      const p = await env.DB.prepare("SELECT p.id, p.name, u.name AS owner FROM playlists p JOIN users u ON u.id = p.owner WHERE p.id = ?").bind(id).first();
+      if (!p) return reply({ error: "no such playlist" }, 404);
+      const items = (await env.DB.prepare("SELECT md5, beatmap_id, set_id, title FROM playlist_items WHERE playlist_id = ? ORDER BY pos").bind(id).all()).results;
+      // the board: each player's bests on the items, added up
+      const board = (
+        await env.DB.prepare(
+          `SELECT u.name, SUM(s.score) AS total, COUNT(*) AS played FROM scores s JOIN users u ON u.id = s.user_id
+            WHERE s.map_md5 IN (SELECT md5 FROM playlist_items WHERE playlist_id = ?) AND u.restricted = 0 AND s.held = 0
+            GROUP BY s.user_id ORDER BY total DESC LIMIT 50`,
+        )
+          .bind(id)
+          .all()
+      ).results;
+      return reply({ ...p, items, board });
+    }
+    case "/api/playlists/create":
+    case "/api/playlists/add":
+    case "/api/playlists/remove":
+    case "/api/playlists/delete": {
+      const me = await userForSession(env, body.session);
+      if (!me) return reply({ error: "sign in again" }, 401);
+      if (url.pathname.endsWith("/create")) {
+        const name = String(body.name || "").trim().slice(0, 40);
+        if (!name) return reply({ error: "give it a name" }, 400);
+        const r = await env.DB.prepare("INSERT INTO playlists (owner, name, created) VALUES (?, ?, ?)").bind(me.id, name, Date.now()).run();
+        return reply({ ok: true, id: r.meta.last_row_id });
+      }
+      const p = await env.DB.prepare("SELECT owner FROM playlists WHERE id = ?").bind(Number(body.id)).first();
+      if (!p) return reply({ error: "no such playlist" }, 404);
+      if (p.owner !== me.id && me.role !== 1) return reply({ error: "it isn't yours" }, 403);
+      if (url.pathname.endsWith("/delete")) {
+        await env.DB.batch([
+          env.DB.prepare("DELETE FROM playlist_items WHERE playlist_id = ?").bind(Number(body.id)),
+          env.DB.prepare("DELETE FROM playlists WHERE id = ?").bind(Number(body.id)),
+        ]);
+        return reply({ ok: true });
+      }
+      const md5 = String(body.md5 || "");
+      if (!/^[0-9a-f]{32}$/.test(md5)) return reply({ error: "bad map" }, 400);
+      if (url.pathname.endsWith("/remove")) {
+        await env.DB.prepare("DELETE FROM playlist_items WHERE playlist_id = ? AND md5 = ?").bind(Number(body.id), md5).run();
+        return reply({ ok: true });
+      }
+      const count = await env.DB.prepare("SELECT COUNT(*) AS c FROM playlist_items WHERE playlist_id = ?").bind(Number(body.id)).first();
+      if (count.c >= 50) return reply({ error: "a playlist holds 50 maps" }, 409);
+      await env.DB.prepare("INSERT OR IGNORE INTO playlist_items (playlist_id, pos, md5, beatmap_id, set_id, title) VALUES (?, ?, ?, ?, ?, ?)")
+        .bind(Number(body.id), count.c, md5, Number(body.beatmap_id) || 0, Number(body.set_id) || 0, String(body.title || "").slice(0, 160))
+        .run();
+      return reply({ ok: true });
+    }
+
     case "/api/scores/top": {
       const md5 = q("md5");
       const rows = await env.DB.prepare(
@@ -482,6 +566,23 @@ export async function accounts(request, env, url) {
     }
   }
   return reply({ error: "no such call" }, 404);
+}
+
+// one map a day for everyone, picked from ranked maps people have played here;
+// the same for the whole day since it's seeded by the date
+export async function dailyMap(env) {
+  const day = new Date().toISOString().slice(0, 10);
+  const pool = (
+    await env.DB.prepare(
+      `SELECT DISTINCT s.map_md5 AS md5, s.beatmap_id, m.set_id, m.title FROM scores s LEFT JOIN maps m ON m.md5 = s.map_md5
+        WHERE s.beatmap_id > 0 AND (m.status IS NULL OR m.status IN (1, 2, 4)) ORDER BY s.map_md5`,
+    ).all()
+  ).results;
+  if (!pool.length) return null;
+  let h = 2166136261;
+  for (const c of day) h = Math.imul(h ^ c.charCodeAt(0), 16777619) >>> 0;
+  const m = pool[h % pool.length];
+  return { day, md5: m.md5, beatmap_id: m.beatmap_id, set_id: m.set_id || 0, title: m.title || "" };
 }
 
 // whoever leaves, the clan carries on with someone else in charge, or goes

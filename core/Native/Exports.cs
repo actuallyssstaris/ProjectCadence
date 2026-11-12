@@ -104,6 +104,18 @@ namespace Osu5.Native
         [UnmanagedCallersOnly(EntryPoint = "osu5_convert", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static void SetConvert(int mode) => convertTo = mode;
 
+        // Difficulty Adjust and the speed mods' rate: negative leaves the map's own
+        // value, rate 0 keeps 1.5 / 0.75. Applies from the next load on.
+        [UnmanagedCallersOnly(EntryPoint = "osu5_mod_settings", CallConvs = new[] { typeof(CallConvCdecl) })]
+        public static void ModSettings(float cs, float ar, float od, float hp, double rate)
+        {
+            ModRules.CsOverride = cs;
+            ModRules.ArOverride = ar;
+            ModRules.OdOverride = od;
+            ModRules.HpOverride = hp;
+            ModRules.CustomRate = rate;
+        }
+
         [UnmanagedCallersOnly(EntryPoint = "osu5_load", CallConvs = new[] { typeof(CallConvCdecl) })]
         public static int Load(byte* path)
         {

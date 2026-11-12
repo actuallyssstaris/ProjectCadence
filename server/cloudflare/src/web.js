@@ -157,9 +157,35 @@ async function account() {
   held();
 }
 
+/* a stream overlay for OBS: #/overlay/<room id>, transparent, refreshes itself */
+let overlayTimer = 0;
+async function overlay(id) {
+  document.body.style.background = "transparent";
+  document.querySelector("header").style.display = "none";
+  const draw = async () => {
+    const r = await fetch("/api/roomview?id=" + id).then((r) => r.json()).catch(() => ({}));
+    if (!r.room) { app.innerHTML = '<p class="muted">room ' + esc(id) + " isn't open</p>"; return; }
+    const m = [...r.room.members].sort((a, b) => b.score - a.score);
+    const teams = r.room.teams;
+    const total = [0, 0];
+    for (const x of m) total[x.team] += x.score;
+    app.innerHTML = '<div class="card" style="background:rgba(20,18,28,.85)"><b>' + esc(r.room.name) + "</b>" +
+      (r.room.map ? '<div class="muted">' + esc(r.room.map.title) + "</div>" : "") +
+      (teams ? '<div style="margin:8px 0"><span style="color:#ff6677">red ' + fmt(total[0]) + '</span> · <span style="color:#66aaff">blue ' + fmt(total[1]) + "</span></div>" : "") +
+      "<table>" + m.map((x, i) => '<tr class="r"><td>' + (i + 1) + "</td><td" + (teams ? ' style="color:' + (x.team ? "#66aaff" : "#ff6677") + '"' : "") + ">" + esc(x.name) +
+        '</td><td class="num">' + fmt(x.score) + '</td><td class="num">' + (x.acc * 100).toFixed(2) + '%</td><td class="num">' + x.combo + "x</td></tr>").join("") +
+      "</table></div>";
+  };
+  clearInterval(overlayTimer);
+  overlayTimer = setInterval(draw, 1000);
+  draw();
+}
+
 function route() {
+  clearInterval(overlayTimer);
   const [, page, a, b] = location.hash.split("/");
   for (const l of document.querySelectorAll("header a")) l.className = l.getAttribute("href") === "#/" + (page || "players") ? "on" : "";
+  if (page === "overlay" && a) return overlay(Number(a));
   if (page === "account") return account();
   if (page === "u" && a) return profile(decodeURIComponent(a), Number(b) || 0);
   if (page === "clans") return clans(Number(a) || 0);

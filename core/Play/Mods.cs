@@ -30,7 +30,20 @@ namespace Osu5.Play
 
     public static class ModRules
     {
+        // Difficulty Adjust (negative: the map's own) and a custom speed for DT / HT
+        public static float CsOverride = -1, ArOverride = -1, OdOverride = -1, HpOverride = -1;
+        public static double CustomRate;
+
         public static void ApplyToDifficulty(BeatmapDifficulty d, Mods mods)
+        {
+            applyEasyHard(d, mods);
+            if (CsOverride >= 0) d.CircleSize = CsOverride;
+            if (ArOverride >= 0) d.ApproachRate = ArOverride;
+            if (OdOverride >= 0) d.OverallDifficulty = OdOverride;
+            if (HpOverride >= 0) d.DrainRate = HpOverride;
+        }
+
+        static void applyEasyHard(BeatmapDifficulty d, Mods mods)
         {
             if ((mods & Mods.Easy) != 0)
             {
@@ -65,6 +78,12 @@ namespace Osu5.Play
         }
 
         public static double Rate(Mods mods)
-            => (mods & Mods.DoubleTime) != 0 ? 1.5 : (mods & Mods.HalfTime) != 0 ? 0.75 : 1;
+        {
+            if ((mods & (Mods.DoubleTime | Mods.HalfTime)) == 0)
+                return 1;
+            if (CustomRate > 0)
+                return CustomRate;
+            return (mods & Mods.DoubleTime) != 0 ? 1.5 : 0.75;
+        }
     }
 }

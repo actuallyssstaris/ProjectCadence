@@ -44,11 +44,11 @@
 import { accounts, adminCommand, reply, userForSession } from "./accounts.js";
 import { page } from "./web.js";
 
-const ROOMS_OBJECT = "main-5";
+const ROOMS_OBJECT = "main-6";
 const ROOM_CALLS = new Set([
   "/api/hello", "/api/rooms", "/api/room", "/api/join", "/api/leave", "/api/bye", "/api/map", "/api/settings", "/api/host",
   "/api/kick", "/api/team", "/api/mods", "/api/chat", "/api/lobby", "/api/ready", "/api/start", "/api/score", "/api/status",
-  "/api/online", "/api/spectate", "/api/frames", "/api/watch",
+  "/api/online", "/api/spectate", "/api/frames", "/api/watch", "/api/roomview",
 ]);
 
 export default {
@@ -150,6 +150,12 @@ export class Rooms {
           });
         if (!me) return reply({ error: "say hello first" }, 401);
         return this.create(me, body, now);
+    }
+
+    // read-only, for the stream overlay page
+    if (url.pathname === "/api/roomview") {
+      const r = this.rooms.get(Number(url.searchParams.get("id")));
+      return reply(r ? { room: view(r), now } : { error: "no such room" }, r ? 200 : 404);
     }
 
     if (!me) return reply({ error: "unknown player, say hello again" }, 401);

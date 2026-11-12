@@ -111,6 +111,9 @@ static struct {
     bool key_overlay, live_board, classic_score;
     int map_objects;      /* for classic scoring */
     int key_count[4], key_prev;
+    float da[4];          /* Difficulty Adjust: cs, ar, od, hp; -1 the map's own */
+    double rate_custom;   /* the speed mods' rate, 0 for 1.5 / 0.75 */
+    int mod_custom;       /* the customise panel's row in mod select, -1 closed */
     char set_entry[64], set_entry_keep[64]; /* settings' account fields */
     kbd set_entry_kbd;
     int set_entering;     /* 0 no, 1 clan, 2 old password, 3 new password, 4 delete */
@@ -202,7 +205,8 @@ static struct {
     skin_job topup;       /* default skin from an older version, fetched quietly */
 
     char status[256];
-} app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1, .coll_view = -1, .key_overlay = true, .live_board = true};
+} app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1, .coll_view = -1, .key_overlay = true, .live_board = true,
+         .da = {-1, -1, -1, -1}, .mod_custom = -1};
 
 /* what an osu! map gets converted to when another mode is picked */
 static int conv_of(const song_entry *e)
@@ -500,13 +504,24 @@ static const struct {
     {OSU5_MOD_AUTOPILOT, "AP", "Autopilot", "click yourself, the aim is done for you"},
     {OSU5_MOD_SPUNOUT, "SO", "Spun Out", "spinners spin themselves"},
     {OSU5_MOD_AUTO, "AT", "Auto", "watch a perfect play"},
+    /* settings and fun; none of these go on the online boards */
+    {OSU5_MOD_DIFFADJUST, "DA", "Difficulty Adjust", "set CS, AR, OD and HP yourself (OPTIONS)"},
+    {OSU5_MOD_BARRELROLL, "BR", "Barrel Roll", "the playfield slowly turns"},
+    {OSU5_MOD_TRACEABLE, "TC", "Traceable", "only the approach circles show"},
+    {OSU5_MOD_NOSCOPE, "NS", "No Scope", "no cursor"},
+    {OSU5_MOD_WINDUP, "WU", "Wind Up", "the song speeds up as it goes"},
 };
+/* mods that keep a play off the online boards */
+#define UNRANKED_MODS (OSU5_MOD_DIFFADJUST | OSU5_MOD_BARRELROLL | OSU5_MOD_TRACEABLE | OSU5_MOD_NOSCOPE | OSU5_MOD_WINDUP | OSU5_MOD_AUTO)
 #define MOD_COUNT (int)(sizeof(mod_list) / sizeof(mod_list[0]))
 #define MOD_COLS 4
 
 static double mod_rate(int mods)
 {
-    return mods & (OSU5_MOD_DOUBLETIME | OSU5_MOD_NIGHTCORE) ? 1.5 : mods & (OSU5_MOD_HALFTIME | OSU5_MOD_DAYCORE) ? 0.75 : 1.0;
+    bool fast = mods & (OSU5_MOD_DOUBLETIME | OSU5_MOD_NIGHTCORE), slow = mods & (OSU5_MOD_HALFTIME | OSU5_MOD_DAYCORE);
+    if ((fast && app.rate_custom > 1) || (slow && app.rate_custom > 0 && app.rate_custom < 1))
+        return app.rate_custom;
+    return fast ? 1.5 : slow ? 0.75 : 1.0;
 }
 
 /* what the core gets: Nightcore and Daycore are its speed mods as well */
@@ -514,7 +529,15 @@ static int core_mods(int mods)
 {
     if (mods & OSU5_MOD_NIGHTCORE) mods |= OSU5_MOD_DOUBLETIME;
     if (mods & OSU5_MOD_DAYCORE) mods |= OSU5_MOD_HALFTIME;
-    return mods;
+    return mods & 0xFFFF;
+}
+
+/* Difficulty Adjust and the custom speed, handed over before a load */
+static void push_mod_settings(void)
+{
+    bool da = app.mods & OSU5_MOD_DIFFADJUST;
+    osu5_mod_settings(da ? app.da[0] : -1, da ? app.da[1] : -1, da ? app.da[2] : -1, da ? app.da[3] : -1,
+                      mod_rate(app.mods) != 1.5 && mod_rate(app.mods) != 0.75 && mod_rate(app.mods) != 1 ? mod_rate(app.mods) : 0);
 }
 
 /* same numbers as ModRules.ScoreMultiplier in the core */
@@ -584,6 +607,7 @@ static bool start_song(const song_entry *e)
 
     osu5_convert(conv_of(e));
     osu5_set_mods(core_mods(app.mods));
+    push_mod_settings();
     if (osu5_load(e->file) != 0) {
         char err[200];
         osu5_string(OSU5_STR_ERROR, err, sizeof(err));
@@ -618,7 +642,8 @@ static bool start_song(const song_entry *e)
     double rate = mod_rate(app.mods);
     sound_buf stretched;
     /* Nightcore and Daycore want the pitch to move: plain resampling */
-    bool kept_pitch = rate != 1 && !(app.mods & (OSU5_MOD_NIGHTCORE | OSU5_MOD_DAYCORE)) && audio_stretch(&music, rate, &stretched);
+    bool kept_pitch = rate != 1 && !(app.mods & (OSU5_MOD_NIGHTCORE | OSU5_MOD_DAYCORE | OSU5_MOD_WINDUP)) &&
+                      audio_stretch(&music, rate, &stretched);
     if (kept_pitch) {
         sound_free(&music);
         music = stretched;
@@ -801,6 +826,16 @@ static void play_frame(const pad_state *pad, float dt)
             mp_frames_push(t, app.cursor.x, app.cursor.y, app.cursor.keys);
     }
 
+    /* wind up: half as fast again by the end */
+    if (app.mods & OSU5_MOD_WINDUP) {
+        static double set_to;
+        double r = mod_rate(app.mods) * (1 + 0.5 * fmin(1, fmax(0, app.last_hud.progress)));
+        if (fabs(r - set_to) > 0.004) {
+            audio_music_rate(r);
+            set_to = r;
+        }
+    }
+
     /* presses for the key overlay */
     {
         int down = app.cursor.keys & ~app.key_prev;
@@ -881,9 +916,12 @@ static void play_frame(const pad_state *pad, float dt)
                 if (!replay_save(&app.rec, app.last_when))
                     app.last_when = 0;
                 const osu5_hud *h = &app.last_hud;
+                if (!(app.mods & UNRANKED_MODS) &&
+                    (app.rate_custom == 0 || !(app.mods & (OSU5_MOD_DOUBLETIME | OSU5_MOD_NIGHTCORE | OSU5_MOD_HALFTIME | OSU5_MOD_DAYCORE))))
                 account_submit(map_md5(app.playing->file), app.playing->info.beatmap_id, app.ruleset, h->score, h->accuracy,
                                h->max_combo, app.mods, app.last_pp, h->rank, h->great, h->ok, h->meh, h->miss, &app.rec);
-                if (bweb_on()) {
+                if (bweb_on() && !(app.mods & UNRANKED_MODS) &&
+                    (app.rate_custom == 0 || !(app.mods & (OSU5_MOD_DOUBLETIME | OSU5_MOD_NIGHTCORE | OSU5_MOD_HALFTIME | OSU5_MOD_DAYCORE)))) {
                     bweb_play bp;
                     memset(&bp, 0, sizeof(bp));
                     snprintf(bp.md5, sizeof(bp.md5), "%s", map_md5(app.playing->file));
@@ -980,6 +1018,32 @@ static void render_play(void)
     double t = app.play_time;
     int np = 0;
     int n = osu5_frame(t, cmds, MAX_CMDS, points, MAX_POINTS, &np);
+    if (app.ruleset == 0 && app.mods & (OSU5_MOD_BARRELROLL | OSU5_MOD_TRACEABLE | OSU5_MOD_NOSCOPE)) {
+        /* barrel roll: half a turn a minute round the playfield's middle */
+        double a = app.mods & OSU5_MOD_BARRELROLL ? t * 0.5 * 2 * 3.14159265 / 60000.0 : 0;
+        float ca = (float)cos(a), sa = (float)sin(a);
+        int k = 0;
+        for (int i = 0; i < n; i++) {
+            osu5_draw c = cmds[i];
+            if (app.mods & OSU5_MOD_TRACEABLE && c.kind == OSU5_DRAW_CIRCLE)
+                continue;
+            if (app.mods & OSU5_MOD_NOSCOPE && c.kind == OSU5_DRAW_CURSOR)
+                continue;
+            if (a != 0 && c.kind >= OSU5_DRAW_CIRCLE && c.kind <= OSU5_DRAW_CURSOR) {
+                float dx = c.x - 256, dy = c.y - 192;
+                c.x = 256 + dx * ca - dy * sa;
+                c.y = 192 + dx * sa + dy * ca;
+            }
+            cmds[k++] = c;
+        }
+        n = k;
+        if (a != 0)
+            for (int i = 0; i < np; i++) {
+                float dx = points[i * 2] - 256, dy = points[i * 2 + 1] - 192;
+                points[i * 2] = 256 + dx * ca - dy * sa;
+                points[i * 2 + 1] = 192 + dx * sa + dy * ca;
+            }
+    }
 
     float dim = app.last_hud.state == OSU5_STATE_BREAK ? app.bg_dim * 0.6f : app.bg_dim;
     if (!video_draw(dim) && (!app.sb || !sb_replaces_bg(app.sb)))
@@ -2148,7 +2212,8 @@ static const struct {
     {"difficulty reduction", 0xB2E05C, 4, {0, 1, 2, 3}},
     {"difficulty increase", 0xFF6666, 7, {4, 5, 6, 7, 8, 9, 10}},
     {"automation", 0x66CCFF, 4, {12, 13, 14, 15}},
-    {"conversion", 0x8866EE, 1, {11}},
+    {"conversion", 0x8866EE, 2, {11, 16}},
+    {"fun", 0xFF66AA, 4, {17, 18, 19, 20}},
 };
 #define MOD_NCOLS (int)(sizeof(mod_cols) / sizeof(mod_cols[0]))
 
@@ -2164,8 +2229,70 @@ static void mod_where(int sel, int *col, int *row)
     *col = *row = 0;
 }
 
+/* customise: speed for the speed mods, CS / AR / OD / HP for Difficulty Adjust */
+enum { CUST_RATE, CUST_CS, CUST_AR, CUST_OD, CUST_HP, CUST_ROWS };
+static const char *const cust_names[CUST_ROWS] = {"speed", "circle size", "approach rate", "overall difficulty", "hp drain"};
+
+static void custom_frame(const pad_state *pad)
+{
+    app.mod_custom = (app.mod_custom + pad->nav_y + CUST_ROWS) % CUST_ROWS;
+    int d = pad->nav_x;
+    if (d && app.mod_custom == CUST_RATE) {
+        bool slow = app.mods & (OSU5_MOD_HALFTIME | OSU5_MOD_DAYCORE);
+        double r = app.rate_custom > 0 ? app.rate_custom : slow ? 0.75 : 1.5;
+        r += d * 0.05;
+        r = slow ? fmin(0.99, fmax(0.5, r)) : fmin(2.0, fmax(1.01, r));
+        app.rate_custom = r;
+    } else if (d) {
+        float *v = &app.da[app.mod_custom - CUST_CS];
+        float nv = (*v < 0 ? 5 : *v) + d * 0.1f;
+        *v = nv < 0 ? 0 : nv > 11 ? 11 : nv;
+    }
+    /* TRIANGLE puts the row back to the map's own value */
+    if (pad->pressed & PAD_TRIANGLE) {
+        if (app.mod_custom == CUST_RATE)
+            app.rate_custom = 0;
+        else
+            app.da[app.mod_custom - CUST_CS] = -1;
+    }
+    if (pad->pressed & (PAD_CIRCLE | PAD_OPTIONS))
+        app.mod_custom = -1;
+}
+
+static void render_custom(void)
+{
+    char buf[64];
+    const float w = 620, row = 64, h = 110 + CUST_ROWS * row, x = (GFX_W - w) / 2, y = (GFX_H - h) / 2;
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.5f));
+    ui_round_rect(x, y, w, h, 18, ui_hex(0x2D372E, 0.98f));
+    draw_text(x + 30, y + 24, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "customise");
+    for (int i = 0; i < CUST_ROWS; i++) {
+        float ry = y + 86 + i * row;
+        bool on = i == app.mod_custom;
+        bool live = i == CUST_RATE ? (app.mods & (OSU5_MOD_DOUBLETIME | OSU5_MOD_NIGHTCORE | OSU5_MOD_HALFTIME | OSU5_MOD_DAYCORE)) != 0
+                                   : (app.mods & OSU5_MOD_DIFFADJUST) != 0;
+        ui_round_rect(x + 20, ry, w - 40, row - 8, 10, on ? ui_hex(0x455346, 1) : ui_hex(0x3C4D3B, 1));
+        draw_text(x + 44, ry + 15, 22, gfx_rgba(1, 1, 1, live ? 0.95f : 0.4f), ALIGN_LEFT, cust_names[i]);
+        if (i == CUST_RATE)
+            snprintf(buf, sizeof(buf), app.rate_custom > 0 ? "%.2fx" : "default", app.rate_custom);
+        else
+            snprintf(buf, sizeof(buf), app.da[i - CUST_CS] >= 0 ? "%.1f" : "map's", app.da[i - CUST_CS]);
+        draw_text(x + w - 44, ry + 15, 22, live ? ui_hex(UI_YELLOW, 1) : gfx_rgba(1, 1, 1, 0.4f), ALIGN_RIGHT, buf);
+    }
+    draw_text(GFX_W / 2, y + h + 16, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE,
+              "LEFT / RIGHT change   TRIANGLE reset   CIRCLE done   (speed needs DT / HT, the rest Difficulty Adjust)");
+}
+
 static void mods_frame(const pad_state *pad)
 {
+    if (app.mod_custom >= 0) {
+        custom_frame(pad);
+        return;
+    }
+    if (pad->pressed & PAD_OPTIONS) {
+        app.mod_custom = 0;
+        return;
+    }
     if (app.simple_ui) {
         /* the plain look lays the mods out four to a row in list order */
         int rows = (MOD_COUNT + MOD_COLS - 1) / MOD_COLS;
@@ -2213,7 +2340,7 @@ static void render_mods(void)
               "mods change how a map plays; some change the score you get, others are just for fun");
 
     /* leaning columns: everything slides left the lower it sits */
-    const float k = 0.16f, cw = 420, gap = 16, top = 200, hh = 56, bottom = 930, rh = 62;
+    const float k = 0.16f, gap = 16, cw = (GFX_W - 260 - (MOD_NCOLS - 1) * gap) / MOD_NCOLS, top = 200, hh = 56, bottom = 930, rh = 62;
     float x0 = (GFX_W - MOD_NCOLS * cw - (MOD_NCOLS - 1) * gap) / 2 + 60;
     for (int c = 0; c < MOD_NCOLS; c++) {
         float x = x0 + c * (cw + gap);
@@ -4704,6 +4831,8 @@ int main(void)
                 render_select();
                 render_mods();
             }
+            if (app.mod_custom >= 0)
+                render_custom();
             break;
         case SCREEN_SETTINGS:
             draw_background(0.7f);

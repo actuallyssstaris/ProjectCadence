@@ -66,6 +66,12 @@ enum {
     OSU5_MOD_AUTOPILOT = 8192,
     OSU5_MOD_SPUNOUT = 16384,
     OSU5_MOD_MIRROR = 32768,
+    /* the host's own, never sent to the core: settings and fun mods */
+    OSU5_MOD_DIFFADJUST = 1 << 16,
+    OSU5_MOD_BARRELROLL = 1 << 17,
+    OSU5_MOD_TRACEABLE = 1 << 18,
+    OSU5_MOD_NOSCOPE = 1 << 19,
+    OSU5_MOD_WINDUP = 1 << 20,
 };
 
 int osu5_hit_errors(float *out, int max);
@@ -154,6 +160,8 @@ int osu5_peek(const char *path, osu5_peek_info *info);
 int osu5_map_stats(const char *path, int out5[5]);
 /* load osu! maps as this mode (1 taiko, 2 catch, 3 mania), 0 for as they are */
 void osu5_convert(int mode);
+/* Difficulty Adjust (negative keeps the map's value) and the speed mods' rate (0 keeps 1.5 / 0.75) */
+void osu5_mod_settings(float cs, float ar, float od, float hp, double rate);
 
 #ifdef __cplusplus
 }
