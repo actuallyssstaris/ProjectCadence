@@ -87,6 +87,7 @@ typedef enum {
     SCREEN_IMPORTS,
     SCREEN_SETINFO,
     SCREEN_READER,
+    SCREEN_LISTS,
 } screen;
 
 static struct {
@@ -238,6 +239,7 @@ static int coll_sel;
 static void imports_open(void);
 static void setinfo_open(int set_id);
 static void reader_open(screen back);
+static void lists_open(int tab);
 static bool spec_live;
 static int spec_target;
 static void spectate_pull(void);
@@ -4050,9 +4052,9 @@ static void render_help(void)
 
 /* two rows: settings | play, skins, get maps, quit at the top, and play
  * opening back | solo, multi. The first entry of each row sits left of the logo */
-enum { MB_SETTINGS, MB_PLAY, MB_SKINS, MB_MAPS, MB_QUIT, MB_BACK, MB_SOLO, MB_MULTI };
+enum { MB_SETTINGS, MB_PLAY, MB_SKINS, MB_MAPS, MB_QUIT, MB_BACK, MB_SOLO, MB_MULTI, MB_LISTS, MB_DAILY };
 static const int menu_top[] = {MB_SETTINGS, MB_PLAY, MB_SKINS, MB_MAPS, MB_QUIT};
-static const int menu_play[] = {MB_BACK, MB_SOLO, MB_MULTI};
+static const int menu_play[] = {MB_BACK, MB_SOLO, MB_MULTI, MB_LISTS, MB_DAILY};
 static int menu_level; /* 0 top, 1 play */
 int sceSystemServiceLoadExec(const char *path, char *const argv[]);
 
@@ -4166,6 +4168,8 @@ static void menu_frame(const pad_state *pad)
     case MB_BACK: menu_level = 0; app.menu_sel = 1; break;
     case MB_SOLO: app.scr = SCREEN_SELECT; break;
     case MB_MULTI: mp_open(); break;
+    case MB_LISTS: lists_open(1); break;
+    case MB_DAILY: lists_open(0); break;
     case MB_MAPS: mapdl_ui_open(); app.scr = SCREEN_DOWNLOAD; break;
     case MB_SKINS: skin_ui_open(false); app.scr = SCREEN_SKINS; break;
     case MB_SETTINGS: app.set_sel = 0; app.scr = SCREEN_SETTINGS; break;
@@ -4249,7 +4253,7 @@ static void render_menu(void)
     float lx = 652, ly = GFX_H / 2, lsize = 284 * pulse;
     draw_rect(0, bar_y, GFX_W, bar_h, ui_hex(0x323232, 0.92f));
 
-    static const char *names[] = {"settings", "play", "skins", "get maps", "quit", "back", "solo", "multi"};
+    static const char *names[] = {"settings", "play", "skins", "get maps", "quit", "back", "solo", "multi", "playlists", "daily"};
     static const uint32_t cols[] = {UI_GREY, UI_PURPLE, UI_ORANGE, UI_LIME, 0xEE3399, 0x4A4AAB, 0x6644CC, 0x5E3FBA};
     static float widths[8];
     const int *ids;
@@ -4291,6 +4295,15 @@ static void render_menu(void)
             arc(icx, icy, 20, 3, 0, 1, ic);
             draw_rect(icx - 20, icy - 1.5f, 40, 3, ic);
             arc(icx, icy, 9, 3, 0, 1, ic);
+            break;
+        case MB_LISTS: /* lines of a list */
+            for (int r = 0; r < 3; r++)
+                draw_rect(icx - 16, icy - 12 + r * 11, 32, 4, ic);
+            break;
+        case MB_DAILY: /* a calendar page */
+            arc(icx, icy, 20, 3, 0, 1, ic);
+            draw_rect(icx - 9, icy - 9, 18, 3, ic);
+            ui_disc(icx, icy + 4, 4, ic);
             break;
         case MB_MAPS:
             draw_rect(icx - 4, icy - 20, 8, 22, ic);
@@ -4754,6 +4767,9 @@ int main(void)
         case SCREEN_READER:
             reader_frame(&pad);
             break;
+        case SCREEN_LISTS:
+            lists_frame(&pad);
+            break;
         }
 
         {
@@ -4887,6 +4903,9 @@ int main(void)
             break;
         case SCREEN_READER:
             render_reader();
+            break;
+        case SCREEN_LISTS:
+            render_lists();
             break;
         }
         {

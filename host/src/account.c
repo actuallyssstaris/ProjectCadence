@@ -664,11 +664,14 @@ void account_profile_read(cadence_user *out)
 static int act_state = ACC_IDLE;
 static char act_msg[128];
 
-enum { ACT_FRIEND_ADD, ACT_FRIEND_DEL, ACT_CLAN_JOIN, ACT_CLAN_CREATE, ACT_CLAN_LEAVE, ACT_PASSWORD, ACT_DELETE };
+enum { ACT_FRIEND_ADD, ACT_FRIEND_DEL, ACT_CLAN_JOIN, ACT_CLAN_CREATE, ACT_CLAN_LEAVE, ACT_PASSWORD, ACT_DELETE,
+       ACT_PL_CREATE, ACT_PL_ADD };
 
 typedef struct {
     int kind;
     char a[64], b[64];
+    char c[200]; /* playlist adds: the title */
+    int n1, n2, n3;
 } act_job;
 
 typedef struct {
@@ -717,6 +720,18 @@ static void *act_thread(void *arg)
         path = "/api/account/delete";
         snprintf(body, sizeof(body), "{\"session\":\"%s\",\"password\":\"%s\"}", session, ea);
         break;
+    case ACT_PL_CREATE:
+        path = "/api/playlists/create";
+        snprintf(body, sizeof(body), "{\"session\":\"%s\",\"name\":\"%s\"}", session, ea);
+        break;
+    case ACT_PL_ADD: {
+        char et[300];
+        escape(q->c, et, sizeof(et));
+        path = "/api/playlists/add";
+        snprintf(body, sizeof(body), "{\"session\":\"%s\",\"id\":%d,\"md5\":\"%s\",\"beatmap_id\":%d,\"set_id\":%d,\"title\":\"%.200s\"}",
+                 session, q->n1, ea, q->n2, q->n3, et);
+        break;
+    }
     }
     char *out = NULL;
     int st = post(path, body, &out);
@@ -755,6 +770,8 @@ static void *act_thread(void *arg)
             remove(ACCOUNT_FILE);
             snprintf(act_msg, sizeof(act_msg), "account deleted");
             break;
+        case ACT_PL_CREATE: snprintf(act_msg, sizeof(act_msg), "playlist made"); break;
+        case ACT_PL_ADD: snprintf(act_msg, sizeof(act_msg), "added to the playlist"); break;
         }
     } else {
         act_state = ACC_FAILED;
@@ -770,7 +787,11 @@ static void *act_thread(void *arg)
     return NULL;
 }
 
-static void act(int kind, const char *a, const char *b)
+static void act_full(int kind, const char *a, const char *b, const char *c, int n1, int n2, int n3);
+
+static void act(int kind, const char *a, const char *b) { act_full(kind, a, b, NULL, 0, 0, 0); }
+
+static void act_full(int kind, const char *a, const char *b, const char *c, int n1, int n2, int n3)
 {
     if (!session[0]) {
         pthread_mutex_lock(&lock);
@@ -785,6 +806,10 @@ static void act(int kind, const char *a, const char *b)
     q->kind = kind;
     snprintf(q->a, sizeof(q->a), "%s", a ? a : "");
     snprintf(q->b, sizeof(q->b), "%s", b ? b : "");
+    snprintf(q->c, sizeof(q->c), "%s", c ? c : "");
+    q->n1 = n1;
+    q->n2 = n2;
+    q->n3 = n3;
     pthread_mutex_lock(&lock);
     act_state = ACC_BUSY;
     act_msg[0] = 0;
@@ -809,4 +834,199 @@ int account_action(char *msg, int n)
         act_state = ACC_IDLE; /* read once */
     pthread_mutex_unlock(&lock);
     return s;
+}
+
+void account_playlist_create(const char *pname) { act(ACT_PL_CREATE, pname, NULL); }
+
+void account_playlist_add(int id, const char *md5, int beatmap_id, int set_id, const char *title)
+{
+    act_full(ACT_PL_ADD, md5, NULL, title, id, beatmap_id, set_id);
+}
+
+/* ---- the daily challenge and playlists ---- */
+
+static cadence_list list_got;
+static int list_gen;
+
+static bool item_key(js *j, const char *key, void *ctx)
+{
+    cadence_item *it = ctx;
+    if (!strcmp(key, "md5")) return json_str(j, it->md5, sizeof(it->md5));
+    if (!strcmp(key, "title")) return json_str(j, it->title, sizeof(it->title));
+    if (!strcmp(key, "beatmap_id")) it->beatmap_id = (int)json_num(j);
+    else if (!strcmp(key, "set_id")) it->set_id = (int)json_num(j);
+    else return false;
+    return true;
+}
+
+static bool entry_key(js *j, const char *key, void *ctx)
+{
+    cadence_entry *e = ctx;
+    if (!strcmp(key, "name")) return json_str(j, e->name, sizeof(e->name));
+    if (!strcmp(key, "score") || !strcmp(key, "total")) e->score = (long long)json_num(j);
+    else if (!strcmp(key, "acc")) e->acc = (float)json_num(j);
+    else if (!strcmp(key, "max_combo")) e->combo = (int)json_num(j);
+    else if (!strcmp(key, "mods")) e->mods = (int)json_num(j);
+    else if (!strcmp(key, "played")) e->played = (int)json_num(j);
+    else return false;
+    return true;
+}
+
+static void keep_item(void *ctx, void *item)
+{
+    cadence_list *l = ctx;
+    if (l->nitems < 50)
+        l->items[l->nitems++] = *(cadence_item *)item;
+}
+
+static void keep_entry(void *ctx, void *item)
+{
+    cadence_list *l = ctx;
+    if (l->nboard < 50)
+        l->board[l->nboard++] = *(cadence_entry *)item;
+}
+
+static bool list_key(js *j, const char *key, void *ctx)
+{
+    cadence_list *l = ctx;
+    if (!strcmp(key, "items")) {
+        cadence_item it;
+        return each(j, item_key, &it, sizeof(it), keep_item, l);
+    }
+    if (!strcmp(key, "board") || !strcmp(key, "scores")) {
+        cadence_entry e;
+        return each(j, entry_key, &e, sizeof(e), keep_entry, l);
+    }
+    if (!strcmp(key, "name")) return json_str(j, l->name, sizeof(l->name));
+    if (!strcmp(key, "owner")) return json_str(j, l->owner, sizeof(l->owner));
+    if (!strcmp(key, "day")) return json_str(j, l->day, sizeof(l->day));
+    if (!strcmp(key, "id")) l->id = (int)json_num(j);
+    /* the daily's own map fields sit at the top level */
+    else if (!strcmp(key, "md5")) return json_str(j, l->items[0].md5, sizeof(l->items[0].md5));
+    else if (!strcmp(key, "title")) return json_str(j, l->items[0].title, sizeof(l->items[0].title));
+    else if (!strcmp(key, "beatmap_id")) l->items[0].beatmap_id = (int)json_num(j);
+    else if (!strcmp(key, "set_id")) l->items[0].set_id = (int)json_num(j);
+    else return false;
+    return true;
+}
+
+static void *list_thread(void *arg)
+{
+    list_job *q = arg;
+    char path[96], *out = NULL;
+    size_t len;
+    if (q->page)
+        snprintf(path, sizeof(path), "/api/playlists/get?id=%d", q->page);
+    else
+        snprintf(path, sizeof(path), "/api/daily");
+    int st = get(path, &out, &len);
+    static cadence_list got;
+    memset(&got, 0, sizeof(got));
+    if (st == 200 && out) {
+        js j = {out};
+        json_object(&j, list_key, &got);
+        if (!q->page) {
+            got.nitems = got.items[0].md5[0] ? 1 : 0;
+            snprintf(got.name, sizeof(got.name), "daily challenge");
+        }
+    }
+    free(out);
+    pthread_mutex_lock(&lock);
+    if (q->gen == list_gen) {
+        got.state = st == 200 ? ONLINE_READY : ONLINE_FAILED;
+        list_got = got;
+    }
+    pthread_mutex_unlock(&lock);
+    free(q);
+    return NULL;
+}
+
+static void list_ask(int id)
+{
+    list_job *q = calloc(1, sizeof(*q));
+    if (!q)
+        return;
+    q->page = id;
+    pthread_mutex_lock(&lock);
+    q->gen = ++list_gen;
+    memset(&list_got, 0, sizeof(list_got));
+    list_got.state = ONLINE_LOADING;
+    list_got.id = id;
+    pthread_mutex_unlock(&lock);
+    spawn(list_thread, q);
+}
+
+void account_daily_get(void) { list_ask(0); }
+void account_playlist_get(int id) { list_ask(id); }
+
+void account_list_read(cadence_list *out)
+{
+    pthread_mutex_lock(&lock);
+    *out = list_got;
+    pthread_mutex_unlock(&lock);
+}
+
+static cadence_playlists pls;
+
+static bool pl_key(js *j, const char *key, void *ctx)
+{
+    typeof(pls.p[0]) *p = ctx;
+    if (!strcmp(key, "name")) return json_str(j, p->name, sizeof(p->name));
+    if (!strcmp(key, "owner")) return json_str(j, p->owner, sizeof(p->owner));
+    if (!strcmp(key, "id")) p->id = (int)json_num(j);
+    else if (!strcmp(key, "items")) p->items = (int)json_num(j);
+    else return false;
+    return true;
+}
+
+static void keep_pl(void *ctx, void *item)
+{
+    cadence_playlists *c = ctx;
+    if (c->count < 50)
+        c->p[c->count++] = *(typeof(pls.p[0]) *)item;
+}
+
+static bool pls_key(js *j, const char *key, void *ctx)
+{
+    if (strcmp(key, "playlists"))
+        return false;
+    typeof(pls.p[0]) p;
+    return each(j, pl_key, &p, sizeof(p), keep_pl, ctx);
+}
+
+static void *pls_thread(void *arg)
+{
+    (void)arg;
+    char *out = NULL;
+    size_t len;
+    int st = get("/api/playlists", &out, &len);
+    static cadence_playlists got;
+    memset(&got, 0, sizeof(got));
+    if (st == 200 && out) {
+        js j = {out};
+        json_object(&j, pls_key, &got);
+    }
+    free(out);
+    pthread_mutex_lock(&lock);
+    got.state = st == 200 ? ONLINE_READY : ONLINE_FAILED;
+    pls = got;
+    pthread_mutex_unlock(&lock);
+    return NULL;
+}
+
+void account_playlists_get(void)
+{
+    pthread_mutex_lock(&lock);
+    pls.state = ONLINE_LOADING;
+    pthread_mutex_unlock(&lock);
+    pthread_t t;
+    if (pthread_create(&t, NULL, pls_thread, NULL) == 0)
+        pthread_detach(t);
+}
+
+void account_playlists_read(cadence_playlists *out)
+{
+    pthread_mutex_lock(&lock);
+    *out = pls;
+    pthread_mutex_unlock(&lock);
 }

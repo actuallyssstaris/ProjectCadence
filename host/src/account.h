@@ -54,6 +54,33 @@ typedef struct {
     } top[10];
 } cadence_user;
 
+/* one map with a board: the daily challenge, or a playlist's items */
+typedef struct {
+    char md5[33], title[160];
+    int beatmap_id, set_id;
+} cadence_item;
+
+typedef struct {
+    char name[24];
+    long long score;
+    float acc;
+    int combo, mods, played;
+} cadence_entry;
+
+typedef struct {
+    int state, id;
+    char name[48], owner[24], day[12];
+    int nitems;
+    cadence_item items[50];
+    int nboard;
+    cadence_entry board[50];
+} cadence_list; /* a playlist, or the daily challenge (one item, id 0) */
+
+typedef struct {
+    int state, count;
+    struct { int id, items; char name[48], owner[24]; } p[50];
+} cadence_playlists;
+
 enum { ACC_IDLE, ACC_BUSY, ACC_OK, ACC_FAILED };
 
 void account_init(const char *server);
@@ -92,5 +119,13 @@ void account_clan_leave(void);
 void account_password(const char *old_pw, const char *new_pw);
 void account_delete(const char *password);
 int account_action(char *msg, int n); /* ACC_* */
+
+void account_daily_get(void);
+void account_playlists_get(void);
+void account_playlists_read(cadence_playlists *out);
+void account_playlist_get(int id);
+void account_list_read(cadence_list *out); /* the daily or the playlist last asked for */
+void account_playlist_create(const char *name);
+void account_playlist_add(int id, const char *md5, int beatmap_id, int set_id, const char *title);
 
 #endif

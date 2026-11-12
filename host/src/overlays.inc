@@ -1389,3 +1389,180 @@ static void render_reader(void)
                                 : "L1 / R1  news, changelog, wiki     UP / DOWN  scroll",
               "CIRCLE");
 }
+
+/* ---- the daily challenge and playlists, from the play menu ---- */
+
+static int ls_tab;      /* 0 daily, 1 playlists */
+static int ls_open;     /* the playlist being looked at, 0 the list */
+static int ls_sel;
+static kbd ls_kbd;
+static char ls_name[48];
+static bool ls_typing;
+
+static void lists_open(int tab)
+{
+    ls_tab = tab;
+    ls_open = 0;
+    ls_sel = 0;
+    if (tab == 0)
+        account_daily_get();
+    else
+        account_playlists_get();
+    app.scr = SCREEN_LISTS;
+}
+
+/* play an item if the map's here, fetch it if not */
+static void play_item(const cadence_item *it)
+{
+    int i = it->md5[0] ? song_by_md5(it->md5) : -1;
+    if (i < 0) {
+        if (it->beatmap_id > 0) {
+            mapdl_set want;
+            memset(&want, 0, sizeof(want));
+            want.beatmap = it->beatmap_id;
+            snprintf(want.title, sizeof(want.title), "%.100s", it->title);
+            mapdl_queue(&want);
+            toast("downloading it; CROSS again once it's in");
+        } else {
+            toast("that map isn't in your library");
+        }
+        return;
+    }
+    const song_entry *e = &app.all.items[i];
+    int at = songs_find(&app.songs, e->file);
+    if (at >= 0)
+        app.sel = at;
+    start_song(e);
+}
+
+static void lists_frame(const pad_state *pad)
+{
+    if (ls_typing) {
+        int k = kbd_frame(&ls_kbd, pad);
+        if (k == KBD_DONE && ls_name[0]) {
+            account_playlist_create(ls_name);
+            account_playlists_get();
+        }
+        if (k != KBD_TYPING)
+            ls_typing = false;
+        return;
+    }
+    if (pad->pressed & (PAD_L1 | PAD_R1) && !ls_open) {
+        lists_open(!ls_tab);
+        return;
+    }
+    static cadence_list l;
+    static cadence_playlists pl;
+    account_list_read(&l);
+    account_playlists_read(&pl);
+
+    if (ls_tab == 1 && !ls_open) {
+        if (pl.count)
+            ls_sel = (ls_sel + pad->nav_y + pl.count) % pl.count;
+        if (pad->pressed & PAD_CROSS && pl.count) {
+            ls_open = pl.p[ls_sel].id;
+            ls_sel = 0;
+            account_playlist_get(ls_open);
+        }
+        if (pad->pressed & PAD_TRIANGLE && account_signed_in()) {
+            ls_name[0] = 0;
+            ls_kbd.text = ls_name;
+            ls_kbd.cap = sizeof(ls_name);
+            ls_typing = true;
+        }
+        if (pad->pressed & PAD_CIRCLE)
+            app.scr = SCREEN_MENU;
+        return;
+    }
+
+    if (l.nitems)
+        ls_sel = (ls_sel + pad->nav_y + l.nitems) % l.nitems;
+    if (pad->pressed & PAD_CROSS && l.state == ONLINE_READY && l.nitems)
+        play_item(&l.items[ls_sel]);
+    /* SQUARE puts song select's current map on this playlist */
+    if (pad->pressed & PAD_SQUARE && ls_open && app.songs.count) {
+        const song_entry *e = &app.songs.items[app.sel];
+        char title[200];
+        snprintf(title, sizeof(title), "%.60s - %.70s [%.50s]", e->info.artist, e->info.title, e->info.version);
+        account_playlist_add(ls_open, map_md5(e->file), e->info.beatmap_id, e->info.set_id, title);
+        account_playlist_get(ls_open);
+    }
+    if (pad->pressed & PAD_TRIANGLE)
+        ls_open ? account_playlist_get(ls_open) : account_daily_get();
+    if (pad->pressed & PAD_CIRCLE) {
+        if (ls_open) {
+            ls_open = 0;
+            ls_sel = 0;
+            account_playlists_get();
+        } else {
+            app.scr = SCREEN_MENU;
+        }
+    }
+}
+
+static void render_lists(void)
+{
+    char buf[200];
+    draw_background(0.85f);
+    const float px = 144, pw = GFX_W - 2 * px;
+    draw_rect(px, 0, pw, GFX_H, ui_plum(0.13f, 0.97f));
+    static cadence_list l;
+    static cadence_playlists pl;
+    account_list_read(&l);
+    account_playlists_read(&pl);
+    ui_header(ls_tab == 0 ? "daily challenge" : "playlists", ls_open ? l.name : ls_tab == 0 ? l.day : "community", ui_hex(0xFF66AA, 1));
+    float x = px + 50, y = 140;
+
+    if (ls_tab == 1 && !ls_open) {
+        if (pl.state == ONLINE_LOADING)
+            draw_text(GFX_W / 2, 400, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "loading...");
+        else if (!pl.count)
+            draw_text(GFX_W / 2, 400, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "no playlists yet: TRIANGLE starts one");
+        for (int i = 0; i < pl.count && y < GFX_H - 140; i++, y += 60) {
+            bool on = i == ls_sel;
+            ui_round_rect(x - 10, y, pw - 80, 52, 8, on ? ui_plum(0.3f, 1) : ui_plum(0.2f, 1));
+            draw_text(x + 10, y + 13, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, pl.p[i].name);
+            snprintf(buf, sizeof(buf), "by %s   %d maps", pl.p[i].owner, pl.p[i].items);
+            draw_text(px + pw - 60, y + 15, 19, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, buf);
+        }
+        ui_footer("L1 / R1  daily / playlists     CROSS  open     TRIANGLE  new playlist", "CIRCLE");
+        if (ls_typing)
+            kbd_render(&ls_kbd);
+        return;
+    }
+
+    if (l.state == ONLINE_LOADING) {
+        draw_text(GFX_W / 2, 400, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "loading...");
+    } else if (l.state != ONLINE_READY || !l.nitems) {
+        draw_text(GFX_W / 2, 400, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE,
+                  ls_open ? "nothing on this playlist yet: SQUARE adds song select's map"
+                          : "no daily challenge yet: it's picked from maps people have played here");
+    } else {
+        /* the maps on the left, the board on the right */
+        float lw = pw * 0.55f;
+        for (int i = 0; i < l.nitems && y < GFX_H - 140; i++, y += 56) {
+            bool on = i == ls_sel;
+            bool have = song_by_md5(l.items[i].md5) >= 0;
+            ui_round_rect(x - 10, y, lw - 40, 48, 8, on ? ui_plum(0.3f, 1) : ui_plum(0.2f, 1));
+            snprintf(buf, sizeof(buf), "%s", l.items[i].title[0] ? l.items[i].title : "a map");
+            ui_fit(buf, 19, lw - 160);
+            draw_text(x + 6, y + 13, 19, gfx_rgba(1, 1, 1, have ? 1 : 0.5f), ALIGN_LEFT, buf);
+            if (!have)
+                draw_text(x + lw - 64, y + 15, 15, ui_hex(UI_YELLOW, 1), ALIGN_RIGHT, "get it");
+        }
+        float bx = px + lw + 30, by = 140;
+        draw_text(bx, by, 22, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, ls_open ? "total score" : "today's board");
+        for (int i = 0; i < l.nboard && by < GFX_H - 180; i++) {
+            by += 44;
+            snprintf(buf, sizeof(buf), "%d  %s", i + 1, l.board[i].name);
+            draw_text(bx, by, 20, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, buf);
+            snprintf(buf, sizeof(buf), "%lld", l.board[i].score);
+            draw_text(px + pw - 50, by, 20, ui_hex(UI_YELLOW, 1), ALIGN_RIGHT, buf);
+        }
+        if (!l.nboard)
+            draw_text(bx, by + 44, 19, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "no scores yet");
+    }
+    ui_footer(ls_open ? "CROSS  play     SQUARE  add song select's map     TRIANGLE  refresh"
+                      : "L1 / R1  daily / playlists     CROSS  play     TRIANGLE  refresh",
+              "CIRCLE");
+}
