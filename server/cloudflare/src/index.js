@@ -1,168 +1,65 @@
-// ProjectCadence server: accounts and global scores (D1), and multiplayer rooms
-// (one Durable Object, all in memory). Plain JSON over HTTPS; consoles poll the
-// room calls about once a second.
+// ProjectCadence server: accounts, scores, rankings and clans in D1 (accounts.js),
+// multiplayer rooms, presence and spectating in one Durable Object (below), and
+// a small website (web.js). Plain JSON over HTTPS.
 //
-// Accounts
-//   POST /api/account/register {name, password}             -> {session, name}
-//   POST /api/account/login    {name, password}             -> {session, name}
-//   POST /api/scores/submit    {session, md5, beatmap_id, mode, score, acc, max_combo,
-//                               mods, pp, rank, n300, n100, n50, miss}  -> {best, place}
-//   GET  /api/scores/top?md5=                               -> {scores: [...]}
+// Accounts and scores
+//   POST /api/account/register | login   {name, password}                -> {session, name}
+//   POST /api/account/password           {session, password, new_password} -> {session}
+//   POST /api/account/delete             {session, password}
+//   POST /api/scores/submit   {session, md5, beatmap_id, mode, score, acc, max_combo, mods, pp, rank,
+//                              n300, n100, n50, miss, replay?}            -> {best, place, held}
+//   GET  /api/scores/top?md5=                                             -> {scores, status}
+//   GET  /api/replay?md5=&name=                                           -> LZMA'd frame text
+//   GET  /api/maps/status?md5=                                            -> {status, title}
+//   GET  /api/users/top?mode=&page=     GET /api/users/profile?name=&mode=&session=
+//   POST /api/friends/add | remove {session, name}     GET /api/friends?session=
+//   POST /api/clans/create {session, name, tag} | join {session, tag} | leave {session}
+//   GET  /api/clans/top?mode=   GET /api/clans/info?tag=
 //
-// Rooms
+// Rooms (the room object)
 //   POST /api/hello            {name, session?}        -> {token, id, now}  (a session names you)
-//   GET  /api/rooms?token=                             -> {rooms, online, now}
+//   GET  /api/rooms?token=                             -> {rooms, lobby, online, watchers, now}
 //   POST /api/rooms            {token, name, password?}
-//   GET  /api/room?token=                              -> {room, online, now}
+//   GET  /api/room?token=                              -> {room, lobby, online, watchers, now}
 //   POST /api/join             {token, room, password?}
 //   POST /api/leave / bye      {token}
 //   POST /api/map              {token, beatmap_id, set_id, md5, title, mods}   host
-//   POST /api/settings         {token, teams, freemod}                          host
+//   POST /api/settings         {token, teams, freemod, win}                     host
+//   POST /api/host | kick      {token, member}                                  host
 //   POST /api/team             {token, team}           0 red, 1 blue
 //   POST /api/mods             {token, mods}           your own, with freemod on
-//   POST /api/chat             {token, text}
-//   POST /api/lobby            {token, text}      everyone's channel; the room and
-//                                                 rooms replies carry it as "lobby"
+//   POST /api/chat | lobby     {token, text}           room / everyone; admins can type !commands
 //   POST /api/ready            {token, ready, has_map}
 //   POST /api/start            {token}                                          host
 //   POST /api/score            {token, score, combo, max_combo, acc, n300, n100, n50, miss, failed, done}
+//   POST /api/status           {token, action, text, md5, mode, mods, beatmap_id}
+//   GET  /api/online?token=                            -> {players}
+//   POST /api/spectate         {token, id}             0 stops
+//   POST /api/frames           {token, frames: [[t, x, y, keys]...], action}   while someone watches
+//   GET  /api/watch?token=&after=                      -> {frames, seq, action}
 //
 // Rooms live in one object whose name changes when a deploy has to start everyone
 // fresh (a running object keeps its old code until it sleeps).
 
-const ROOMS_OBJECT = "main-4";
+import { accounts, adminCommand, reply, userForSession } from "./accounts.js";
+import { page } from "./web.js";
+
+const ROOMS_OBJECT = "main-5";
+const ROOM_CALLS = new Set([
+  "/api/hello", "/api/rooms", "/api/room", "/api/join", "/api/leave", "/api/bye", "/api/map", "/api/settings", "/api/host",
+  "/api/kick", "/api/team", "/api/mods", "/api/chat", "/api/lobby", "/api/ready", "/api/start", "/api/score", "/api/status",
+  "/api/online", "/api/spectate", "/api/frames", "/api/watch",
+]);
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
-    if (url.pathname.startsWith("/api/account/") || url.pathname.startsWith("/api/scores/"))
+    if (ROOM_CALLS.has(url.pathname)) return env.ROOMS.get(env.ROOMS.idFromName(ROOMS_OBJECT)).fetch(request);
+    if (url.pathname.startsWith("/api/"))
       return accounts(request, env, url).catch((e) => reply({ error: "server error" }, 500));
-    if (!url.pathname.startsWith("/api/"))
-      return new Response("ProjectCadence\n", { headers: { "content-type": "text/plain" } });
-    return env.ROOMS.get(env.ROOMS.idFromName(ROOMS_OBJECT)).fetch(request);
+    return page();
   },
 };
-
-/* ================= accounts and scores ================= */
-
-const NAME_OK = /^[A-Za-z0-9_\- ]{3,20}$/;
-
-async function hash(password, salt) {
-  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", hash: "SHA-256", salt: new TextEncoder().encode(salt), iterations: 100000 },
-    key,
-    256,
-  );
-  return [...new Uint8Array(bits)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-async function newSession(env, userId) {
-  const token = crypto.randomUUID() + crypto.randomUUID().slice(0, 8);
-  await env.DB.prepare("INSERT INTO sessions (token, user_id, created) VALUES (?, ?, ?)").bind(token, userId, Date.now()).run();
-  return token;
-}
-
-export async function userForSession(env, session) {
-  if (!session) return null;
-  return env.DB.prepare("SELECT users.id, users.name FROM sessions JOIN users ON users.id = sessions.user_id WHERE token = ?")
-    .bind(String(session))
-    .first();
-}
-
-const MIN_GAP = 5000;     // ms between two uploads from one account
-const MAX_SCORE = 4000000;  // 1M standardised, times a generous mod multiplier
-const MAX_PP = 3500;
-
-// the server can't replay a play, but it can turn away numbers no play produces
-function implausible(b, n) {
-  const score = n("score");
-  const acc = Number(b.acc);
-  const hits = n("n300") + n("n100") + n("n50") + n("miss");
-  if (score <= 0 || score > MAX_SCORE) return "score out of range";
-  if (!(acc >= 0 && acc <= 1)) return "accuracy out of range";
-  if (n("mode") > 3) return "bad mode";
-  if (n("rank") >= 8) return "failed plays aren't uploaded";
-  if (!(Number(b.pp) >= 0 && Number(b.pp) <= MAX_PP)) return "pp out of range";
-  if (hits > 20000) return "bad hit counts";
-  if (n("max_combo") > 60000) return "combo out of range";
-  // osu!: judgement counts and accuracy have to roughly agree (slider ticks and
-  // tails nudge accuracy, hence the slack). mania sends no Perfect count and
-  // catch counts droplets elsewhere, so they skip this.
-  if (n("mode") === 0) {
-    if (hits === 0) return "bad hit counts";
-    const from = (300 * n("n300") + 100 * n("n100") + 50 * n("n50")) / (300 * hits);
-    if (Math.abs(from - acc) > 0.15) return "accuracy doesn't match the judgements";
-  }
-  // a clean SS can't have misses or sloppy hits
-  if (n("mode") !== 2 && acc >= 1 && (n("miss") || n("n100") || n("n50"))) return "accuracy doesn't match the judgements";
-  return null;
-}
-
-async function accounts(request, env, url) {
-  const body = request.method === "POST" ? await request.json().catch(() => ({})) : {};
-
-  switch (url.pathname) {
-    case "/api/account/register": {
-      const name = String(body.name || "").trim();
-      const password = String(body.password || "");
-      if (!NAME_OK.test(name)) return reply({ error: "names are 3 to 20 letters, digits, spaces, _ or -" }, 400);
-      if (password.length < 6) return reply({ error: "the password needs at least 6 characters" }, 400);
-      const taken = await env.DB.prepare("SELECT id FROM users WHERE name = ?").bind(name).first();
-      if (taken) return reply({ error: "that name is taken" }, 409);
-      const salt = crypto.randomUUID();
-      const res = await env.DB.prepare("INSERT INTO users (name, pass_hash, salt, created) VALUES (?, ?, ?, ?)")
-        .bind(name, await hash(password, salt), salt, Date.now())
-        .run();
-      const id = res.meta.last_row_id;
-      return reply({ session: await newSession(env, id), name });
-    }
-    case "/api/account/login": {
-      const user = await env.DB.prepare("SELECT id, name, pass_hash, salt FROM users WHERE name = ?").bind(String(body.name || "").trim()).first();
-      if (!user || (await hash(String(body.password || ""), user.salt)) !== user.pass_hash)
-        return reply({ error: "wrong name or password" }, 401);
-      return reply({ session: await newSession(env, user.id), name: user.name });
-    }
-    case "/api/scores/submit": {
-      const user = await userForSession(env, body.session);
-      if (!user) return reply({ error: "sign in again" }, 401);
-      const md5 = String(body.md5 || "");
-      if (!/^[0-9a-f]{32}$/.test(md5)) return reply({ error: "bad map" }, 400);
-      const n = (k) => Math.max(0, Math.floor(Number(body[k]) || 0));
-      const score = n("score");
-      const bad = implausible(body, n);
-      if (bad) return reply({ error: bad }, 422);
-      const last = await env.DB.prepare("SELECT MAX(played) AS t FROM scores WHERE user_id = ?").bind(user.id).first();
-      if (last && last.t && Date.now() - last.t < MIN_GAP) return reply({ error: "slow down" }, 429);
-      const old = await env.DB.prepare("SELECT score FROM scores WHERE user_id = ? AND map_md5 = ?").bind(user.id, md5).first();
-      const best = !old || score > old.score;
-      if (best) {
-        await env.DB.prepare(
-          `INSERT OR REPLACE INTO scores (user_id, map_md5, beatmap_id, mode, score, acc, max_combo, mods, pp, rank,
-             n300, n100, n50, miss, played) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-          .bind(user.id, md5, n("beatmap_id"), n("mode"), score, Math.min(1, Number(body.acc) || 0), n("max_combo"), n("mods"),
-            Number(body.pp) || 0, n("rank"), n("n300"), n("n100"), n("n50"), n("miss"), Date.now())
-          .run();
-      }
-      const ahead = await env.DB.prepare("SELECT COUNT(*) AS c FROM scores WHERE map_md5 = ? AND score > ?")
-        .bind(md5, best ? score : old.score)
-        .first();
-      return reply({ best, place: ahead.c + 1 });
-    }
-    case "/api/scores/top": {
-      const md5 = String(url.searchParams.get("md5") || "");
-      const rows = await env.DB.prepare(
-        `SELECT users.name, score, acc, max_combo, mods, pp, rank, n300, n100, n50, miss
-           FROM scores JOIN users ON users.id = scores.user_id WHERE map_md5 = ? ORDER BY score DESC LIMIT 50`,
-      )
-        .bind(md5)
-        .all();
-      return reply({ scores: rows.results });
-    }
-  }
-  return reply({ error: "no such call" }, 404);
-}
 
 /* ================= rooms ================= */
 
@@ -170,6 +67,9 @@ const PLAYER_TIMEOUT = 20000; // ms without a poll before someone's dropped
 const START_DELAY = 4000;     // time everyone gets to load the map
 const MAX_PLAYERS = 16;
 const CHAT_KEPT = 40;
+const FRAMES_KEPT = 6000;     // about two minutes of a play, for late spectators
+
+const clean = (t) => String(t || "").replace(/[^\x20-\x7e]/g, "").trim().slice(0, 120);
 
 export class Rooms {
   constructor(state, env) {
@@ -180,6 +80,35 @@ export class Rooms {
     this.nextRoom = 1;
     this.nextPlayer = 1;
     this.lobby = { chat: [], next_msg: 1 };
+  }
+
+  byId(id) {
+    for (const p of this.players.values()) if (p.id === id) return p;
+    return null;
+  }
+
+  watchers(p) {
+    let n = 0;
+    for (const x of this.players.values()) if (x.watching === p.id) n++;
+    return n;
+  }
+
+  // chat lines, with the silence and admin commands handled first
+  async speak(me, target, text) {
+    text = clean(text);
+    if (!text) return null;
+    if (me.user && me.user.silenced_until > Date.now()) return "you're silenced for now";
+    if (text.startsWith("!")) {
+      const said = await adminCommand(this.env, me.user, text).catch(() => "that didn't work");
+      if (said) {
+        say(target, null, said);
+        // a fresh restrict or silence applies to people already online
+        for (const p of this.players.values()) if (p.user) p.user = (await userForSession(this.env, p.session).catch(() => null)) || p.user;
+        return null;
+      }
+    }
+    say(target, me.name, text);
+    return null;
   }
 
   async fetch(request) {
@@ -202,20 +131,23 @@ export class Rooms {
     switch (url.pathname) {
       case "/api/hello": {
         let name = String(body.name || "player").slice(0, 24).replace(/[^\x20-\x7e]/g, "?");
-        let account = false;
         // signed-in players get their account name, so nobody can wear it
         const user = await userForSession(this.env, body.session).catch(() => null);
-        if (user) {
-          name = user.name;
-          account = true;
-        }
-        const p = { id: this.nextPlayer++, name, account, token: crypto.randomUUID(), seen: now, room: 0 };
+        if (user) name = user.name;
+        const p = {
+          id: this.nextPlayer++, name, account: !!user, user, session: body.session || "", token: crypto.randomUUID(),
+          seen: now, room: 0, status: { action: 0, text: "", md5: "", mode: 0, mods: 0, beatmap_id: 0 },
+          watching: 0, frames: [], seq: 0, action: 0,
+        };
         this.players.set(p.token, p);
         return reply({ token: p.token, id: p.id, name, now });
       }
       case "/api/rooms":
         if (request.method === "GET")
-          return reply({ rooms: [...this.rooms.values()].map(summary), lobby: this.lobby.chat, online: this.players.size, now });
+          return reply({
+            rooms: [...this.rooms.values()].map(summary), lobby: this.lobby.chat, online: this.players.size,
+            watchers: me ? this.watchers(me) : 0, now,
+          });
         if (!me) return reply({ error: "say hello first" }, 401);
         return this.create(me, body, now);
     }
@@ -225,17 +157,55 @@ export class Rooms {
 
     switch (url.pathname) {
       case "/api/room":
-        return reply({ room: room ? view(room) : null, lobby: this.lobby.chat, online: this.players.size, now });
+        return reply({ room: room ? view(room) : null, lobby: this.lobby.chat, online: this.players.size, watchers: this.watchers(me), now });
       case "/api/lobby": {
-        const text = String(body.text || "").replace(/[^\x20-\x7e]/g, "").trim().slice(0, 120);
-        if (text) say(this.lobby, me.name, text);
-        return reply({ lobby: this.lobby.chat, now });
+        const err = await this.speak(me, this.lobby, body.text);
+        return reply(err ? { error: err, lobby: this.lobby.chat, now } : { lobby: this.lobby.chat, now });
+      }
+      case "/api/status":
+        me.status = {
+          action: Number(body.action) || 0, text: clean(body.text), md5: String(body.md5 || "").slice(0, 32),
+          mode: Number(body.mode) || 0, mods: Number(body.mods) || 0, beatmap_id: Number(body.beatmap_id) || 0,
+        };
+        // a new play starts the spectators' buffer over
+        if (me.status.action === 2) {
+          me.frames = [];
+          me.action = 1;
+        }
+        return reply({ ok: true, watchers: this.watchers(me), now });
+      case "/api/online":
+        return reply({
+          players: [...this.players.values()].map((p) => ({ id: p.id, name: p.name, account: p.account, room: p.room, ...p.status })),
+          now,
+        });
+      case "/api/spectate": {
+        const id = Number(body.id) || 0;
+        const target = id ? this.byId(id) : null;
+        if (id && !target) return reply({ error: "they went offline" }, 404);
+        me.watching = target ? target.id : 0;
+        return reply({ ok: true, now });
+      }
+      case "/api/frames": {
+        // [t, x, y, keys] each, numbered so watchers can ask for what's new
+        const frames = Array.isArray(body.frames) ? body.frames.slice(0, 2000) : [];
+        for (const f of frames) if (Array.isArray(f) && f.length === 4) me.frames.push([++me.seq, ...f.map(Number)]);
+        if (me.frames.length > FRAMES_KEPT) me.frames.splice(0, me.frames.length - FRAMES_KEPT);
+        if (body.action) me.action = Number(body.action);
+        return reply({ ok: true, watchers: this.watchers(me), now });
+      }
+      case "/api/watch": {
+        const target = this.byId(me.watching);
+        if (!target) return reply({ error: "they went offline", frames: [], seq: 0, action: 7, now });
+        const after = Number(url.searchParams.get("after")) || 0;
+        const frames = target.frames.filter((f) => f[0] > after).slice(0, 3000);
+        return reply({ frames, seq: frames.length ? frames[frames.length - 1][0] : after, action: target.action, now });
       }
       case "/api/join": {
         const target = this.rooms.get(Number(body.room));
         if (!target) return reply({ error: "that room is gone" }, 404);
         if (target.members.length >= MAX_PLAYERS) return reply({ error: "room is full" }, 409);
         if (target.password && String(body.password || "") !== target.password) return reply({ error: "wrong room password" }, 403);
+        if (target.kicked.has(me.id)) return reply({ error: "the host sent you out of that room" }, 403);
         this.leave(me);
         me.room = target.id;
         target.members.push(member(me, target));
@@ -274,9 +244,26 @@ export class Rooms {
         if (room.state === "playing") return reply({ error: "wait for the round to end" }, 409);
         room.teams = !!body.teams;
         room.freemod = !!body.freemod;
+        if (body.win !== undefined) room.win = Math.min(2, Math.max(0, Number(body.win) || 0));
         for (const x of room.members) x.ready = false;
-        say(room, null, `${room.teams ? "teams" : "everyone for themselves"}, ${room.freemod ? "free mods" : "the host's mods"}`);
+        say(room, null, `${room.teams ? "teams" : "everyone for themselves"}, ${room.freemod ? "free mods" : "the host's mods"}, win by ${WIN[room.win]}`);
         return reply({ room: view(room), now });
+      case "/api/host":
+      case "/api/kick": {
+        if (!host) return reply({ error: "only the host can" }, 403);
+        const target = room.members.find((x) => x.id === Number(body.member));
+        if (!target || target.id === me.id) return reply({ room: view(room), now });
+        if (url.pathname === "/api/host") {
+          room.host = target.id;
+          say(room, null, `${target.name} is the host now`);
+        } else {
+          room.kicked.add(target.id);
+          const p = this.byId(target.id);
+          if (p) this.leave(p);
+          say(room, null, `${target.name} was sent out`);
+        }
+        return reply({ room: view(room), now });
+      }
       case "/api/team":
         m.team = Number(body.team) === 1 ? 1 : 0;
         return reply({ room: view(room), now });
@@ -284,9 +271,8 @@ export class Rooms {
         m.mods = Number(body.mods) || 0;
         return reply({ room: view(room), now });
       case "/api/chat": {
-        const text = String(body.text || "").replace(/[^\x20-\x7e]/g, "").trim().slice(0, 120);
-        if (text) say(room, me.name, text);
-        return reply({ room: view(room), now });
+        const err = await this.speak(me, room, body.text);
+        return reply(err ? { error: err, room: view(room), now } : { room: view(room), now });
       }
       case "/api/ready":
         m.ready = !!body.ready;
@@ -325,6 +311,8 @@ export class Rooms {
       mods: 0,
       teams: false,
       freemod: false,
+      win: 0,
+      kicked: new Set(),
       state: "lobby",
       round: 0,
       start_at: 0,
@@ -340,10 +328,20 @@ export class Rooms {
   finish(room) {
     room.state = "results";
     for (const x of room.members) x.ready = false;
+    const value = (x) => (room.win === 1 ? x.acc : room.win === 2 ? x.max_combo : x.score);
     if (room.teams) {
-      const total = [0, 0];
-      for (const x of room.members) total[x.team] += x.score;
-      say(room, null, total[0] === total[1] ? "the teams tied" : `${total[0] > total[1] ? "red" : "blue"} team wins, ${Math.max(...total)} to ${Math.min(...total)}`);
+      const total = [0, 0], count = [0, 0];
+      for (const x of room.members) {
+        total[x.team] += value(x);
+        count[x.team]++;
+      }
+      // accuracy is averaged per team, the rest added up
+      if (room.win === 1) for (const t of [0, 1]) total[t] = count[t] ? total[t] / count[t] : 0;
+      const show = (v) => (room.win === 1 ? (v * 100).toFixed(2) + "%" : Math.round(v));
+      say(room, null, total[0] === total[1] ? "the teams tied" : `${total[0] > total[1] ? "red" : "blue"} team wins, ${show(Math.max(...total))} to ${show(Math.min(...total))}`);
+    } else if (room.members.length > 1) {
+      const best = [...room.members].sort((a, b) => value(b) - value(a))[0];
+      say(room, null, `${best.name} wins on ${WIN[room.win]}`);
     }
   }
 
@@ -375,6 +373,8 @@ export class Rooms {
   }
 }
 
+const WIN = ["score", "accuracy", "combo"];
+
 function say(room, from, text) {
   room.chat.push({ id: room.next_msg++, from: from || "", text, at: Date.now() });
   if (room.chat.length > CHAT_KEPT) room.chat.shift();
@@ -402,14 +402,11 @@ function view(r) {
     mods: r.mods,
     teams: r.teams,
     freemod: r.freemod,
+    win: r.win,
     map: r.map,
     round: r.round,
     start_at: r.start_at,
     members: r.members,
     chat: r.chat,
   };
-}
-
-function reply(obj, status = 200) {
-  return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
 }
