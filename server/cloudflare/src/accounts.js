@@ -212,10 +212,34 @@ export async function accounts(request, env, url) {
       if (password.length < 6) return reply({ error: "the password needs at least 6 characters" }, 400);
       if (await byName(env, name)) return reply({ error: "that name is taken" }, 409);
       const salt = crypto.randomUUID();
-      const res = await env.DB.prepare("INSERT INTO users (name, pass_hash, salt, created) VALUES (?, ?, ?, ?)")
-        .bind(name, await hash(password, salt), salt, Date.now())
+      // the server's first account runs it
+      const anyone = await env.DB.prepare("SELECT id FROM users LIMIT 1").first();
+      const res = await env.DB.prepare("INSERT INTO users (name, pass_hash, salt, created, role) VALUES (?, ?, ?, ?, ?)")
+        .bind(name, await hash(password, salt), salt, Date.now(), anyone ? 0 : 1)
         .run();
-      return reply({ session: await newSession(env, res.meta.last_row_id), name });
+      return reply({ session: await newSession(env, res.meta.last_row_id), name, admin: !anyone });
+    }
+    case "/api/account/me": {
+      const me = await userForSession(env, q("session"));
+      if (!me) return reply({ error: "sign in again" }, 401);
+      const clan = await clanOf(env, me.id);
+      return reply({ name: me.name, admin: me.role === 1, restricted: !!me.restricted, clan: clan ? clan.tag : "" });
+    }
+    case "/api/admin": {
+      // the same commands admins can type in chat, from the website
+      const me = await userForSession(env, body.session);
+      if (!me) return reply({ error: "sign in again" }, 401);
+      const said = await adminCommand(env, me, String(body.command || ""));
+      return reply({ said: said || "not a command" });
+    }
+    case "/api/admin/held": {
+      const me = await userForSession(env, q("session"));
+      if (!me || me.role !== 1) return reply({ error: "admins only" }, 403);
+      const rows = await env.DB.prepare(
+        `SELECT u.name, s.map_md5 AS md5, s.pp, s.acc, s.score, m.title FROM scores s JOIN users u ON u.id = s.user_id
+           LEFT JOIN maps m ON m.md5 = s.map_md5 WHERE s.held = 1 ORDER BY s.pp DESC LIMIT 100`,
+      ).all();
+      return reply({ scores: rows.results });
     }
     case "/api/account/login": {
       const user = await env.DB.prepare("SELECT id, name, pass_hash, salt FROM users WHERE name = ?").bind(String(body.name || "").trim()).first();

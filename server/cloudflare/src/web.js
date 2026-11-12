@@ -36,11 +36,15 @@ const PAGE = `<!doctype html>
   .stats div b { font-size: 22px; }
   .muted { color: var(--dim); }
   form { display: flex; gap: 8px; margin-bottom: 14px; }
-  input { flex: 1; background: var(--row); border: 0; color: var(--text); padding: 8px 10px; border-radius: 6px; }
+  input { flex: 1; background: var(--row); border: 0; color: var(--text); padding: 8px 10px; border-radius: 6px; min-width: 0; }
+  button { background: var(--pink); border: 0; color: #fff; padding: 8px 14px; border-radius: 6px; cursor: pointer; font: inherit; }
+  button.plain { background: var(--row); }
+  form.col { flex-direction: column; max-width: 360px; }
+  .err { color: #ff7777; min-height: 1.5em; }
 </style>
 </head>
 <body>
-<header><b>ProjectCadence</b><a href="#/players">players</a><a href="#/clans">clans</a></header>
+<header><b>ProjectCadence</b><a href="#/players">players</a><a href="#/clans">clans</a><a href="#/account" id="acct" style="margin-left:auto">sign in</a></header>
 <main id="app"></main>
 <script>
 const modes = ["osu!", "taiko", "catch", "mania"];
@@ -86,14 +90,83 @@ async function profile(name, mode) {
     "</table></div>";
 }
 
+/* signing in: the session lives in this browser, the same one the console would get */
+const session = () => { try { return localStorage.getItem("session") || ""; } catch { return ""; } };
+const setSession = (s) => { try { s ? localStorage.setItem("session", s) : localStorage.removeItem("session"); } catch {} };
+const post = (p, body) => fetch(p, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) })
+  .then(async (r) => ({ ok: r.ok, ...(await r.json().catch(() => ({}))) }));
+
+async function whoami() {
+  const s = session();
+  if (!s) return null;
+  const r = await fetch("/api/account/me?session=" + encodeURIComponent(s));
+  if (!r.ok) { setSession(""); return null; }
+  return r.json();
+}
+
+async function header() {
+  const me = await whoami();
+  document.getElementById("acct").textContent = me ? me.name : "sign in";
+}
+
+async function account() {
+  const me = await whoami();
+  if (!me) {
+    app.innerHTML = '<div class="card"><h3 style="margin-top:0">sign in</h3><form class="col" id="in"><input name="n" placeholder="name" autocomplete="username">' +
+      '<input name="p" type="password" placeholder="password" autocomplete="current-password"><button>sign in</button><div class="err" id="ein"></div></form></div>' +
+      '<div class="card"><h3 style="margin-top:0">make an account</h3><form class="col" id="up"><input name="n" placeholder="name (3-20 letters, digits, _ or -)" autocomplete="username">' +
+      '<input name="p" type="password" placeholder="password (6+ characters)" autocomplete="new-password"><button>sign up</button><div class="err" id="eup"></div></form>' +
+      '<p class="muted">Sign in with the same name and password in the game, under settings, ProjectCadence account.</p></div>';
+    const go = (id, path, err) => (document.getElementById(id).onsubmit = async (e) => {
+      e.preventDefault();
+      const f = e.target;
+      const r = await post(path, { name: f.n.value, password: f.p.value });
+      if (!r.ok || !r.session) { document.getElementById(err).textContent = r.error || "that didn't work"; return; }
+      setSession(r.session);
+      header();
+      account();
+    });
+    go("in", "/api/account/login", "ein");
+    go("up", "/api/account/register", "eup");
+    return;
+  }
+  let html = '<div class="card"><h2 style="margin:0 0 6px">' + (me.clan ? '<span class="tag">[' + esc(me.clan) + "]</span>" : "") + esc(me.name) + "</h2>" +
+    '<div class="muted">' + (me.admin ? "admin" : "player") + (me.restricted ? " · restricted" : "") + "</div>" +
+    '<p><a class="u" href="#/u/' + encodeURIComponent(me.name) + '">your profile</a></p><button class="plain" id="out">sign out</button></div>';
+  if (me.admin) {
+    html += '<div class="card"><h3 style="margin-top:0">admin</h3><form id="cmd"><input name="c" placeholder="!restrict name   !silence name 10   !approve name   !unrestrict name">' +
+      '<button>run</button></form><div class="muted" id="said"></div><h3>scores waiting for a look</h3><div id="held" class="muted">loading...</div></div>';
+  }
+  app.innerHTML = html;
+  document.getElementById("out").onclick = () => { setSession(""); header(); account(); };
+  if (!me.admin) return;
+  const run = async (command) => {
+    const r = await post("/api/admin", { session: session(), command });
+    document.getElementById("said").textContent = r.said || r.error || "";
+    held();
+  };
+  document.getElementById("cmd").onsubmit = (e) => { e.preventDefault(); run(e.target.c.value); e.target.c.value = ""; };
+  const held = async () => {
+    const d = await get("/api/admin/held?session=" + encodeURIComponent(session()));
+    const box = document.getElementById("held");
+    if (!d.scores || !d.scores.length) { box.textContent = "nothing waiting"; return; }
+    box.innerHTML = '<div class="wrap"><table>' + d.scores.map((s) => '<tr class="r"><td>' + esc(s.name) + "</td><td>" + esc(s.title || s.md5.slice(0, 10)) +
+      '</td><td class="num">' + Math.round(s.pp) + 'pp</td><td><button class="plain" data-n="' + esc(s.name) + '">approve their scores</button></td></tr>').join("") + "</table></div>";
+    for (const b of box.querySelectorAll("button")) b.onclick = () => run("!approve " + b.dataset.n);
+  };
+  held();
+}
+
 function route() {
   const [, page, a, b] = location.hash.split("/");
   for (const l of document.querySelectorAll("header a")) l.className = l.getAttribute("href") === "#/" + (page || "players") ? "on" : "";
+  if (page === "account") return account();
   if (page === "u" && a) return profile(decodeURIComponent(a), Number(b) || 0);
   if (page === "clans") return clans(Number(a) || 0);
   return players(Number(a) || 0);
 }
 addEventListener("hashchange", route);
+header();
 route();
 </script>
 </body>
