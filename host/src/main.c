@@ -33,6 +33,7 @@
 #include "video.h"
 #include "ui.h"
 #include "web.h"
+#include "bweb.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -95,7 +96,8 @@ static struct {
     kbd set_kbd;
     bool set_typing;
     int board;           /* song select: 0 your scores, 1 the online board */
-    int board_src;        /* which online board: 0 ProjectCadence, 1 osu.ppy.sh */
+    int board_src;        /* which online board: 0 ProjectCadence, 1 osu.ppy.sh, 2 the bancho server */
+    bool bweb_waiting;    /* a bancho replay is downloading to be watched */
     kbd search;
     int sel;
     float sel_scroll;
@@ -190,6 +192,19 @@ static struct {
 static int conv_of(const song_entry *e)
 {
     return e->info.mode == 0 && app.converts ? app.mode_pick : 0;
+}
+
+/* the mode a difficulty plays in right now: its own, or what it's converted to */
+static int play_mode(const song_entry *e)
+{
+    int c = conv_of(e);
+    return c ? c : e->info.mode;
+}
+
+static const char *base_name(const char *path)
+{
+    const char *b = strrchr(path, '/');
+    return b ? b + 1 : path;
 }
 
 /* star lookups carry the convert in bits 28-29, so each mode gets its own rating */
@@ -321,7 +336,7 @@ static void settings_load(void)
             else if (!strcmp(key, "simple_ui")) app.simple_ui = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
             else if (!strcmp(key, "onboarded")) app.onboarded = v != 0;
-            else if (!strcmp(key, "boards")) app.board_src = v != 0;
+            else if (!strcmp(key, "boards")) app.board_src = v >= 0 && v <= 2 ? (int)v : 0;
         }
         fclose(f);
     }
@@ -578,6 +593,11 @@ static bool start_song(const song_entry *e)
 
     if (!app.watching)
         replay_reset(&app.rec, e->file, app.mods);
+    if (bweb_on()) {
+        char what[200];
+        snprintf(what, sizeof(what), "%.60s - %.70s [%.50s]", e->info.artist, e->info.title, e->info.version);
+        mp_status(app.watching ? 6 : 2, what, map_md5(e->file), app.mods, play_mode(e), e->info.beatmap_id);
+    }
     app.rp_pos = 0;
     app.playing = e;
     app.cursor.x = 256;
@@ -634,6 +654,8 @@ static void back_to_select(void)
     }
     app.previewed = -1; /* get the preview going again */
     app.sel_changed = 0;
+    if (bweb_on())
+        mp_status(0, "", "", 0, app.mode_pick, 0);
     app.scores_for = -1;
     app.scr = SCREEN_SELECT;
     if (app.mp_playing) {
@@ -791,6 +813,26 @@ static void play_frame(const pad_state *pad, float dt)
                 const osu5_hud *h = &app.last_hud;
                 account_submit(map_md5(app.playing->file), app.playing->info.beatmap_id, app.ruleset, h->score, h->accuracy,
                                h->max_combo, app.mods, app.last_pp, h->rank, h->great, h->ok, h->meh, h->miss);
+                if (bweb_on()) {
+                    bweb_play bp;
+                    memset(&bp, 0, sizeof(bp));
+                    snprintf(bp.md5, sizeof(bp.md5), "%s", map_md5(app.playing->file));
+                    snprintf(bp.osu_name, sizeof(bp.osu_name), "%s", base_name(app.playing->file));
+                    bp.mode = play_mode(app.playing);
+                    bp.n300 = h->great;
+                    bp.n100 = h->ok;
+                    bp.n50 = h->meh;
+                    bp.miss = h->miss;
+                    bp.score = h->score;
+                    bp.max_combo = h->max_combo;
+                    bp.perfect = h->miss == 0;
+                    bp.passed = true;
+                    bp.rank = h->rank;
+                    bp.mods = app.mods;
+                    bp.play_ms = (int)app.play_time;
+                    bp.rp = &app.rec;
+                    bweb_submit(&bp);
+                }
             }
             app.scr = SCREEN_RESULTS;
         }
@@ -1207,8 +1249,36 @@ static void select_frame(const pad_state *pad)
         app.scr = SCREEN_MP;
     } else if (pad->pressed & PAD_CROSS)
         start_song(e);
-    else if (pad->pressed & PAD_R2 && app.nscores > 0 && replay_exists(app.scores[0].when))
+    else if (pad->pressed & PAD_R2 && app.board && app.board_src == 2) {
+        bweb_board b;
+        if (!app.bweb_waiting && bweb_board_for(map_md5(e->file), base_name(e->file), e->info.set_id, play_mode(e), &b) == ONLINE_READY &&
+            b.count > 0) {
+            bweb_replay_get(b.s[0].id, play_mode(e), e->file);
+            app.bweb_waiting = true;
+            app.watch.mods = b.s[0].mods;
+        }
+    } else if (pad->pressed & PAD_R2 && app.nscores > 0 && replay_exists(app.scores[0].when))
         watch_replay(e, app.scores[0].when);
+
+    /* the bancho replay asked for above, once it's here */
+    if (app.bweb_waiting) {
+        int mods = app.watch.mods;
+        int st = bweb_replay_take(&app.watch);
+        if (st == ONLINE_READY) {
+            app.bweb_waiting = false;
+            app.watch.mods = mods;
+            app.saved_mods = app.mods;
+            app.mods = mods;
+            app.watching = true;
+            if (!start_song(e)) {
+                app.watching = false;
+                app.mods = app.saved_mods;
+            }
+        } else if (st != ONLINE_LOADING) {
+            app.bweb_waiting = false;
+            toast("couldn't get that replay from the server");
+        }
+    }
 }
 
 /* ---- bits the menus share ---- */
@@ -1391,6 +1461,49 @@ static void render_online(const song_entry *e)
         snprintf(buf, sizeof(buf), "%.2f%%  %dx  %s", s->accuracy * 100, s->combo, s->mods);
         draw_text(400, y + 9, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
         snprintf(buf, sizeof(buf), "%.0fpp", s->pp);
+        draw_text(820, y + 6, 22, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, buf);
+    }
+}
+
+/* the bancho server's board, osu! stable's own call */
+static void render_bancho(const song_entry *e)
+{
+    static bweb_board b;
+    char buf[160];
+    int st = bweb_board_for(map_md5(e->file), base_name(e->file), e->info.set_id, play_mode(e), &b);
+    const char *head = "bancho server top scores";
+    if (st == ONLINE_OFF)
+        head = "connect to a bancho server in multiplayer first";
+    else if (st == ONLINE_LOADING)
+        head = "loading...";
+    else if (st == ONLINE_FAILED)
+        head = "the bancho server didn't answer";
+    else if (b.status < 0 || (b.status == 0 && !b.count))
+        head = "this difficulty isn't on the server";
+    else if (!b.count)
+        head = "no scores yet: be the first";
+    if (app.bweb_waiting)
+        head = "getting the replay...";
+    draw_text(60, 356, 24, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, head);
+    draw_text(820, 356, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, st == ONLINE_READY && b.count ? "R2 watch #1   L2 yours" : "L2 yours");
+    if (st != ONLINE_READY)
+        return;
+
+    int rows = SHOWN_SCORES * 64 / 40;
+    for (int i = 0; i < b.count && i < rows; i++) {
+        const bweb_score *s = &b.s[i];
+        float y = 396 + i * 40;
+        if (b.has_mine && b.mine.id == s->id)
+            draw_rect(50, y, 780, 38, gfx_rgba(0.5f, 0.9f, 0.95f, 0.15f));
+        snprintf(buf, sizeof(buf), "%d", i + 1);
+        draw_text(90, y + 6, 22, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, buf);
+        draw_rank(s->rank, 125, y + 18, 28, true, 1);
+        draw_text(160, y + 6, 22, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, s->user);
+        char tags[64];
+        mod_tags(s->mods, tags, sizeof(tags));
+        snprintf(buf, sizeof(buf), "%.2f%%  %dx  %s", s->acc * 100, s->combo, tags);
+        draw_text(400, y + 9, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%lld", s->score);
         draw_text(820, y + 6, 22, gfx_rgba(1, 0.85f, 0.4f, 1), ALIGN_RIGHT, buf);
     }
 }
@@ -1666,6 +1779,10 @@ static void render_select(void)
         ui_pill(760, 16, 13, ui_hex(0x8866EE, 1), gfx_rgba(1, 1, 1, 1), tags);
 
     ui_round_rect(40, 330, 800, 80 + SHOWN_SCORES * 64, 16, gfx_rgba(0.05f, 0.05f, 0.07f, 0.75f));
+    if (app.board && app.board_src == 2) {
+        render_bancho(&app.songs.items[app.sel]);
+        goto scores_done;
+    }
     if (app.board && (app.board_src == 0 || !online_enabled())) {
         render_global(&app.songs.items[app.sel]);
         goto scores_done;
@@ -1694,7 +1811,7 @@ static void render_select(void)
         draw_text(150, y + 38, 18, gfx_rgba(1, 1, 1, 0.7f), ALIGN_LEFT, buf);
     }
     draw_text(820, 356 + (app.nscores && replay_exists(app.scores[0].when) ? 24 : 0), 18,
-              gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, app.board_src && online_enabled() ? "L2 osu.ppy.sh" : "L2 global");
+              gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, app.board_src == 2 ? "L2 bancho" : app.board_src && online_enabled() ? "L2 osu.ppy.sh" : "L2 global");
 scores_done:;
 
     /* footer: 84 tall strip, the wide pink back button,
@@ -2092,7 +2209,7 @@ static void settings_frame(const pad_state *pad)
         break;
     case SET_BOARD:
         if (d || pad->pressed & PAD_CROSS)
-            app.board_src = !app.board_src;
+            app.board_src = (app.board_src + (d < 0 ? 2 : 1)) % 3;
         break;
     case SET_WIZARD:
         if (pad->pressed & PAD_CROSS) {
@@ -2219,7 +2336,8 @@ static void render_settings(void)
             break;
         case SET_BOARD:
             name = "online leaderboard";
-            snprintf(val, sizeof(val), "%s", !app.board_src ? "ProjectCadence"
+            snprintf(val, sizeof(val), "%s", app.board_src == 0 ? "ProjectCadence"
+                     : app.board_src == 2 ? (bweb_on() ? "bancho server" : "bancho server (connect in multiplayer)")
                      : online_enabled() ? "osu.ppy.sh" : "osu.ppy.sh (needs osuapi.txt)");
             break;
         case SET_RESCAN: name = "rescan the Songs folder"; kind = 3; break;
@@ -4119,6 +4237,14 @@ int main(void)
             if (ts.installed > toasted) {
                 toast("%s", ts.msg[0] ? ts.msg : "download finished");
                 toasted = ts.installed;
+            }
+            static int sub_seen;
+            char sm[128];
+            int ss = bweb_submit_state(sm, sizeof(sm));
+            if (ss != sub_seen) {
+                if (ss >= 2)
+                    toast("bancho: %s", sm);
+                sub_seen = ss;
             }
         }
         gfx_begin(0.06f, 0.06f, 0.09f);

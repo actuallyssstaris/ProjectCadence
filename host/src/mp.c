@@ -8,6 +8,7 @@
 #include "net.h"
 #include "online.h"
 #include "account.h"
+#include "bweb.h"
 #include "../include/osu5.h"
 
 #include <pthread.h>
@@ -23,7 +24,9 @@ static mp_state st;
 static int kind;
 static char server[160], user[32], pass[64];
 
-enum { OP_REFRESH, OP_CREATE, OP_JOIN, OP_LEAVE, OP_MAP, OP_READY, OP_START, OP_SCORE, OP_SETTINGS, OP_TEAM, OP_MODS, OP_CHAT, OP_LOBBY_CHAT };
+enum { OP_REFRESH, OP_CREATE, OP_JOIN, OP_LEAVE, OP_MAP, OP_READY, OP_START, OP_SCORE, OP_SETTINGS, OP_TEAM, OP_MODS, OP_CHAT, OP_LOBBY_CHAT,
+       OP_SAY, OP_CHAN_JOIN, OP_CHAN_PART, OP_STATS, OP_FRIEND, OP_HOST, OP_LOCK, OP_SLOT, OP_WIN, OP_STATUS,
+       OP_SPECTATE, OP_LOOKUP };
 
 typedef struct {
     int op;
@@ -489,11 +492,17 @@ enum {
     C_MATCH_READY = 39, C_MATCH_CHANGE_SETTINGS = 41, C_MATCH_START = 44, C_MATCH_SCORE_UPDATE = 47,
     C_MATCH_COMPLETE = 49, C_MATCH_CHANGE_MODS = 51, C_MATCH_LOAD_COMPLETE = 52, C_MATCH_NO_BEATMAP = 54,
     C_MATCH_NOT_READY = 55, C_MATCH_FAILED = 56, C_MATCH_HAS_BEATMAP = 59, C_SEND_PUBLIC_MESSAGE = 1,
-    C_MATCH_CHANGE_TEAM = 77,
+    C_MATCH_CHANGE_TEAM = 77, C_SEND_PRIVATE_MESSAGE = 25, C_CHANNEL_JOIN = 63, C_CHANNEL_PART = 78,
+    C_USER_STATS_REQUEST = 85, C_FRIEND_ADD = 73, C_FRIEND_REMOVE = 74, C_MATCH_TRANSFER_HOST = 70,
+    C_MATCH_LOCK = 40, C_MATCH_CHANGE_SLOT = 38, C_START_SPECTATING = 16, C_STOP_SPECTATING = 17,
+    C_CHANGE_ACTION = 0,
 
     S_USER_ID = 5, S_NOTIFICATION = 24, S_UPDATE_MATCH = 26, S_NEW_MATCH = 27, S_DISPOSE_MATCH = 28,
     S_MATCH_JOIN_SUCCESS = 36, S_MATCH_JOIN_FAIL = 37, S_MATCH_START = 46, S_MATCH_SCORE_UPDATE = 48,
     S_MATCH_ALL_LOADED = 53, S_MATCH_COMPLETE = 58, S_USER_PRESENCE = 83, S_SEND_MESSAGE = 7,
+    S_USER_STATS = 11, S_USER_LOGOUT = 12, S_SPECTATOR_JOINED = 13, S_SPECTATOR_LEFT = 14, S_SPECTATE_FRAMES = 15,
+    S_CHANNEL_JOIN_SUCCESS = 64, S_CHANNEL_INFO = 65, S_CHANNEL_KICK = 66, S_CHANNEL_AUTO_JOIN = 67,
+    S_FRIENDS_LIST = 72,
 };
 
 enum { SLOT_OPEN = 1, SLOT_LOCKED = 2, SLOT_NOT_READY = 4, SLOT_READY = 8, SLOT_NO_MAP = 16, SLOT_PLAYING = 32,
@@ -533,8 +542,19 @@ static double go_at;
 static struct { int id; char name[32]; } names[512];
 static int nnames;
 /* the match's chat channel, newest last */
-static struct { int id; char from[24]; char text[124]; } bc_chat[40];
+static mp_line bc_chat[40];
 static int bc_nchat, bc_chat_id;
+/* everything else said in channels and DMs */
+static mp_channel chans[MP_MAX_CHANNELS];
+static int nchans;
+static mp_line msgs[120];
+static int nmsgs;
+static mp_user users[MP_MAX_USERS];
+static int nusers;
+static int friends[256], nfriends;
+static int watching, watchers;
+static mp_spec_frame spec[4096];
+static int nspec, spec_action;
 
 /* ---- writing ---- */
 
@@ -684,7 +704,7 @@ static const struct { int ours; uint32_t theirs; } mod_map[] = {
     {OSU5_MOD_AUTOPILOT, 8192}, {OSU5_MOD_PERFECT, 16384 | 32}, {OSU5_MOD_DAYCORE, 256}, {OSU5_MOD_MIRROR, 1u << 30},
 };
 
-static uint32_t to_osu(int mods)
+uint32_t mp_mods_to_osu(int mods)
 {
     uint32_t m = 0;
     for (size_t i = 0; i < sizeof(mod_map) / sizeof(mod_map[0]); i++)
@@ -692,7 +712,7 @@ static uint32_t to_osu(int mods)
     return m;
 }
 
-static int from_osu(uint32_t m)
+int mp_mods_from_osu(uint32_t m)
 {
     int mods = 0;
     if (m & 512) m &= ~64u;      /* nightcore carries DT's bit too */
@@ -720,6 +740,18 @@ static void bc_publish(void)
         for (int s = 0; s < 16; s++)
             if (lobby[i].status[s] & SLOT_HAS_PLAYER) b->players++;
     }
+    st.nchannels = nchans;
+    memcpy(st.channels, chans, sizeof(chans[0]) * (size_t)nchans);
+    st.nmsgs = nmsgs;
+    memcpy(st.msgs, msgs, sizeof(msgs[0]) * (size_t)nmsgs);
+    st.nusers = nusers;
+    memcpy(st.users, users, sizeof(users[0]) * (size_t)nusers);
+    st.spectating = watching;
+    st.spectators = watchers;
+    st.my_slot = -1;
+    for (int s = 0; s < 16 && in_match; s++)
+        if (cur.uid[s] == bc_me)
+            st.my_slot = s;
     st.in_room = in_match;
     st.nchat = bc_nchat;
     memcpy(st.chat, bc_chat, sizeof(bc_chat[0]) * (size_t)bc_nchat);
@@ -736,7 +768,7 @@ static void bc_publish(void)
         st.map_set = 0;
         snprintf(st.map_md5, sizeof(st.map_md5), "%s", cur.md5);
         snprintf(st.map_title, sizeof(st.map_title), "%s", cur.map_name);
-        st.mods = from_osu(cur.mods);
+        st.mods = mp_mods_from_osu(cur.mods);
         st.nmembers = 0;
         for (int s = 0; s < 16 && st.nmembers < MP_MAX_MEMBERS; s++) {
             if (!(cur.status[s] & SLOT_HAS_PLAYER)) continue;
@@ -775,6 +807,53 @@ static void lobby_put(const bmatch *m)
         lobby[nlobby++] = *m;
 }
 
+static mp_channel *chan_find(const char *name, bool add)
+{
+    for (int i = 0; i < nchans; i++)
+        if (!strcasecmp(chans[i].name, name))
+            return &chans[i];
+    if (!add || nchans >= MP_MAX_CHANNELS)
+        return NULL;
+    mp_channel *c = &chans[nchans++];
+    memset(c, 0, sizeof(*c));
+    snprintf(c->name, sizeof(c->name), "%s", name);
+    return c;
+}
+
+static void msg_add(const char *to, const char *from, const char *text)
+{
+    if (nmsgs == 120) {
+        memmove(msgs, msgs + 1, sizeof(msgs[0]) * 119);
+        nmsgs--;
+    }
+    mp_line *m = &msgs[nmsgs++];
+    memset(m, 0, sizeof(*m));
+    m->id = ++bc_chat_id;
+    snprintf(m->to, sizeof(m->to), "%s", to);
+    snprintf(m->from, sizeof(m->from), "%s", from);
+    snprintf(m->text, sizeof(m->text), "%s", text);
+    mp_channel *c = chan_find(to, true);
+    if (c && strcmp(from, user))
+        c->unread++;
+}
+
+static mp_user *user_slot(int uid)
+{
+    for (int i = 0; i < nusers; i++)
+        if (users[i].id == uid)
+            return &users[i];
+    if (nusers < MP_MAX_USERS) {
+        memset(&users[nusers], 0, sizeof(users[0]));
+        users[nusers].id = uid;
+        return &users[nusers++];
+    }
+    /* full: the oldest one makes room */
+    memmove(users, users + 1, sizeof(users[0]) * (MP_MAX_USERS - 1));
+    memset(&users[MP_MAX_USERS - 1], 0, sizeof(users[0]));
+    users[MP_MAX_USERS - 1].id = uid;
+    return &users[MP_MAX_USERS - 1];
+}
+
 static void handle(uint16_t id, rd *r)
 {
     switch (id) {
@@ -792,9 +871,11 @@ static void handle(uint16_t id, rd *r)
         r_str(r, from, sizeof(from));
         r_str(r, text, sizeof(text));
         r_str(r, target, sizeof(target));
-        /* only what's said in the match */
-        if (strcmp(target, "#multiplayer") && strncmp(target, "#mp_", 4))
+        if (strcmp(target, "#multiplayer") && strncmp(target, "#mp_", 4)) {
+            /* a DM's target is us: file it under the sender */
+            msg_add(target[0] == '#' ? target : from, from, text);
             break;
+        }
         if (bc_nchat == 40) {
             memmove(bc_chat, bc_chat + 1, sizeof(bc_chat[0]) * 39);
             bc_nchat--;
@@ -818,6 +899,116 @@ static void handle(uint16_t id, rd *r)
             names[nnames].id = uid;
             snprintf(names[nnames++].name, sizeof(names[0].name), "%s", name);
         }
+        break;
+    }
+    case S_USER_STATS: {
+        int uid = (int32_t)r_u32(r);
+        mp_user *u = user_slot(uid);
+        u->action = r_u8(r);
+        r_str(r, u->doing, sizeof(u->doing));
+        r_str(r, u->md5, sizeof(u->md5));
+        u->mods = mp_mods_from_osu(r_u32(r));
+        u->mode = r_u8(r);
+        u->map_id = (int32_t)r_u32(r);
+        uint32_t lo = r_u32(r), hi = r_u32(r);
+        u->ranked_score = (long long)((uint64_t)hi << 32 | lo);
+        uint32_t accb = r_u32(r);
+        memcpy(&u->acc, &accb, 4);
+        u->plays = (int32_t)r_u32(r);
+        lo = r_u32(r);
+        hi = r_u32(r);
+        u->total_score = (long long)((uint64_t)hi << 32 | lo);
+        u->rank = (int32_t)r_u32(r);
+        u->pp = r_u16(r);
+        u->online = true;
+        snprintf(u->name, sizeof(u->name), "%s", name_of(uid));
+        for (int i = 0; i < nfriends; i++)
+            if (friends[i] == uid)
+                u->friend_ = true;
+        break;
+    }
+    case S_USER_LOGOUT: {
+        int uid = (int32_t)r_u32(r);
+        for (int i = 0; i < nusers; i++)
+            if (users[i].id == uid)
+                users[i].online = false;
+        for (int i = 0; i < nnames; i++)
+            if (names[i].id == uid)
+                names[i--] = names[--nnames];
+        if (uid == watching)
+            watching = 0;
+        break;
+    }
+    case S_CHANNEL_INFO:
+    case S_CHANNEL_AUTO_JOIN: {
+        char name[32], topic[64];
+        r_str(r, name, sizeof(name));
+        r_str(r, topic, sizeof(topic));
+        int n = r_u16(r);
+        /* info is about every channel; only remember ones we're in, or auto-joined */
+        mp_channel *c = chan_find(name, id == S_CHANNEL_AUTO_JOIN);
+        if (c) {
+            snprintf(c->topic, sizeof(c->topic), "%s", topic);
+            c->users = n;
+        }
+        break;
+    }
+    case S_CHANNEL_JOIN_SUCCESS: {
+        char name[32];
+        r_str(r, name, sizeof(name));
+        if (strcmp(name, "#multiplayer") && strncmp(name, "#mp_", 4) && strcmp(name, "#lobby") && strcmp(name, "#spectator"))
+            chan_find(name, true);
+        break;
+    }
+    case S_CHANNEL_KICK: {
+        char name[32];
+        r_str(r, name, sizeof(name));
+        for (int i = 0; i < nchans; i++)
+            if (!strcasecmp(chans[i].name, name))
+                chans[i--] = chans[--nchans];
+        break;
+    }
+    case S_FRIENDS_LIST: {
+        int n = r_u16(r);
+        nfriends = 0;
+        for (int i = 0; i < n && nfriends < 256; i++)
+            friends[nfriends++] = (int32_t)r_u32(r);
+        for (int i = 0; i < nusers; i++) {
+            users[i].friend_ = false;
+            for (int k = 0; k < nfriends; k++)
+                if (friends[k] == users[i].id)
+                    users[i].friend_ = true;
+        }
+        break;
+    }
+    case S_SPECTATOR_JOINED:
+        watchers++;
+        break;
+    case S_SPECTATOR_LEFT:
+        if (watchers > 0)
+            watchers--;
+        break;
+    case S_SPECTATE_FRAMES: {
+        r_u32(r); /* extra */
+        int n = r_u16(r);
+        for (int i = 0; i < n && r_ok(r, 14); i++) {
+            int keys = r_u8(r);
+            r_u8(r); /* taiko's old byte */
+            uint32_t xb = r_u32(r), yb = r_u32(r);
+            int t = (int32_t)r_u32(r);
+            if (nspec == (int)(sizeof(spec) / sizeof(spec[0]))) {
+                memmove(spec, spec + 1024, sizeof(spec[0]) * (size_t)(nspec - 1024));
+                nspec -= 1024;
+            }
+            mp_spec_frame *f = &spec[nspec++];
+            memcpy(&f->x, &xb, 4);
+            memcpy(&f->y, &yb, 4);
+            f->t = t;
+            f->keys = keys;
+        }
+        int action = r_u8(r);
+        if (action)
+            spec_action = action;
         break;
     }
     case S_NEW_MATCH:
@@ -928,13 +1119,23 @@ static bool bc_login(void)
     online_stable_version(version, sizeof(version));
     char md5[33];
     md5_text(pass, md5);
-    /* five made-up machine hashes; the server only wants them shaped right */
+    /* machine hashes. Score submission sends the same client string and the two
+     * ids behind the last hashes, so they have to agree with each other */
+    char uid1[40], uid2[40], path_md5[33], adapters_md5[33], u1[33], u2[33], client[256];
+    snprintf(uid1, sizeof(uid1), "cadence-%.20s", user);
+    snprintf(uid2, sizeof(uid2), "ps5-%.20s", user);
+    md5_text("/data/cadence", path_md5);
+    md5_text("00-11-22-33-44-55.", adapters_md5);
+    md5_text(uid1, u1);
+    md5_text(uid2, u2);
+    snprintf(client, sizeof(client), "%s:00-11-22-33-44-55.:%s:%s:%s:", path_md5, adapters_md5, u1, u2);
     char body[512];
-    snprintf(body, sizeof(body),
-             "%s\n%s\n%s|0|0|%s:00-11-22-33-44-55.:%s:%s:%s:|0\n", user, md5, version, md5, md5, md5, md5);
+    snprintf(body, sizeof(body), "%s\n%s\n%s|0|0|%s|0\n", user, md5, version, client);
     bc_me = 0;
     nlobby = 0;
     in_match = false;
+    nchans = nmsgs = nusers = nfriends = 0;
+    watching = watchers = nspec = spec_action = 0;
     if (bc_post(true, body, strlen(body)) != 200)
         return false;
     if (bc_me <= 0 || !bc_token[0] || !strcmp(bc_token, "no")) {
@@ -945,6 +1146,7 @@ static bool bc_login(void)
         return false;
     }
     LOG("mp: bancho %s as %s (%d), client %s", server, user, bc_me, version);
+    bweb_session(server, user, md5, version, client, uid1, uid2, bc_token);
     outn = 0;
     packet(C_JOIN_LOBBY);
     return true;
@@ -990,7 +1192,7 @@ static void bc_do(const cmd *c)
         w_match(&m);
         end(at);
         at = begin(C_MATCH_CHANGE_MODS);
-        w_u32(to_osu(c->mods));
+        w_u32(mp_mods_to_osu(c->mods));
         end(at);
         break;
     }
@@ -1019,9 +1221,111 @@ static void bc_do(const cmd *c)
     case OP_TEAM:
         packet(C_MATCH_CHANGE_TEAM); /* bancho only flips it */
         break;
+    case OP_SAY: {
+        bool dm = c->s2[0] != '#';
+        size_t at = begin(dm ? C_SEND_PRIVATE_MESSAGE : C_SEND_PUBLIC_MESSAGE);
+        w_str(user);
+        w_str(c->s1);
+        w_str(c->s2);
+        w_i32(bc_me);
+        end(at);
+        msg_add(c->s2, user, c->s1); /* no echo from the server */
+        break;
+    }
+    case OP_CHAN_JOIN: {
+        size_t at = begin(C_CHANNEL_JOIN);
+        w_str(c->s2);
+        end(at);
+        break;
+    }
+    case OP_CHAN_PART: {
+        if (c->s2[0] == '#') {
+            size_t at = begin(C_CHANNEL_PART);
+            w_str(c->s2);
+            end(at);
+        }
+        for (int i = 0; i < nchans; i++)
+            if (!strcasecmp(chans[i].name, c->s2))
+                chans[i--] = chans[--nchans];
+        break;
+    }
+    case OP_STATS: {
+        size_t at = begin(C_USER_STATS_REQUEST);
+        w_u16(1);
+        w_i32(c->a);
+        end(at);
+        break;
+    }
+    case OP_LOOKUP:
+        for (int i = 0; i < nnames; i++)
+            if (!strcasecmp(names[i].name, c->s1)) {
+                size_t at = begin(C_USER_STATS_REQUEST);
+                w_u16(1);
+                w_i32(names[i].id);
+                end(at);
+                pthread_mutex_lock(&lock);
+                snprintf(user_slot(names[i].id)->name, sizeof(users[0].name), "%s", names[i].name);
+                pthread_mutex_unlock(&lock);
+                break;
+            }
+        break;
+    case OP_FRIEND: {
+        size_t at = begin(c->f1 ? C_FRIEND_ADD : C_FRIEND_REMOVE);
+        w_i32(c->a);
+        end(at);
+        if (c->f1 && nfriends < 256)
+            friends[nfriends++] = c->a;
+        for (int i = 0; i < nfriends && !c->f1; i++)
+            if (friends[i] == c->a)
+                friends[i--] = friends[--nfriends];
+        for (int i = 0; i < nusers; i++)
+            if (users[i].id == c->a)
+                users[i].friend_ = c->f1;
+        break;
+    }
+    case OP_HOST:
+    case OP_LOCK:
+    case OP_SLOT: {
+        size_t at = begin(c->op == OP_HOST ? C_MATCH_TRANSFER_HOST : c->op == OP_LOCK ? C_MATCH_LOCK : C_MATCH_CHANGE_SLOT);
+        w_i32(c->a);
+        end(at);
+        break;
+    }
+    case OP_WIN: {
+        if (!in_match)
+            break;
+        bmatch m = cur;
+        m.win = (uint8_t)c->a;
+        size_t at = begin(C_MATCH_CHANGE_SETTINGS);
+        w_match(&m);
+        end(at);
+        break;
+    }
+    case OP_STATUS: {
+        size_t at = begin(C_CHANGE_ACTION);
+        w_u8((uint8_t)c->a);
+        w_str(c->s1);
+        w_str(c->md5);
+        w_u32(mp_mods_to_osu(c->mods));
+        w_u8((uint8_t)c->mode);
+        w_i32(c->b);
+        end(at);
+        break;
+    }
+    case OP_SPECTATE:
+        if (watching)
+            packet(C_STOP_SPECTATING);
+        watching = c->a;
+        nspec = spec_action = 0;
+        if (watching) {
+            size_t at = begin(C_START_SPECTATING);
+            w_i32(watching);
+            end(at);
+        }
+        break;
     case OP_MODS: {
         size_t at = begin(C_MATCH_CHANGE_MODS);
-        w_u32(to_osu(c->mods));
+        w_u32(mp_mods_to_osu(c->mods));
         end(at);
         break;
     }
@@ -1210,6 +1514,7 @@ void mp_disconnect(void)
     want_on = false;
     st.conn = MP_OFF;
     queued = 0;
+    bweb_end();
     bye.kind = kind;
     snprintf(bye.server, sizeof(bye.server), "%s", server);
     snprintf(bye.token, sizeof(bye.token), "%s", kind == MP_CADENCE ? cd_token : bc_token);
@@ -1255,6 +1560,77 @@ void mp_chat(const char *text)
     cmd c = {.op = OP_CHAT};
     snprintf(c.s1, sizeof(c.s1), "%s", text);
     push(&c);
+}
+
+void mp_say(const char *to, const char *text)
+{
+    cmd c = {.op = OP_SAY};
+    snprintf(c.s1, sizeof(c.s1), "%s", text);
+    snprintf(c.s2, sizeof(c.s2), "%s", to);
+    push(&c);
+}
+
+void mp_channel_join(const char *name)
+{
+    cmd c = {.op = OP_CHAN_JOIN};
+    snprintf(c.s2, sizeof(c.s2), "%s", name);
+    push(&c);
+}
+
+void mp_channel_leave(const char *name)
+{
+    cmd c = {.op = OP_CHAN_PART};
+    snprintf(c.s2, sizeof(c.s2), "%s", name);
+    push(&c);
+}
+
+void mp_channel_seen(const char *name)
+{
+    pthread_mutex_lock(&lock);
+    for (int i = 0; i < nchans; i++)
+        if (!strcasecmp(chans[i].name, name))
+            chans[i].unread = 0;
+    pthread_mutex_unlock(&lock);
+}
+
+void mp_user_stats(int user_id) { push(&(cmd){.op = OP_STATS, .a = user_id}); }
+
+void mp_user_lookup(const char *name)
+{
+    cmd c = {.op = OP_LOOKUP};
+    snprintf(c.s1, sizeof(c.s1), "%s", name);
+    push(&c);
+}
+
+void mp_friend(int user_id, bool add) { push(&(cmd){.op = OP_FRIEND, .a = user_id, .f1 = add}); }
+void mp_host_to(int slot) { push(&(cmd){.op = OP_HOST, .a = slot}); }
+void mp_lock_slot(int slot) { push(&(cmd){.op = OP_LOCK, .a = slot}); }
+void mp_move_slot(int slot) { push(&(cmd){.op = OP_SLOT, .a = slot}); }
+void mp_win_condition(int win) { push(&(cmd){.op = OP_WIN, .a = win}); }
+
+void mp_status(int action, const char *text, const char *md5, int mods, int mode, int map_id)
+{
+    cmd c = {.op = OP_STATUS, .a = action, .b = map_id, .mods = mods, .mode = mode};
+    snprintf(c.s1, sizeof(c.s1), "%s", text ? text : "");
+    snprintf(c.md5, sizeof(c.md5), "%s", md5 ? md5 : "");
+    push(&c);
+}
+
+void mp_spectate(int user_id) { push(&(cmd){.op = OP_SPECTATE, .a = user_id}); }
+
+int mp_spec_take(mp_spec_frame *out, int max, int *action)
+{
+    pthread_mutex_lock(&lock);
+    int n = nspec < max ? nspec : max;
+    memcpy(out, spec, sizeof(spec[0]) * (size_t)n);
+    memmove(spec, spec + n, sizeof(spec[0]) * (size_t)(nspec - n));
+    nspec -= n;
+    if (action) {
+        *action = spec_action;
+        spec_action = 0;
+    }
+    pthread_mutex_unlock(&lock);
+    return n;
 }
 
 void mp_lobby_chat(const char *text)
