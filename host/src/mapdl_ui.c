@@ -14,6 +14,7 @@
 static struct {
     char query[64];
     int page;
+    int mode, cat; /* the listing's filters: mode, and an index into cats */
     int sel;
     float scroll;
     bool typing;
@@ -24,13 +25,21 @@ static struct {
 
 static bool simple;
 
+static const struct { int status; const char *name; } cats[] = {
+    {MAPDL_ANY, "any"}, {1, "ranked"}, {3, "qualified"}, {4, "loved"}, {0, "pending"}, {-1, "wip"}, {-2, "graveyard"},
+};
+#define NCATS (int)(sizeof(cats) / sizeof(cats[0]))
+static const char *const modes[4] = {"osu!", "osu!taiko", "osu!catch", "osu!mania"};
+
+void mapdl_ui_set_mode(int mode) { ui.mode = mode & 3; }
+
 void mapdl_ui_set_simple(bool on) { simple = on; }
 
 static void run_search(void)
 {
     ui.sel = 0;
     ui.scroll = 0;
-    if (!mapdl_find(ui.query, ui.page))
+    if (!mapdl_find(ui.query, ui.page, ui.mode, cats[ui.cat].status))
         snprintf(ui.note, sizeof(ui.note), "no network");
     else
         ui.note[0] = 0;
@@ -67,6 +76,16 @@ bool mapdl_ui_frame(const pad_state *pad)
         return true;
     if (pad->pressed & PAD_TRIANGLE) {
         ui.typing = true;
+        return false;
+    }
+    /* L2 / R2 step through the mode and category filters */
+    if (pad->pressed & (PAD_L2 | PAD_R2)) {
+        if (pad->pressed & PAD_L2)
+            ui.mode = (ui.mode + 1) % 4;
+        else
+            ui.cat = (ui.cat + 1) % NCATS;
+        ui.page = 0;
+        run_search();
         return false;
     }
     if (pad->pressed & PAD_R1 && ui.res.state == 2 && ui.res.count == MAPDL_RESULTS) {
@@ -214,7 +233,7 @@ void mapdl_ui_render(void)
     draw_rect(ix + 1, 38, 3, 16, gfx_rgba(1, 1, 1, 0.95f));
     draw_text(ix + 40, 30, 30, white, ALIGN_LEFT, "beatmap listing");
 
-    draw_rect(px, 96, pw, 130, ui_hex(0x141B23, 1));
+    draw_rect(px, 96, pw, 160, ui_hex(0x141B23, 1));
     ui_round_rect(px + 70, 120, pw - 140, 54, 8, ui_hex(0x22272A, 1));
     if (ui.typing)
         ui_round_rect(px + 70, 170, pw - 140, 4, 2, ui_hex(UI_YELLOW, 1));
@@ -224,17 +243,26 @@ void mapdl_ui_render(void)
         snprintf(buf, sizeof(buf), "type in keywords...");
     draw_text(px + 90, 133, 26, ui.query[0] || ui.typing ? white : gfx_rgba(1, 1, 1, 0.45f), ALIGN_LEFT, buf);
     ui_search_icon(px + pw - 100, 147, 32, white);
-    draw_text(px + 70, 190, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "mode");
-    draw_text(px + 190, 190, 18, white, ALIGN_LEFT, "any");
-    draw_text(px + 260, 190, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "category");
-    draw_text(px + 380, 190, 18, white, ALIGN_LEFT, ui.query[0] ? "any" : "ranked");
+    /* the filter rows, lazer's: a label, then the choices with the live one lit */
+    {
+        float fx = px + 70, fy = 190;
+        draw_text(fx, fy, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "mode  (L2)");
+        float ox = fx + 170;
+        for (int m = 0; m < 4; m++)
+            ox += draw_text(ox, fy, 18, m == ui.mode ? white : gfx_rgba(1, 1, 1, 0.45f), ALIGN_LEFT, modes[m]) + 22;
+        fy += 30;
+        draw_text(fx, fy, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, "category  (R2)");
+        ox = fx + 170;
+        for (int c = 0; c < NCATS; c++)
+            ox += draw_text(ox, fy, 18, c == ui.cat ? white : gfx_rgba(1, 1, 1, 0.45f), ALIGN_LEFT, cats[c].name) + 22;
+    }
 
     /* sort strip */
-    draw_rect(px, 226, pw, 54, ui_hex(0x2D3538, 1));
-    draw_text(px + 30, 242, 18, dim, ALIGN_LEFT, "sort by");
-    draw_text(px + 120, 242, 18, white, ALIGN_LEFT, ui.query[0] ? "relevance" : "ranked");
+    draw_rect(px, 256, pw, 54, ui_hex(0x2D3538, 1));
+    draw_text(px + 30, 272, 18, dim, ALIGN_LEFT, "sort by");
+    draw_text(px + 120, 272, 18, white, ALIGN_LEFT, ui.query[0] ? "relevance" : "newest");
     snprintf(buf, sizeof(buf), "page %d", ui.page + 1);
-    draw_text(px + pw - 30, 242, 18, dim, ALIGN_RIGHT, buf);
+    draw_text(px + pw - 30, 272, 18, dim, ALIGN_RIGHT, buf);
 
     /* download progress, in the header */
     mapdl_status st;
@@ -251,7 +279,7 @@ void mapdl_ui_render(void)
         draw_text(px + pw - 40, 54, 16, dim, ALIGN_RIGHT, buf);
     }
 
-    const float top = 300;
+    const float top = 330;
     if (ui.res.state == 1) {
         draw_text(GFX_W / 2, top + 120, 28, dim, ALIGN_CENTRE, "searching...");
     } else if (ui.res.state == 3 || (ui.res.state == 2 && ui.res.count == 0)) {
@@ -326,7 +354,7 @@ void mapdl_ui_render(void)
 
     if (ui.note[0])
         draw_text(px + 70, GFX_H - 110, 20, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, ui.note);
-    ui_footer(ui.typing ? NULL : "CROSS download   TRIANGLE search   L1/R1 page", "CIRCLE");
+    ui_footer(ui.typing ? NULL : "CROSS download   TRIANGLE search   L1/R1 page   L2 mode   R2 category", "CIRCLE");
     draw_text(GFX_W - 40, GFX_H - 50, 16, gfx_rgba(1, 1, 1, 0.4f), ALIGN_RIGHT, "maps from catboy.best, a mirror of osu.ppy.sh");
     if (ui.typing)
         kbd_render(&ui.keys);

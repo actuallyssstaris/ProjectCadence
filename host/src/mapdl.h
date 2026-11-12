@@ -28,8 +28,10 @@ typedef struct {
     char msg[128];
 } mapdl_search;
 
-/* starts a search on a worker; empty query = newest ranked sets */
-bool mapdl_find(const char *query, int page);
+#define MAPDL_ANY 99 /* no status filter */
+/* starts a search on a worker; empty query = newest ranked sets. status is osu!'s
+ * (1 ranked, 3 qualified, 4 loved, 0 pending, -1 wip, -2 graveyard) or MAPDL_ANY */
+bool mapdl_find(const char *query, int page, int mode, int status);
 /* copies the current search state out (safe to call every frame) */
 void mapdl_results(mapdl_search *out);
 

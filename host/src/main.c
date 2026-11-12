@@ -41,6 +41,7 @@
 
 #include <dirent.h>
 #include <math.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -82,6 +83,8 @@ static struct {
     song_list songs;      /* what song select shows: filtered and sorted */
     char filter[64];
     int sort;
+    int mode_pick;          /* 0 osu!, 1 taiko, 2 catch, 3 mania */
+    float star_lo, star_hi; /* song select's star range, hi 0 = no top */
     bool searching;
     int board;            /* song select: 0 your scores, 1 the online board */
     int board_src;        /* which online board: 0 ProjectCadence, 1 osu.ppy.sh */
@@ -202,6 +205,53 @@ static void notify(const char *msg)
     sceKernelSendNotificationRequest(0, &req, sizeof(req), 0);
 }
 
+/* lazer's notification toasts: they slide in at the top right and leave on their own */
+static struct {
+    char msg[128];
+    double at;
+} toasts[4];
+static int ntoasts;
+
+static void toast(const char *fmt, ...)
+{
+    if (ntoasts == 4) {
+        memmove(toasts, toasts + 1, sizeof(toasts[0]) * 3);
+        ntoasts--;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(toasts[ntoasts].msg, sizeof(toasts[0].msg), fmt, ap);
+    va_end(ap);
+    toasts[ntoasts++].at = wall_ms();
+}
+
+static void render_toasts(void)
+{
+    const double life = 3500, slide = 250;
+    double now = wall_ms();
+    int keep = 0;
+    for (int i = 0; i < ntoasts; i++)
+        if (now - toasts[i].at < life + slide)
+            toasts[keep++] = toasts[i];
+    ntoasts = keep;
+    float y = 70;
+    for (int i = ntoasts - 1; i >= 0; i--) {
+        double age = now - toasts[i].at;
+        float in = (float)fmin(1, age / slide), out = (float)fmin(1, fmax(0, (age - life) / slide));
+        float k = in * in * (3 - 2 * in) * (1 - out);
+        float w = 440, x = GFX_W - 20 - w * k;
+        ui_round_rect(x, y, w, 64, 10, ui_hex(0x2A2833, 0.96f * k));
+        ui_round_rect(x, y, 56, 64, 10, ui_hex(0x3A3747, k));
+        ui_disc(x + 28, y + 32, 11, gfx_rgba(1, 1, 1, 0.9f * k));
+        draw_text(x + 28, y + 21, 16, ui_hex(0x3A3747, k), ALIGN_CENTRE, "i");
+        char m[128];
+        snprintf(m, sizeof(m), "%s", toasts[i].msg);
+        ui_fit(m, 18, w - 80);
+        draw_text(x + 70, y + 21, 18, gfx_rgba(1, 1, 1, k), ALIGN_LEFT, m);
+        y += 72;
+    }
+}
+
 /* ---- settings ---- */
 
 static void settings_load(void)
@@ -228,6 +278,9 @@ static void settings_load(void)
             else if (!strcmp(key, "cursor")) app.cursor_scale = v;
             else if (!strcmp(key, "mods")) app.mods = (int)v & ~OSU5_MOD_AUTO;
             else if (!strcmp(key, "sort")) app.sort = (int)v >= 0 && (int)v <= SORT_COUNT ? (int)v : 0;
+            else if (!strcmp(key, "mode")) app.mode_pick = (int)v & 3;
+            else if (!strcmp(key, "star_lo")) app.star_lo = v;
+            else if (!strcmp(key, "star_hi")) app.star_hi = v;
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
             else if (!strcmp(key, "simple_ui")) app.simple_ui = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
@@ -244,9 +297,9 @@ static void settings_save(void)
     FILE *f = fopen(SETTINGS_FILE, "w");
     if (!f)
         return;
-    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\n",
+    fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\nmode %d\nstar_lo %.1f\nstar_hi %.1f\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
-            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui);
+            app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui, app.mode_pick, app.star_lo, app.star_hi);
     fclose(f);
 }
 
@@ -795,6 +848,20 @@ static void apply_view(void)
     if (app.songs.count > 0)
         snprintf(keep, sizeof(keep), "%s", app.songs.items[app.sel].file);
     songs_filter(&app.all, &app.songs, app.filter);
+    {
+        /* the picked mode, then the star range (unrated maps stay in) */
+        int n = 0;
+        for (int i = 0; i < app.songs.count; i++) {
+            const song_entry *e = &app.songs.items[i];
+            if ((e->info.mode & 3) != app.mode_pick)
+                continue;
+            float st = stars_get(e->file, 0);
+            if (st >= 0 && (st < app.star_lo || (app.star_hi > 0 && st > app.star_hi)))
+                continue;
+            app.songs.items[n++] = *e;
+        }
+        app.songs.count = n;
+    }
     if (app.sort == SORT_COUNT) {
         /* the favourites view: only starred sets, by artist */
         int n = 0;
@@ -811,6 +878,36 @@ static void apply_view(void)
         app.previewed = -1;
         app.scores_for = -1;
     }
+}
+
+
+static const char *const mode_names[4] = {"osu!", "osu!taiko", "osu!catch", "osu!mania"};
+
+/* the toolbar's mode: song select only lists that mode's maps, like lazer */
+static void set_mode(int m)
+{
+    app.mode_pick = (m + 4) % 4;
+    mapdl_ui_set_mode(app.mode_pick);
+    apply_view();
+    settings_save();
+    toast("playing %s maps", mode_names[app.mode_pick]);
+}
+
+/* right stick flicks, once per push: left/right -1/+1, down 2 */
+static int rstick_flick(const pad_state *pad)
+{
+    static bool armed = true;
+    float ax = fabsf(pad->rx), ay = fabsf(pad->ry);
+    if (ax < 0.35f && ay < 0.35f) {
+        armed = true;
+        return 0;
+    }
+    if (!armed || (ax < 0.75f && ay < 0.75f))
+        return 0;
+    armed = false;
+    if (ax > ay)
+        return pad->rx > 0 ? 1 : -1;
+    return pad->ry > 0 ? 2 : 0;
 }
 
 static bool remove_tree(const char *path)
@@ -882,6 +979,16 @@ static int closest_in_set(int start, int from)
 
 static void select_frame(const pad_state *pad)
 {
+    /* right stick: left/right change the mode, down jumps to a random set */
+    int flick = app.searching ? 0 : rstick_flick(pad);
+    if (flick == 1 || flick == -1) {
+        set_mode(app.mode_pick + flick);
+        return;
+    }
+    if (flick == 2 && app.songs.count > 0) {
+        app.sel = set_start(rand() % app.songs.count);
+        return;
+    }
     if (!app.searching && pad->pressed & PAD_CIRCLE) {
         app.scr = app.mp_pick ? SCREEN_MP : SCREEN_MENU;
         app.mp_pick = false;
@@ -914,6 +1021,7 @@ static void select_frame(const pad_state *pad)
     if (pad->pressed & PAD_L3 && app.songs.count > 0) {
         bool on = fav_toggle(app.songs.items[app.sel].dir);
         snprintf(app.status, sizeof(app.status), on ? "added to favourites" : "removed from favourites");
+        toast(on ? "added to favourites" : "removed from favourites");
         if (app.sort == SORT_COUNT)
             apply_view();
     }
@@ -1251,10 +1359,17 @@ static void render_select(void)
     draw_text(GFX_W - 860, 38, 24, gfx_rgba(1, 1, 1, app.filter[0] || app.searching ? 1 : 0.45f), ALIGN_LEFT, buf);
     snprintf(buf, sizeof(buf), "sort by  %s   (R1)", sort_label());
     draw_text(GFX_W - 860, 86, 20, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, buf);
+    if (app.star_hi > 0)
+        snprintf(buf, sizeof(buf), "%s   %.1f-%.1f*", mode_names[app.mode_pick], app.star_lo, app.star_hi);
+    else if (app.star_lo > 0)
+        snprintf(buf, sizeof(buf), "%s   %.1f*+", mode_names[app.mode_pick], app.star_lo);
+    else
+        snprintf(buf, sizeof(buf), "%s", mode_names[app.mode_pick]);
+    ui_pill(GFX_W - 560, 82, 16, ui_hex(0x66CCFF, 1), ui_hex(0x222222, 1), buf);
     snprintf(buf, sizeof(buf), "%d maps", app.songs.count);
     draw_text(GFX_W - 40, 86, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, buf);
 
-    if (app.songs.count == 0 && app.all.count > 0) {
+    if (app.songs.count == 0 && app.all.count > 0 && app.filter[0]) {
         snprintf(buf, sizeof(buf), "nothing matches \"%s\"", app.filter);
         draw_text(GFX_W / 2, 400, 40, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, buf);
         if (app.searching)
@@ -1263,6 +1378,13 @@ static void render_select(void)
     }
 
     if (app.songs.count == 0) {
+        if (app.all.count > 0) {
+            snprintf(buf, sizeof(buf), "no %s maps here", mode_names[app.mode_pick]);
+            draw_text(GFX_W / 2, 400, 48, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, buf);
+            draw_text(GFX_W / 2, 480, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "flick the right stick left or right to change the mode");
+            ui_footer(NULL, "CIRCLE");
+            return;
+        }
         draw_text(GFX_W / 2, 400, 48, gfx_rgba(1, 1, 1, 1), ALIGN_CENTRE, "no beatmaps yet");
         draw_text(GFX_W / 2, 480, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "press TRIANGLE to download some");
         draw_text(GFX_W / 2, 525, 28, gfx_rgba(1, 1, 1, 0.8f), ALIGN_CENTRE, "or copy extracted .osz folders to " SONGS_DIR);
@@ -1743,7 +1865,7 @@ enum {
     SET_SETUP, SET_HELP, SET_UPDATE, SET_LOOK,  /* general */
     SET_SKIN,                                   /* skin */
     SET_SENS, SET_CURSOR,                       /* input */
-    SET_DIM, SET_STORYBOARD, SET_VIDEO,         /* gameplay */
+    SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_STARS_LO, SET_STARS_HI, /* gameplay */
     SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, /* audio */
     SET_ACCOUNT, SET_BOARD,                     /* online */
     SET_RESCAN,                                 /* maintenance */
@@ -1781,6 +1903,21 @@ static void settings_frame(const pad_state *pad)
         if (pad->pressed & PAD_CROSS) {
             skin_ui_open(false);
             app.scr = SCREEN_SKINS;
+        }
+        break;
+    case SET_STARS_LO:
+        if (d) {
+            app.star_lo = clampf(app.star_lo + d * 0.5f, 0, 15);
+            apply_view();
+        }
+        break;
+    case SET_STARS_HI:
+        if (d) {
+            /* 0 means no top; stepping down from 0 wraps to 15 */
+            app.star_hi = app.star_hi + d * 0.5f;
+            if (app.star_hi < 0) app.star_hi = 15;
+            if (app.star_hi > 15) app.star_hi = 0;
+            apply_view();
         }
         break;
     case SET_SETUP:
@@ -1924,6 +2061,11 @@ static void render_settings(void)
         case SET_RESCAN: name = "rescan the Songs folder"; kind = 3; break;
         case SET_SKIN: name = "current skin"; snprintf(val, sizeof(val), "%.40s", skins_active()); break;
         case SET_SETUP: name = "run setup wizard"; kind = 3; break;
+        case SET_STARS_LO: name = "song select: lowest stars"; snprintf(val, sizeof(val), "%.1f*", app.star_lo); break;
+        case SET_STARS_HI:
+            name = "song select: highest stars";
+            snprintf(val, sizeof(val), app.star_hi > 0 ? "%.1f*" : "no limit", app.star_hi);
+            break;
         case SET_LOOK: name = "interface"; snprintf(val, sizeof(val), "%s", app.simple_ui ? "simplified" : "lazer"); break;
         case SET_UPDATE: {
             update_info up;
@@ -3166,6 +3308,13 @@ static void menu_enter(void)
 
 static void menu_frame(const pad_state *pad)
 {
+    int flick = rstick_flick(pad);
+    if (pad->pressed & PAD_L1)
+        flick = -1;
+    if (pad->pressed & PAD_R1)
+        flick = 1;
+    if (flick == 1 || flick == -1)
+        set_mode(app.mode_pick + flick);
     {
         const int *ids;
         int n = menu_row(&ids);
@@ -3239,7 +3388,7 @@ static void render_menu(void)
         draw_rect(108, 37, 20.5f, 2.5f, hc);
     }
     {
-        int mode = app.songs.count > 0 ? app.songs.items[app.sel].info.mode & 3 : 0;
+        int mode = app.mode_pick;
         ui_round_rect(160, 0, 230, 56, 0, ui_hex(0x222222, 1));
         for (int m = 0; m < 4; m++) {
             float cx = 190 + m * 56, cy = 26;
@@ -3615,6 +3764,7 @@ int main(void)
     LOG("gc check: %d collections", osu5_gc_check());
 
     settings_load();
+    mapdl_ui_set_mode(app.mode_pick);
     mapdl_ui_set_simple(app.simple_ui);
     audio_music_volume(app.music_vol);
     scores_load();
@@ -3757,6 +3907,16 @@ int main(void)
             break;
         }
 
+        {
+            /* a toast per finished download, whichever screen we're on */
+            static int toasted;
+            mapdl_status ts;
+            mapdl_progress(&ts);
+            if (ts.installed > toasted) {
+                toast("%s", ts.msg[0] ? ts.msg : "download finished");
+                toasted = ts.installed;
+            }
+        }
         gfx_begin(0.06f, 0.06f, 0.09f);
         switch (app.scr) {
         case SCREEN_SELECT:
@@ -3839,6 +3999,8 @@ int main(void)
             render_setup();
             break;
         }
+        if (app.scr != SCREEN_PLAY)
+            render_toasts();
         gfx_end();
     }
 }

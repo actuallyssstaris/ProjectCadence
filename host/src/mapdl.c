@@ -39,6 +39,9 @@ typedef struct {
     float stars;
 } diff_info;
 
+/* which mode's difficulties a set's count and top rating are about */
+static int want_mode;
+
 static bool diff_key(js *j, const char *key, void *ctx)
 {
     diff_info *d = ctx;
@@ -78,7 +81,7 @@ static bool set_key(js *j, const char *key, void *ctx)
             diff_info d = {-1, 0};
             if (!json_object(j, diff_key, &d))
                 return true; /* garbage; the outer walk will notice */
-            if (d.mode == 0) {
+            if (d.mode == want_mode) {
                 s->diffs++;
                 if (d.stars > s->stars)
                     s->stars = d.stars;
@@ -158,7 +161,7 @@ int mapdl_state(int id)
 /* ---- search ---- */
 
 typedef struct {
-    int gen;
+    int gen, mode;
     char url[512];
 } search_req;
 
@@ -170,7 +173,10 @@ static void *search_thread(void *arg)
     int st = net_get(r->url, &body, &len);
 
     static mapdl_set found[MAPDL_RESULTS];
+    pthread_mutex_lock(&lock);
+    want_mode = r->mode;
     int n = st == 200 ? mapdl_parse(body, found, MAPDL_RESULTS) : -1;
+    pthread_mutex_unlock(&lock);
     free(body);
 
     pthread_mutex_lock(&lock);
@@ -208,7 +214,7 @@ static void url_encode(const char *in, char *out, size_t n)
     out[k] = 0;
 }
 
-bool mapdl_find(const char *query, int page)
+bool mapdl_find(const char *query, int page, int mode, int status)
 {
     if (!net_init())
         return false;
@@ -217,8 +223,11 @@ bool mapdl_find(const char *query, int page)
         return false;
     char q[256];
     url_encode(query, q, sizeof(q));
-    snprintf(r->url, sizeof(r->url), "https://catboy.best/api/v2/search?query=%s&mode=0&limit=%d&offset=%d", q,
-             MAPDL_RESULTS, page * MAPDL_RESULTS);
+    r->mode = mode & 3;
+    int n = snprintf(r->url, sizeof(r->url), "https://catboy.best/api/v2/search?query=%s&mode=%d&limit=%d&offset=%d", q, r->mode,
+                     MAPDL_RESULTS, page * MAPDL_RESULTS);
+    if (status != MAPDL_ANY && n > 0 && (size_t)n < sizeof(r->url))
+        snprintf(r->url + n, sizeof(r->url) - (size_t)n, "&status=%d", status);
 
     pthread_mutex_lock(&lock);
     r->gen = ++search_gen;
