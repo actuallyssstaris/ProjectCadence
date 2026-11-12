@@ -975,3 +975,417 @@ static void spectate_back(void)
     spec_md5[0] = 0;
     app.scr = SCREEN_SPECTATE;
 }
+
+/* ---- imported .osr replays: whatever's in OSR_IMPORT_DIR, matched to the library ---- */
+
+#define IMPORTS_MAX 64
+static struct {
+    char file[256];
+    osr_info info;
+    int song; /* -1 if we don't have the map */
+} imports[IMPORTS_MAX];
+static int nimports, imp_sel;
+
+/* each song's .osu checksum, worked out once for the whole library */
+static char (*lib_md5)[33];
+static int lib_md5_n;
+
+static int song_by_md5(const char *md5)
+{
+    if (lib_md5_n != app.all.count) {
+        free(lib_md5);
+        lib_md5 = calloc((size_t)app.all.count + 1, 33);
+        lib_md5_n = lib_md5 ? app.all.count : 0;
+        for (int i = 0; i < lib_md5_n; i++)
+            if (!md5_file(app.all.items[i].file, lib_md5[i]))
+                lib_md5[i][0] = 0;
+    }
+    for (int i = 0; i < lib_md5_n; i++)
+        if (!strcmp(lib_md5[i], md5))
+            return i;
+    return -1;
+}
+
+static void imports_open(void)
+{
+    nimports = imp_sel = 0;
+    mkdir(OSR_IMPORT_DIR, 0777);
+    DIR *d = opendir(OSR_IMPORT_DIR);
+    struct dirent *e;
+    while (d && (e = readdir(d)) && nimports < IMPORTS_MAX) {
+        size_t l = strlen(e->d_name);
+        if (l < 5 || strcasecmp(e->d_name + l - 4, ".osr"))
+            continue;
+        char path[512];
+        snprintf(path, sizeof(path), OSR_IMPORT_DIR "/%s", e->d_name);
+        if (!osr_read(path, &imports[nimports].info, NULL, NULL))
+            continue;
+        snprintf(imports[nimports].file, sizeof(imports[0].file), "%s", e->d_name);
+        imports[nimports].song = song_by_md5(imports[nimports].info.md5);
+        nimports++;
+    }
+    if (d)
+        closedir(d);
+    app.scr = SCREEN_IMPORTS;
+}
+
+static void imports_frame(const pad_state *pad)
+{
+    if (nimports)
+        imp_sel = (imp_sel + pad->nav_y + nimports) % nimports;
+    if (pad->pressed & PAD_CROSS && nimports && imports[imp_sel].song >= 0) {
+        const song_entry *e = &app.all.items[imports[imp_sel].song];
+        char path[512];
+        snprintf(path, sizeof(path), OSR_IMPORT_DIR "/%s", imports[imp_sel].file);
+        osr_info info;
+        if (!osr_read(path, &info, &app.watch, e->file)) {
+            toast("couldn't read that replay");
+            return;
+        }
+        /* the song select list may be filtered: find it there, or play it from the full list */
+        int at = songs_find(&app.songs, e->file);
+        if (at >= 0)
+            app.sel = at;
+        app.saved_mods = app.mods;
+        app.mods = info.mods;
+        app.watching = true;
+        if (!start_song(e)) {
+            app.watching = false;
+            app.mods = app.saved_mods;
+        }
+        return;
+    }
+    if (pad->pressed & PAD_CIRCLE)
+        app.scr = SCREEN_SELECT;
+}
+
+static void render_imports(void)
+{
+    char buf[256];
+    draw_background(0.85f);
+    const float px = 144, pw = GFX_W - 2 * px;
+    draw_rect(px, 0, pw, GFX_H, ui_hex(0x1F1D24, 1));
+    ui_header("replays", "imported", ui_hex(0xFF66AA, 1));
+    if (!nimports) {
+        draw_text(GFX_W / 2, 360, 26, gfx_rgba(1, 1, 1, 0.75f), ALIGN_CENTRE, "no .osr files yet");
+        draw_text(GFX_W / 2, 410, 22, gfx_rgba(1, 1, 1, 0.55f), ALIGN_CENTRE, "copy them to " OSR_IMPORT_DIR " over FTP");
+    }
+    for (int i = 0; i < nimports && i < 14; i++) {
+        int k = imp_sel >= 14 ? imp_sel - 13 + i : i;
+        if (k >= nimports)
+            break;
+        float ry = 140 + i * 58;
+        bool on = k == imp_sel;
+        ui_round_rect(px + 40, ry, pw - 80, 52, 8, on ? ui_hex(0x3A3546, 1) : ui_hex(0x2A2733, 1));
+        const osr_info *in = &imports[k].info;
+        if (imports[k].song >= 0) {
+            const song_entry *e = &app.all.items[imports[k].song];
+            snprintf(buf, sizeof(buf), "%.40s - %.50s [%.30s]", e->info.artist, e->info.title, e->info.version);
+        } else {
+            snprintf(buf, sizeof(buf), "%.120s  (map not in your library)", imports[k].file);
+        }
+        ui_fit(buf, 20, pw - 520);
+        draw_text(px + 60, ry + 14, 20, gfx_rgba(1, 1, 1, imports[k].song >= 0 ? 1 : 0.5f), ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%.24s   %d   %dx", in->player, in->score, in->max_combo);
+        draw_text(px + pw - 60, ry + 14, 20, ui_hex(UI_YELLOW, 1), ALIGN_RIGHT, buf);
+    }
+    ui_footer("CROSS  watch", "CIRCLE");
+}
+
+/* ---- collections: the picker from song select's options ---- */
+
+static int coll_sel = -1; /* -1 closed; rows are the collections, then "new collection" */
+static kbd coll_kbd;
+static char coll_new[48];
+static bool coll_typing;
+
+static bool coll_open(void) { return coll_sel >= 0; }
+
+static void coll_frame(const pad_state *pad)
+{
+    if (coll_typing) {
+        int k = kbd_frame(&coll_kbd, pad);
+        if (k == KBD_DONE && coll_new[0]) {
+            int i = coll_create(coll_new);
+            if (i >= 0 && app.songs.count)
+                coll_toggle(i, app.songs.items[app.sel].file);
+            toast(i >= 0 ? "collection made" : "that name's taken");
+        }
+        if (k != KBD_TYPING)
+            coll_typing = false;
+        return;
+    }
+    int rows = coll_count() + 1;
+    coll_sel = (coll_sel + pad->nav_y + rows) % rows;
+    if (pad->pressed & PAD_CROSS) {
+        if (coll_sel == rows - 1) {
+            coll_new[0] = 0;
+            coll_kbd.text = coll_new;
+            coll_kbd.cap = sizeof(coll_new);
+            coll_typing = true;
+        } else if (app.songs.count) {
+            bool in = coll_toggle(coll_sel, app.songs.items[app.sel].file);
+            toast(in ? "added to %s" : "taken out of %s", coll_name(coll_sel));
+            if (app.coll_view == coll_sel)
+                apply_view();
+        }
+    }
+    /* SQUARE deletes a collection, the maps stay */
+    if (pad->pressed & PAD_SQUARE && coll_sel < rows - 1) {
+        if (app.coll_view == coll_sel)
+            app.coll_view = -1;
+        else if (app.coll_view > coll_sel)
+            app.coll_view--;
+        coll_delete(coll_sel);
+        apply_view();
+        if (coll_sel >= coll_count() + 1)
+            coll_sel = coll_count();
+    }
+    if (pad->pressed & (PAD_CIRCLE | PAD_OPTIONS))
+        coll_sel = -1;
+}
+
+static void render_coll(void)
+{
+    char buf[96];
+    int rows = coll_count() + 1;
+    const float w = 640, row = 56, h = 100 + rows * row, x = (GFX_W - w) / 2, y = (GFX_H - h) / 2;
+    draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.55f));
+    ui_round_rect(x, y, w, h, 18, ui_hex(0x22222A, 0.98f));
+    draw_text(x + 30, y + 24, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "collections");
+    const char *file = app.songs.count ? app.songs.items[app.sel].file : "";
+    for (int i = 0; i < rows; i++) {
+        float ry = y + 84 + i * row;
+        bool on = i == coll_sel;
+        ui_round_rect(x + 20, ry, w - 40, row - 8, 10, on ? ui_hex(0x3D3D4A, 1) : ui_hex(0x2C2C35, 1));
+        if (i == rows - 1) {
+            draw_text(x + 44, ry + 12, 22, ui_hex(0x88DD44, 1), ALIGN_LEFT, "+ new collection");
+            continue;
+        }
+        bool in = coll_has(i, file);
+        ui_round_rect(x + 40, ry + 13, 22, 22, 5, in ? ui_hex(0xFF66AA, 1) : gfx_rgba(1, 1, 1, 0.15f));
+        snprintf(buf, sizeof(buf), "%.40s", coll_name(i));
+        draw_text(x + 80, ry + 12, 22, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "%d", coll_size(i));
+        draw_text(x + w - 44, ry + 14, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_RIGHT, buf);
+    }
+    draw_text(GFX_W / 2, y + h + 16, 20, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, "CROSS add / take out   SQUARE delete collection   CIRCLE close");
+    if (coll_typing)
+        kbd_render(&coll_kbd);
+}
+
+/* ---- a set's page: details, rating, comments ---- */
+
+static float si_scroll;
+
+static void setinfo_open(int set_id)
+{
+    si_scroll = 0;
+    web_set_get(set_id);
+    app.scr = SCREEN_SETINFO;
+}
+
+static void setinfo_frame(const pad_state *pad)
+{
+    si_scroll = clampf(si_scroll + pad->nav_y, 0, WEB_COMMENTS - 1);
+    if (pad->pressed & PAD_CIRCLE)
+        app.scr = SCREEN_SELECT;
+}
+
+static void render_setinfo(void)
+{
+    char buf[300], num[32];
+    static web_set s;
+    web_set_read(&s);
+    draw_background(0.8f);
+    const float px = 144, pw = GFX_W - 2 * px;
+    draw_rect(px, 0, pw, GFX_H, ui_hex(0x1C2125, 0.97f));
+    ui_header("beatmap info", s.title[0] ? s.title : "set", ui_hex(0x66CCFF, 1));
+    float x = px + 50, y = 140;
+    if (s.state == WEB_LOADING) {
+        draw_text(GFX_W / 2, 400, 26, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, "loading...");
+        ui_footer(NULL, "CIRCLE");
+        return;
+    }
+    if (s.state != WEB_READY) {
+        draw_text(GFX_W / 2, 400, 26, gfx_rgba(1, 1, 1, 0.7f), ALIGN_CENTRE, s.id > 0 ? "osu.ppy.sh didn't answer" : "this set isn't on osu.ppy.sh");
+        ui_footer(NULL, "CIRCLE");
+        return;
+    }
+    if (s.artist[0]) {
+        snprintf(buf, sizeof(buf), "%.80s - %.80s", s.artist, s.title);
+        draw_text(x, y, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+        snprintf(buf, sizeof(buf), "mapped by %s   %s", s.creator, s.status);
+        draw_text(x, y + 44, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, buf);
+        /* the details in a row of label / value pairs */
+        const char *labels[6] = {"source", "genre", "language", "bpm", "plays", "favourites"};
+        char vals[6][100];
+        snprintf(vals[0], 100, "%.60s", s.source[0] ? s.source : "-");
+        snprintf(vals[1], 100, "%s", s.genre[0] ? s.genre : "-");
+        snprintf(vals[2], 100, "%s", s.language[0] ? s.language : "-");
+        snprintf(vals[3], 100, "%.0f", s.bpm);
+        group3(s.plays, num, sizeof(num));
+        snprintf(vals[4], 100, "%s", num);
+        group3(s.favourites, num, sizeof(num));
+        snprintf(vals[5], 100, "%s", num);
+        for (int i = 0; i < 6; i++) {
+            float cx = x + i * (pw - 100) / 6;
+            draw_text(cx, y + 90, 17, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, labels[i]);
+            ui_fit(vals[i], 21, (pw - 100) / 6 - 16);
+            draw_text(cx, y + 114, 21, gfx_rgba(1, 1, 1, 0.95f), ALIGN_LEFT, vals[i]);
+        }
+        if (s.rating >= 0) {
+            snprintf(buf, sizeof(buf), "user rating  %.1f / 10", s.rating);
+            draw_text(x, y + 160, 20, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, buf);
+        }
+        if (s.tags[0]) {
+            snprintf(buf, sizeof(buf), "tags: %.200s", s.tags);
+            ui_fit(buf, 18, pw - 100);
+            draw_text(x, y + 196, 18, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, buf);
+        }
+        y += 240;
+    } else {
+        draw_text(x, y, 20, gfx_rgba(1, 1, 1, 0.6f), ALIGN_LEFT, "details need osu! API keys in /data/cadence/osuapi.txt; comments don't");
+        y += 50;
+    }
+    draw_text(x, y, 24, gfx_rgba(1, 1, 1, 0.9f), ALIGN_LEFT, s.ncomments ? "comments" : "no comments");
+    y += 40;
+    for (int i = (int)si_scroll; i < s.ncomments && y < GFX_H - 140; i++, y += 58) {
+        draw_text(x, y, 19, ui_hex(0x66CCFF, 1), ALIGN_LEFT, s.comments[i].user[0] ? s.comments[i].user : "someone");
+        snprintf(buf, sizeof(buf), "%s", s.comments[i].text);
+        ui_fit(buf, 19, pw - 120);
+        draw_text(x, y + 24, 19, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, buf);
+    }
+    ui_footer("UP / DOWN  scroll the comments", "CIRCLE");
+}
+
+/* ---- news, changelog and the wiki: one reader with three tabs ---- */
+
+enum { RD_NEWS, RD_CHANGELOG, RD_WIKI };
+static int rd_tab, rd_sel;
+static float rd_scroll;
+static char rd_history[8][96];
+static int rd_depth;
+static screen rd_return = SCREEN_MENU;
+
+static void reader_load(void)
+{
+    rd_scroll = 0;
+    rd_sel = 0;
+    if (rd_tab == RD_NEWS)
+        web_news_get();
+    else if (rd_tab == RD_CHANGELOG)
+        web_changelog_get();
+    else
+        web_wiki_get(rd_depth ? rd_history[rd_depth - 1] : "Main_page");
+}
+
+static void reader_open(screen back)
+{
+    rd_return = back;
+    rd_depth = 0;
+    reader_load();
+    app.scr = SCREEN_READER;
+}
+
+static void reader_frame(const pad_state *pad)
+{
+    if (pad->pressed & (PAD_L1 | PAD_R1)) {
+        rd_tab = (rd_tab + (pad->pressed & PAD_R1 ? 1 : 2)) % 3;
+        reader_load();
+        return;
+    }
+    if (rd_tab == RD_NEWS) {
+        static web_news n;
+        web_news_read(&n);
+        if (n.count)
+            rd_sel = (rd_sel + pad->nav_y + n.count) % n.count;
+    } else {
+        static web_page pg;
+        web_page_read(&pg);
+        rd_scroll = clampf(rd_scroll + pad->nav_y * 3, 0, pg.count > 10 ? pg.count - 10 : 0);
+        /* the wiki's links, picked with left / right and followed with CROSS */
+        if (rd_tab == RD_WIKI && pg.nlinks) {
+            if (pad->nav_x)
+                rd_sel = (rd_sel + pad->nav_x + pg.nlinks) % pg.nlinks;
+            if (pad->pressed & PAD_CROSS && rd_depth < 8) {
+                snprintf(rd_history[rd_depth++], sizeof(rd_history[0]), "%s", pg.links[rd_sel % pg.nlinks]);
+                reader_load();
+                return;
+            }
+        }
+    }
+    if (pad->pressed & PAD_CIRCLE) {
+        if (rd_tab == RD_WIKI && rd_depth > 0) {
+            rd_depth--;
+            reader_load();
+        } else {
+            app.scr = rd_return;
+        }
+    }
+}
+
+static void render_reader(void)
+{
+    char buf[400];
+    draw_background(0.85f);
+    const float px = 144, pw = GFX_W - 2 * px;
+    draw_rect(px, 0, pw, GFX_H, ui_hex(0x1F1D24, 0.98f));
+    static const char *const tabs[3] = {"news", "changelog", "wiki"};
+    ui_header(tabs[rd_tab], rd_tab == RD_NEWS ? "osu!" : rd_tab == RD_CHANGELOG ? "ProjectCadence" : "osu! wiki", ui_hex(0xFF66AA, 1));
+    float tx = px + 50;
+    for (int i = 0; i < 3; i++) {
+        float w = draw_text(tx, 122, 22, gfx_rgba(1, 1, 1, i == rd_tab ? 1 : 0.5f), ALIGN_LEFT, tabs[i]);
+        if (i == rd_tab)
+            ui_round_rect(tx, 154, w, 4, 2, ui_hex(0xFF66AA, 1));
+        tx += w + 40;
+    }
+    float x = px + 50, y = 190;
+    if (rd_tab == RD_NEWS) {
+        static web_news n;
+        web_news_read(&n);
+        if (n.state != WEB_READY)
+            draw_text(GFX_W / 2, 400, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, n.state == WEB_LOADING ? "loading..." : "couldn't get the news");
+        int first = rd_sel > 5 ? rd_sel - 5 : 0;
+        for (int i = first; i < n.count && y < GFX_H - 150; i++, y += 120) {
+            bool on = i == rd_sel;
+            ui_round_rect(x - 16, y - 10, pw - 70, 108, 10, on ? ui_hex(0x3A3546, 1) : ui_hex(0x2A2733, 1));
+            snprintf(buf, sizeof(buf), "%s", n.post[i].title);
+            ui_fit(buf, 24, pw - 120);
+            draw_text(x, y, 24, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, buf);
+            snprintf(buf, sizeof(buf), "%s  by %s", n.post[i].date, n.post[i].author);
+            draw_text(x, y + 34, 17, gfx_rgba(1, 1, 1, 0.5f), ALIGN_LEFT, buf);
+            snprintf(buf, sizeof(buf), "%s", n.post[i].preview);
+            ui_fit(buf, 18, pw - 120);
+            draw_text(x, y + 62, 18, gfx_rgba(1, 1, 1, 0.8f), ALIGN_LEFT, buf);
+        }
+        ui_footer("L1 / R1  news, changelog, wiki     UP / DOWN  posts", "CIRCLE");
+        return;
+    }
+    static web_page pg;
+    web_page_read(&pg);
+    if (pg.state != WEB_READY) {
+        draw_text(GFX_W / 2, 400, 24, gfx_rgba(1, 1, 1, 0.6f), ALIGN_CENTRE, pg.state == WEB_LOADING ? "loading..." : "couldn't get that page");
+    } else {
+        for (int i = (int)rd_scroll; i < pg.count && y < GFX_H - 150; i++, y += 30) {
+            const char *l = pg.line[i];
+            int heading = 0;
+            while (l[heading] == '#')
+                heading++;
+            if (heading) {
+                y += 8;
+                draw_text(x, y, 26 - heading * 2, ui_hex(UI_YELLOW, 1), ALIGN_LEFT, l + heading + (l[heading] == ' '));
+                y += 6;
+            } else {
+                draw_text(x, y, 19, gfx_rgba(1, 1, 1, 0.85f), ALIGN_LEFT, l);
+            }
+        }
+    }
+    if (rd_tab == RD_WIKI && pg.nlinks) {
+        snprintf(buf, sizeof(buf), "link %d/%d:  %.80s", rd_sel % pg.nlinks + 1, pg.nlinks, pg.links[rd_sel % pg.nlinks]);
+        draw_text(px + pw - 40, 126, 18, ui_hex(0x66CCFF, 1), ALIGN_RIGHT, buf);
+    }
+    ui_footer(rd_tab == RD_WIKI ? "L1 / R1  tabs     UP / DOWN  scroll     LEFT / RIGHT  pick a link     CROSS  open it"
+                                : "L1 / R1  news, changelog, wiki     UP / DOWN  scroll",
+              "CIRCLE");
+}

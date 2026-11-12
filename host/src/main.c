@@ -34,6 +34,8 @@
 #include "ui.h"
 #include "web.h"
 #include "bweb.h"
+#include "collections.h"
+#include "osr.h"
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
@@ -42,6 +44,7 @@
 #include "../third_party/stb_image.h"
 
 #include <dirent.h>
+#include <sys/stat.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -81,6 +84,9 @@ typedef enum {
     SCREEN_PROFILE,
     SCREEN_CHAT,
     SCREEN_SPECTATE,
+    SCREEN_IMPORTS,
+    SCREEN_SETINFO,
+    SCREEN_READER,
 } screen;
 
 static struct {
@@ -100,6 +106,7 @@ static struct {
     int board_src;        /* which online board: 0 ProjectCadence, 1 osu.ppy.sh, 2 the bancho server */
     bool bweb_waiting;    /* a server replay is downloading to be watched */
     int rp_from;          /* ...from 0 the bancho server, 1 ours */
+    int coll_view;        /* song select shows only this collection, -1 everything */
     char set_entry[64], set_entry_keep[64]; /* settings' account fields */
     kbd set_entry_kbd;
     int set_entering;     /* 0 no, 1 clan, 2 old password, 3 new password, 4 delete */
@@ -191,7 +198,7 @@ static struct {
     skin_job topup;       /* default skin from an older version, fetched quietly */
 
     char status[256];
-} app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1};
+} app = {.previewed = -1, .scores_for = -1, .new_place = -1, .mp_quick = -1, .coll_view = -1};
 
 /* what an osu! map gets converted to when another mode is picked */
 static int conv_of(const song_entry *e)
@@ -216,6 +223,13 @@ static const char *base_name(const char *path)
 static void chat_open(screen back);
 static void rankings_open(screen back);
 static void profile_lookup(screen back);
+static bool coll_open(void);
+static void coll_frame(const pad_state *pad);
+static void render_coll(void);
+static int coll_sel;
+static void imports_open(void);
+static void setinfo_open(int set_id);
+static void reader_open(screen back);
 static bool spec_live;
 static int spec_target;
 static void spectate_pull(void);
@@ -972,6 +986,13 @@ static void apply_view(void)
         }
         app.songs.count = n;
     }
+    if (app.coll_view >= 0) {
+        int n = 0;
+        for (int i = 0; i < app.songs.count; i++)
+            if (coll_has(app.coll_view, app.songs.items[i].file))
+                app.songs.items[n++] = app.songs.items[i];
+        app.songs.count = n;
+    }
     if (app.sort == SORT_COUNT) {
         /* the favourites view: only starred sets, by artist */
         int n = 0;
@@ -1084,7 +1105,8 @@ static int closest_in_set(int start, int from)
 }
 
 /* song select options list */
-enum { OPT_RANDOM, OPT_SORT, OPT_FAV, OPT_DELETE, OPT_MAPS, OPT_SKINS, OPT_SETTINGS, OPT_COUNT };
+enum { OPT_RANDOM, OPT_SORT, OPT_SHOW, OPT_FAV, OPT_COLLECT, OPT_SETINFO, OPT_IMPORTS, OPT_DELETE, OPT_MAPS, OPT_SKINS,
+       OPT_SETTINGS, OPT_COUNT };
 static int sel_opt = -1; /* -1 closed */
 static double delete_armed;
 
@@ -1113,6 +1135,27 @@ static void sel_opts_frame(const pad_state *pad)
         app.sort = (app.sort + 1) % (SORT_COUNT + 1);
         apply_view();
         settings_save();
+        break;
+    case OPT_SHOW:
+        /* everything, then each collection in turn */
+        app.coll_view = app.coll_view + 1 < coll_count() ? app.coll_view + 1 : -1;
+        apply_view();
+        break;
+    case OPT_COLLECT:
+        if (have) {
+            sel_opt = -1;
+            coll_sel = 0;
+        }
+        break;
+    case OPT_SETINFO:
+        if (have) {
+            sel_opt = -1;
+            setinfo_open(app.songs.items[app.sel].info.set_id);
+        }
+        break;
+    case OPT_IMPORTS:
+        sel_opt = -1;
+        imports_open();
         break;
     case OPT_FAV:
         if (have) {
@@ -1161,7 +1204,7 @@ static void sel_opts_frame(const pad_state *pad)
 static void render_sel_opts(void)
 {
     char buf[96];
-    const float w = 560, row = 62, h = 100 + OPT_COUNT * row, x = (GFX_W - w) / 2, y = (GFX_H - h) / 2;
+    const float w = 560, row = 56, h = 100 + OPT_COUNT * row, x = (GFX_W - w) / 2, y = (GFX_H - h) / 2;
     draw_rect(0, 0, GFX_W, GFX_H, gfx_rgba(0, 0, 0, 0.55f));
     ui_round_rect(x, y, w, h, 18, ui_hex(0x22222A, 0.98f));
     draw_text(x + 30, y + 24, 30, gfx_rgba(1, 1, 1, 1), ALIGN_LEFT, "options");
@@ -1174,6 +1217,13 @@ static void render_sel_opts(void)
         case OPT_RANDOM: label = "random set"; break;
         case OPT_SORT: snprintf(buf, sizeof(buf), "sort by: %s", sort_label()); label = buf; break;
         case OPT_FAV: label = fav ? "remove from favourites" : "add to favourites"; break;
+        case OPT_SHOW:
+            snprintf(buf, sizeof(buf), "show: %s", app.coll_view < 0 ? "every map" : coll_name(app.coll_view));
+            label = buf;
+            break;
+        case OPT_COLLECT: label = "add to a collection"; break;
+        case OPT_SETINFO: label = "set info and comments"; break;
+        case OPT_IMPORTS: label = "imported replays (.osr)"; break;
         case OPT_DELETE: label = wall_ms() - delete_armed < 3000 ? "press CROSS again to delete" : "delete this set"; break;
         case OPT_MAPS: label = "get more maps"; break;
         case OPT_SKINS: label = "skins"; break;
@@ -1190,6 +1240,10 @@ static void select_frame(const pad_state *pad)
 {
     if (sel_opt >= 0) {
         sel_opts_frame(pad);
+        return;
+    }
+    if (coll_open()) {
+        coll_frame(pad);
         return;
     }
     if (!app.searching && pad->pressed & PAD_CIRCLE) {
@@ -3820,7 +3874,11 @@ static void menu_frame(const pad_state *pad)
     if (pad->pressed & PAD_TRIANGLE && (up.state == UPDATE_AVAILABLE || up.state == UPDATE_FAILED))
         update_install();
 
-    /* the toolbar's overlays: chat, rankings, and looking a player up */
+    /* the toolbar's overlays: chat, rankings, looking a player up, the reader */
+    if (pad->pressed & PAD_OPTIONS) {
+        reader_open(SCREEN_MENU);
+        return;
+    }
     if (pad->pressed & PAD_SQUARE) {
         chat_open(SCREEN_MENU);
         return;
@@ -3916,8 +3974,8 @@ static void render_menu(void)
         draw_text(rx - 20, 15, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_CENTRE, ini);
         rx -= 52 + draw_text(rx - 52, 16, 22, gfx_rgba(1, 1, 1, 0.9f), ALIGN_RIGHT, name) + 40;
         /* the overlay buttons left of the user, with the pad button under each */
-        static const char *const tb[3][2] = {{"players", "L2"}, {"rankings", "R2"}, {"chat", "SQUARE"}};
-        for (int i = 2; i >= 0; i--) {
+        static const char *const tb[4][2] = {{"news", "OPTIONS"}, {"players", "L2"}, {"rankings", "R2"}, {"chat", "SQUARE"}};
+        for (int i = 3; i >= 0; i--) {
             float w = draw_text(rx, 10, 20, gfx_rgba(1, 1, 1, 0.85f), ALIGN_RIGHT, tb[i][0]);
             draw_text(rx - w / 2, 34, 13, gfx_rgba(1, 1, 1, 0.4f), ALIGN_CENTRE, tb[i][1]);
             rx -= w + 34;
@@ -4361,6 +4419,16 @@ int main(void)
                 start_song(app.playing);
             } else if (pad.pressed & PAD_SQUARE && app.last_when && !app.watching) {
                 watch_replay(app.playing, app.last_when);
+            } else if (pad.pressed & PAD_TRIANGLE && app.rec.count && !app.watching) {
+                const osu5_hud *h = &app.last_hud;
+                osr_info in = {.mode = play_mode(app.playing), .n300 = h->great, .n100 = h->ok, .n50 = h->meh, .miss = h->miss,
+                               .score = (int)h->score, .max_combo = h->max_combo, .perfect = h->miss == 0, .mods = app.mods,
+                               .when = (long long)time(NULL) * 1000};
+                snprintf(in.md5, sizeof(in.md5), "%s", map_md5(app.playing->file));
+                snprintf(in.player, sizeof(in.player), "%s", account_signed_in() ? account_name() : app.ps_name[0] ? app.ps_name : "player");
+                char title[200], name[256];
+                snprintf(title, sizeof(title), "%.50s - %.60s [%.40s]", app.playing->info.artist, app.playing->info.title, app.playing->info.version);
+                toast(osr_export(&in, &app.rec, title, name, sizeof(name)) ? "saved to exports: %s" : "couldn't save the replay%s", "");
             } else if (pad.pressed & PAD_CIRCLE) {
                 back_to_select();
             }
@@ -4417,6 +4485,15 @@ int main(void)
         case SCREEN_SPECTATE:
             spectate_frame(&pad);
             break;
+        case SCREEN_IMPORTS:
+            imports_frame(&pad);
+            break;
+        case SCREEN_SETINFO:
+            setinfo_frame(&pad);
+            break;
+        case SCREEN_READER:
+            reader_frame(&pad);
+            break;
         }
 
         {
@@ -4447,6 +4524,8 @@ int main(void)
             app.simple_ui ? render_select_classic() : render_select();
             if (sel_opt >= 0)
                 render_sel_opts();
+            if (coll_open())
+                render_coll();
             break;
         case SCREEN_PLAY:
             render_play();
@@ -4537,6 +4616,15 @@ int main(void)
             break;
         case SCREEN_SPECTATE:
             render_spectate();
+            break;
+        case SCREEN_IMPORTS:
+            render_imports();
+            break;
+        case SCREEN_SETINFO:
+            render_setinfo();
+            break;
+        case SCREEN_READER:
+            render_reader();
             break;
         }
         {
