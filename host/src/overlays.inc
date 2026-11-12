@@ -990,15 +990,49 @@ static int nimports, imp_sel;
 static char (*lib_md5)[33];
 static int lib_md5_n;
 
+/* hashing every .osu is slow on a big library, so the answers are kept in a
+ * file and only new maps get hashed */
+#define MD5_CACHE "/data/cadence/md5cache.txt"
+
 static int song_by_md5(const char *md5)
 {
     if (lib_md5_n != app.all.count) {
         free(lib_md5);
         lib_md5 = calloc((size_t)app.all.count + 1, 33);
         lib_md5_n = lib_md5 ? app.all.count : 0;
+        /* path<TAB>md5 lines from before */
+        FILE *f = fopen(MD5_CACHE, "r");
+        char line[900];
+        int hits = 0;
+        while (f && fgets(line, sizeof(line), f)) {
+            char *tab = strchr(line, '\t');
+            if (!tab || strlen(tab + 1) < 32)
+                continue;
+            *tab = 0;
+            int at = songs_find(&app.all, line);
+            if (at >= 0 && at < lib_md5_n) {
+                snprintf(lib_md5[at], 33, "%.32s", tab + 1);
+                hits++;
+            }
+        }
+        if (f)
+            fclose(f);
+        int fresh = 0;
         for (int i = 0; i < lib_md5_n; i++)
-            if (!md5_file(app.all.items[i].file, lib_md5[i]))
-                lib_md5[i][0] = 0;
+            if (!lib_md5[i][0]) {
+                if (!md5_file(app.all.items[i].file, lib_md5[i]))
+                    lib_md5[i][0] = 0;
+                fresh++;
+            }
+        if (fresh) {
+            f = fopen(MD5_CACHE, "w");
+            for (int i = 0; f && i < lib_md5_n; i++)
+                if (lib_md5[i][0])
+                    fprintf(f, "%s\t%s\n", app.all.items[i].file, lib_md5[i]);
+            if (f)
+                fclose(f);
+        }
+        LOG("md5 cache: %d known, %d hashed", hits, fresh);
     }
     for (int i = 0; i < lib_md5_n; i++)
         if (!strcmp(lib_md5[i], md5))

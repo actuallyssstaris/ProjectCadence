@@ -340,7 +340,9 @@ export async function accounts(request, env, url) {
         // a jump far past the player's usual pp waits for an admin to look at it
         const pp = Number(body.pp) || 0;
         const top = await env.DB.prepare("SELECT MAX(pp) AS p FROM scores WHERE user_id = ? AND mode = ? AND held = 0").bind(user.id, mode).first();
-        if (pp > 300 && pp > (top && top.p ? top.p : 0) * 1.5 + 100) held = 1;
+        // a new player has no usual yet: only something wild waits then
+        const usual = top && top.p ? top.p : 0;
+        if (usual ? pp > 300 && pp > usual * 1.5 + 100 : pp > 700) held = 1;
         const stmts = [
           env.DB.prepare(
             `INSERT OR REPLACE INTO scores (user_id, map_md5, beatmap_id, mode, score, acc, max_combo, mods, pp, rank,

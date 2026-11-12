@@ -283,6 +283,15 @@ static void render_settings_classic(void)
         case SET_STARS_LO: name = "song select: lowest stars"; snprintf(val, sizeof(val), "%.1f*", app.star_lo); break;
         case SET_STARS_HI: name = "song select: highest stars"; snprintf(val, sizeof(val), app.star_hi > 0 ? "%.1f*" : "no limit", app.star_hi); break;
         case SET_LOOK: name = "interface"; snprintf(val, sizeof(val), "%s", app.simple_ui ? "simplified" : "lazer"); break;
+        case SET_HUD: name = "hud"; snprintf(val, sizeof(val), "%s", app.hud_mode == 0 ? "always" : app.hud_mode == 1 ? "only in breaks" : "never"); break;
+        case SET_KEYS: name = "key overlay"; snprintf(val, sizeof(val), "%s", app.key_overlay ? "on" : "off"); break;
+        case SET_LIVE: name = "leaderboard while playing"; snprintf(val, sizeof(val), "%s", app.live_board ? "on" : "off"); break;
+        case SET_CLASSIC: name = "score display"; snprintf(val, sizeof(val), "%s", app.classic_score ? "classic" : "standardised"); break;
+        case SET_FPS: name = "show frame time"; snprintf(val, sizeof(val), "%s", app.show_fps ? "on" : "off"); break;
+        case SET_CLAN: name = "clan"; snprintf(val, sizeof(val), "%s", account_clan()[0] ? account_clan() : "CROSS"); break;
+        case SET_PASSWORD: name = "change password"; snprintf(val, sizeof(val), "CROSS"); break;
+        case SET_DELETE: name = "delete account"; snprintf(val, sizeof(val), "CROSS"); break;
+        case SET_REPORT: name = "report a problem"; snprintf(val, sizeof(val), "CROSS"); break;
         }
         float y = 150 + i * 54;
         bool on = i == app.set_sel;
@@ -294,7 +303,7 @@ static void render_settings_classic(void)
 
     const char *hint = "";
     switch (app.set_sel) {
-    case SET_OFFSET: hint = "positive if you hit late everywhere; L1/R1 in song select change it by 5 too"; break;
+    case SET_OFFSET: hint = "positive if you hit late everywhere; a map's own offset is D-PAD left/right while paused"; break;
     case SET_SENS: hint = "how far a full stick tilt reaches; above 1 you can reach the edge before full tilt"; break;
     case SET_RESCAN: hint = "after copying maps over FTP"; break;
     default: break;

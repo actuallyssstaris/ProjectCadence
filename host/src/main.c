@@ -115,6 +115,8 @@ static struct {
     int hud_mode;         /* 0 always, 1 only in breaks, 2 never */
     bool key_overlay, live_board, classic_score;
     int map_objects;      /* for classic scoring */
+    bool show_fps;
+    float frame_ms, frame_worst; /* smoothed, and the worst of the last few seconds */
     int key_count[4], key_prev;
     float da[4];          /* Difficulty Adjust: cs, ar, od, hp; -1 the map's own */
     double rate_custom;   /* the speed mods' rate, 0 for 1.5 / 0.75 */
@@ -392,6 +394,7 @@ static void settings_load(void)
             else if (!strcmp(key, "key_overlay")) app.key_overlay = v != 0;
             else if (!strcmp(key, "live_board")) app.live_board = v != 0;
             else if (!strcmp(key, "classic_score")) app.classic_score = v != 0;
+            else if (!strcmp(key, "show_fps")) app.show_fps = v != 0;
             else if (!strcmp(key, "storyboard")) app.storyboards = v != 0;
             else if (!strcmp(key, "simple_ui")) app.simple_ui = v != 0;
             else if (!strcmp(key, "video")) app.videos = v != 0;
@@ -409,10 +412,10 @@ static void settings_save(void)
     if (!f)
         return;
     fprintf(f, "offset %d\nsensitivity %.2f\nmusic %.2f\neffects %.2f\ndim %.2f\ncursor %.2f\nmods %d\nsort %d\nstoryboard %d\nvideo %d\nonboarded %d\nboards %d\nsimple_ui %d\nmode %d\nstar_lo %.1f\nstar_hi %.1f\nconverts %d\n"
-               "hud %d\nkey_overlay %d\nlive_board %d\nclassic_score %d\n",
+               "hud %d\nkey_overlay %d\nlive_board %d\nclassic_score %d\nshow_fps %d\n",
             app.offset_ms, app.sensitivity, app.music_vol, app.fx_vol, app.bg_dim, app.cursor_scale, app.mods & ~OSU5_MOD_AUTO,
             app.sort, app.storyboards, app.videos, app.onboarded, app.board_src, app.simple_ui, app.mode_pick, app.star_lo, app.star_hi, app.converts,
-            app.hud_mode, app.key_overlay, app.live_board, app.classic_score);
+            app.hud_mode, app.key_overlay, app.live_board, app.classic_score, app.show_fps);
     fclose(f);
 }
 
@@ -2438,7 +2441,7 @@ enum {
     SET_SETUP, SET_HELP, SET_UPDATE, SET_LOOK,  /* general */
     SET_SKIN,                                   /* skin */
     SET_SENS, SET_CURSOR,                       /* input */
-    SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_HUD, SET_KEYS, SET_LIVE, SET_CLASSIC, SET_STARS_LO, SET_STARS_HI, SET_CONVERTS, /* gameplay */
+    SET_DIM, SET_STORYBOARD, SET_VIDEO, SET_HUD, SET_KEYS, SET_LIVE, SET_CLASSIC, SET_FPS, SET_STARS_LO, SET_STARS_HI, SET_CONVERTS, /* gameplay */
     SET_MUSIC, SET_EFFECTS, SET_OFFSET, SET_WIZARD, /* audio */
     SET_ACCOUNT, SET_CLAN, SET_PASSWORD, SET_DELETE, SET_BOARD, /* online */
     SET_RESCAN, SET_REPORT,                     /* maintenance */
@@ -2464,6 +2467,7 @@ static const char *const set_words[SET_COUNT] = {
     [SET_KEYS] = "gameplay key overlay counter",
     [SET_LIVE] = "gameplay leaderboard in game live",
     [SET_CLASSIC] = "gameplay score display classic standardised scoring",
+    [SET_FPS] = "gameplay show frame time fps performance lag",
     [SET_STARS_LO] = "gameplay song select lowest stars difficulty filter",
     [SET_STARS_HI] = "gameplay song select highest stars difficulty filter",
     [SET_CONVERTS] = "gameplay show converted maps converts taiko catch mania",
@@ -2523,13 +2527,13 @@ static void send_report(const char *text)
     snprintf(info, sizeof(info),
              "version %s\nlook %s, mode %d, converts %s\nmods %s (%d), offset %d ms, sensitivity %.2f\n"
              "maps %d (%d shown), skin %s\nlast map %s\nsigned in %s, multiplayer %s (%s), osu! API %s\n"
-             "storyboards %s, videos %s, hud %d, classic score %s\ncrashed last time %s",
+             "storyboards %s, videos %s, hud %d, classic score %s\ncrashed last time %s\nframe time %.1f ms, worst %.0f ms",
              CADENCE_VERSION, app.simple_ui ? "simplified" : "lazer", app.mode_pick, app.converts ? "on" : "off", tags[0] ? tags : "none",
              app.mods, app.offset_ms, app.sensitivity, app.all.count, app.songs.count, skins_active(), e ? e->file : "none",
              account_signed_in() ? account_name() : "no", app.mp_on ? (app.mp_kind == MP_BANCHO ? "bancho" : "ProjectCadence") : "off",
              app.mp_on ? (app.mps.conn == MP_ONLINE ? "online" : "not online") : "-", online_enabled() ? "on" : "off",
              app.storyboards ? "on" : "off", app.videos ? "on" : "off", app.hud_mode, app.classic_score ? "yes" : "no",
-             log_last_crashed() ? "yes" : "no");
+             log_last_crashed() ? "yes" : "no", app.frame_ms, app.frame_worst);
     report_send(CADENCE_ROOMS, text, info, true);
 }
 
@@ -2645,6 +2649,10 @@ static void settings_frame(const pad_state *pad)
     case SET_CLASSIC:
         if (d || pad->pressed & PAD_CROSS)
             app.classic_score = !app.classic_score;
+        break;
+    case SET_FPS:
+        if (d || pad->pressed & PAD_CROSS)
+            app.show_fps = !app.show_fps;
         break;
     case SET_SKIN:
         if (pad->pressed & PAD_CROSS) {
@@ -2857,6 +2865,7 @@ static void render_settings(void)
             break;
         }
         case SET_KEYS: name = "key overlay"; kind = 1; flag = app.key_overlay; break;
+        case SET_FPS: name = "show frame time"; kind = 1; flag = app.show_fps; break;
         case SET_LIVE: name = "leaderboard while playing"; kind = 1; flag = app.live_board; break;
         case SET_CLASSIC: name = "score display"; snprintf(val, sizeof(val), "%s", app.classic_score ? "classic" : "standardised"); break;
         case SET_WIZARD: name = "find my offset"; kind = 3; break;
@@ -2933,7 +2942,7 @@ static void render_settings(void)
     /* hints for the selected row down the right */
     const char *hint = "";
     switch (app.set_sel) {
-    case SET_OFFSET: hint = "positive if you hit late everywhere; L1/R1 in song select change it by 5 too"; break;
+    case SET_OFFSET: hint = "positive if you hit late everywhere; a map's own offset is D-PAD left/right while paused"; break;
     case SET_SENS: hint = "how far a full stick tilt reaches; above 1 you can reach the edge before full tilt"; break;
     case SET_RESCAN: hint = "after copying maps over FTP"; break;
     case SET_CLAN: hint = "type a tag to join, or a tag and a name to start one: CDN Cadence Crew"; break;
@@ -4855,6 +4864,19 @@ int main(void)
             }
         }
         log_where(screen_name(app.scr));
+        {
+            /* frame time, smoothed; a slow frame is logged with where it happened */
+            static double worst_reset;
+            app.frame_ms = app.frame_ms * 0.95f + dt * 0.05f;
+            if (dt > app.frame_worst)
+                app.frame_worst = dt;
+            if (now - worst_reset > 5000) {
+                worst_reset = now;
+                app.frame_worst = 0;
+            }
+            if (dt > 250 && app.scr == SCREEN_PLAY)
+                LOG("slow frame: %.0f ms while playing", dt);
+        }
         gfx_begin(0.06f, 0.06f, 0.09f);
         switch (app.scr) {
         case SCREEN_SELECT:
@@ -4984,6 +5006,11 @@ int main(void)
         }
         if (app.scr != SCREEN_PLAY)
             render_toasts();
+        if (app.show_fps) {
+            char fb[48];
+            snprintf(fb, sizeof(fb), "%.1f ms  (worst %.0f)", app.frame_ms, app.frame_worst);
+            draw_text(GFX_W - 20, GFX_H - 34, 16, app.frame_worst > 20 ? ui_hex(UI_YELLOW, 1) : gfx_rgba(1, 1, 1, 0.6f), ALIGN_RIGHT, fb);
+        }
         gfx_end();
     }
 }
